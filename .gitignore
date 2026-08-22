@@ -1,0 +1,16 @@
+# Account-specific config (session source, machine paths) — never committed.
+config.toml
+
+# Captured browser sessions (contain cookies) — never committed.
+session.curl
+*.curl
+cookies.txt
+
+# A project manifest and its lockfile belong with the consuming project, not this tool
+# repo; ignored here defensively so running the tool from this directory never commits
+# them (the committed unity-sync.example.toml is not matched by the exact name).
+unity-sync.toml
+unity-sync.lock.json
+
+# Built binary.
+/unity-sync

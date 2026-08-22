@@ -72,11 +72,17 @@ func run(args []string) (int, error) {
 		return 1, fmt.Errorf("unknown subcommand %q", cmd)
 	}
 	switch cmd {
-	case "-h", "--help", "help":
-		usage()
-		return 0, nil
-	case "version", "-v", "--version":
-		fmt.Fprintln(stdout, "unity-sync", version)
+	case "-h", "--help", "help", "version", "-v", "--version":
+		// These return before flag parsing, so their positionals are checked here or not
+		// at all: `unity-sync version foo` should not quietly succeed.
+		if len(rest) > 0 {
+			return 1, fmt.Errorf("%s takes no arguments (got %q)", cmd, rest[0])
+		}
+		if cmd == "version" || cmd == "-v" || cmd == "--version" {
+			fmt.Fprintln(stdout, "unity-sync", version)
+		} else {
+			usage()
+		}
 		return 0, nil
 	}
 	if err := fs.Parse(rest); err != nil {

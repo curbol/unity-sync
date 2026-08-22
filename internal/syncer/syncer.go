@@ -15,6 +15,7 @@ import (
 	"github.com/curbol/unity-sync/internal/lockfile"
 	"github.com/curbol/unity-sync/internal/manifest"
 	"github.com/curbol/unity-sync/internal/model"
+	"github.com/curbol/unity-sync/internal/retry"
 	"github.com/curbol/unity-sync/internal/store"
 	"github.com/curbol/unity-sync/internal/unitypackage"
 )
@@ -119,6 +120,11 @@ type Options struct {
 	Now         func() time.Time
 	Progress    func(string)
 
+	// Retry governs download attempts. Downloads get their own budget rather than the
+	// API's: re-transferring a multi-gigabyte body is not the same kind of cheap as
+	// re-issuing a 2 KB query.
+	Retry retry.Policy
+
 	// Manifest is consulted for reporting only; a run never writes it.
 	Manifest manifest.Manifest
 }
@@ -173,6 +179,9 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 	if opts.Concurrency < 1 {
 		opts.Concurrency = 1
 	}
+	if opts.Retry.Attempts < 1 {
+		opts.Retry = retry.Policy{Attempts: 2, Base: 2 * time.Second}
+	}
 	if opts.OnlyGlob != "" {
 		if _, err := filepath.Match(opts.OnlyGlob, ""); err != nil {
 			return Report{}, fmt.Errorf("bad --only pattern %q: %w", opts.OnlyGlob, err)
@@ -213,8 +222,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		if !selected(a, opts) {
 			continue
 		}
-		prevKey, prev, hasPrev := prior.FindByAssetID(a.ID)
-		_ = prevKey
+		_, prev, hasPrev := prior.FindByAssetID(a.ID)
 		derived := cache.RelPath(a.PublisherSlug(), a.Slug())
 
 		cacheOK := func() bool {
@@ -285,6 +293,11 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 
 	// Downloads run bounded, and a failure fails its asset rather than the run: one
 	// delisted or corrupt package must not stop a 75 GB mirror.
+	// The pool stops early only for a run-fatal error: an expired session makes every
+	// remaining download pointless, while one corrupt or delisted asset does not.
+	poolCtx, cancelPool := context.WithCancel(ctx)
+	defer cancelPool()
+
 	var (
 		wg   sync.WaitGroup
 		sem  = make(chan struct{}, opts.Concurrency)
@@ -296,14 +309,33 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			if ctx.Err() != nil {
-				res.Err = ctx.Err()
+			if poolCtx.Err() != nil {
+				res.Err = poolCtx.Err()
 				done[i] = res
 				return
 			}
 			opts.Progress(fmt.Sprintf("fetching %s (%s)", res.Asset.Name, humanBytes(res.Asset.AdvertisedSize)))
-			r, warning, err := download(ctx, s, opts, res.Asset)
+			var (
+				r        resolution
+				warning  string
+				resolved bool
+			)
+			// Retry wraps the fetch and the write together, so every attempt necessarily
+			// opens a fresh temp file and a fresh hasher. Appending a retried response to
+			// a partial one would survive every guard here and then be hashed and
+			// recorded as its own truth.
+			err := retry.Do(poolCtx, opts.Retry, func(int) error {
+				var attemptErr error
+				r, warning, resolved, attemptErr = download(ctx, s, opts, res.Asset)
+				return attemptErr
+			})
 			res.Warning, res.Err = warning, err
+			if err == nil && !resolved {
+				// A republish mid-download: nothing was stored, and the next run picks up
+				// the new build. Not a failure.
+				done[i] = res
+				return
+			}
 			if err == nil {
 				mu.Lock()
 				resolutions[res.Asset.ID] = r
@@ -314,6 +346,9 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 				if err := lockfile.Save(lockPath, snapshot); err != nil {
 					res.Err = fmt.Errorf("persisting progress: %w", err)
 				}
+			}
+			if errors.Is(res.Err, store.ErrExpiredSession) {
+				cancelPool()
 			}
 			done[i] = res
 		}(i, res)
@@ -362,32 +397,41 @@ func adopt(opts Options, a model.Asset, found cache.Candidate, derived string) (
 }
 
 // download fetches one asset and runs every semantic guard against the temp file before
-// committing it.
-func download(ctx context.Context, s Store, opts Options, a model.Asset) (resolution, string, error) {
+// committing it. The bool reports whether anything was stored: a republish discovered
+// mid-transfer is a warning, not a failure, and resolves nothing this run.
+func download(ctx context.Context, s Store, opts Options, a model.Asset) (resolution, string, bool, error) {
 	dl, err := s.Fetch(ctx, a.ID)
 	if err != nil {
-		return resolution{}, "", err
+		return resolution{}, "", false, err
 	}
 	defer dl.Body.Close()
 
 	pending, err := cache.Store(opts.LibraryRoot, a.PublisherSlug(), a.Slug(), dl.Body)
 	if err != nil {
-		return resolution{}, "", err
+		return resolution{}, "", false, err
 	}
 
 	meta, metaErr := unitypackage.ReadFile(pending.TempPath())
 	switch {
 	case metaErr != nil && !errors.Is(metaErr, unitypackage.ErrNoMetadata):
 		pending.Discard()
-		return resolution{}, "", fmt.Errorf("%s: %w", a.Name, metaErr)
+		return resolution{}, "", false, retry.Permanent(fmt.Errorf("%s: %w", a.Name, metaErr))
 	case metaErr == nil && meta.ID != a.ID:
 		pending.Discard()
-		return resolution{}, "", fmt.Errorf("%s: the store served product %s, not %s", a.Name, meta.ID, a.ID)
+		return resolution{}, "", false, retry.Permanent(
+			fmt.Errorf("%s: the store served product %s, not %s", a.Name, meta.ID, a.ID))
 	}
 
 	var warning string
-	if metaErr != nil {
+	switch {
+	case metaErr != nil:
 		warning = fmt.Sprintf("%s: package carries no store metadata, so later checks fall back to size alone", a.Name)
+	case meta.VersionID != a.Version.ID:
+		// Steady state for a few products: the store advertises one build and serves
+		// another. Both ids are recorded; the run says so once rather than silently
+		// papering over the difference.
+		warning = fmt.Sprintf("%s: store advertises version %s but served %s; both recorded",
+			a.Name, a.Version.ID, meta.VersionID)
 	}
 
 	if belowFloor(pending.Size, a.AdvertisedSize) {
@@ -395,10 +439,12 @@ func download(ctx context.Context, s Store, opts Options, a model.Asset) (resolu
 		// advertised size out from under us. One re-read of this product settles it.
 		if republished(ctx, s, a) {
 			pending.Discard()
-			return resolution{}, "", fmt.Errorf("%s: republished mid-download; the next run will fetch the new build", a.Name)
+			return resolution{}, fmt.Sprintf(
+				"%s: republished mid-download; nothing stored, the next run will fetch the new build",
+				a.Name), false, nil
 		}
 		pending.Discard()
-		return resolution{}, "", fmt.Errorf("%s: received %d bytes against an advertised %d; body ended early",
+		return resolution{}, "", false, fmt.Errorf("%s: received %d bytes against an advertised %d; body ended early",
 			a.Name, pending.Size, a.AdvertisedSize)
 	}
 	if a.AdvertisedSize > 0 && (pending.Size > a.AdvertisedSize || pending.Size < a.AdvertisedSize-64) {
@@ -406,7 +452,7 @@ func download(ctx context.Context, s Store, opts Options, a model.Asset) (resolu
 	}
 
 	if err := pending.Commit(); err != nil {
-		return resolution{}, warning, err
+		return resolution{}, warning, false, err
 	}
 	return resolution{
 		cachePath:          pending.RelPath,
@@ -416,7 +462,7 @@ func download(ctx context.Context, s Store, opts Options, a model.Asset) (resolu
 		deliveredVersionID: meta.VersionID,
 		downloadedAt:       opts.Now().UTC().Format(time.RFC3339),
 		storeFilename:      dl.Filename,
-	}, warning, nil
+	}, warning, true, nil
 }
 
 // belowFloor is the hard short-body rule. The tolerance is absolute because the gap it

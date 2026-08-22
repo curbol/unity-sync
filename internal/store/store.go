@@ -269,13 +269,28 @@ type graphQLError struct {
 
 func (c *Client) search(ctx context.Context, vars map[string]any) (searchResult, error) {
 	var out searchResult
+	var csrfRetried bool
 	err := retry.Do(ctx, c.retries, func(int) error {
 		res, err := c.searchOnce(ctx, vars)
-		if err != nil {
-			return err
+		if err == nil {
+			out = res
+			return nil
 		}
-		out = res
-		return nil
+		// A stale token is worth exactly one more go: re-bootstrap and retry, since the
+		// token can expire between the bootstrap and the call that uses it. A second
+		// mismatch is a real problem and is reported.
+		if errors.Is(err, ErrCSRF) && !csrfRetried {
+			csrfRetried = true
+			if boot := c.Bootstrap(ctx); boot != nil {
+				return retry.Permanent(err)
+			}
+			res, err = c.searchOnce(ctx, vars)
+			if err == nil {
+				out = res
+				return nil
+			}
+		}
+		return err
 	})
 	return out, err
 }
@@ -375,6 +390,7 @@ func (c *Client) Fetch(ctx context.Context, id string) (*Download, error) {
 	req.Header.Set("User-Agent", c.agent)
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Referer", c.base+"/")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
 	req.Header.Set("Cookie", c.cookie)
 	// Asking for identity is not hygiene: the endpoint honours Accept-Encoding: gzip by
 	// gzipping the already-gzipped package, and Go does not transparently decode an

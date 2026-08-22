@@ -174,19 +174,3 @@ func join(pairs map[string]string) string {
 	}
 	return b.String()
 }
-
-// WithCSRF returns header with its _csrf cookie replaced by token, adding it when
-// absent. A pasted session usually carries a stale _csrf, and sending two would leave
-// the store matching the header against whichever it picked.
-func WithCSRF(header, token string) string {
-	pairs := map[string]string{}
-	for _, part := range strings.Split(header, ";") {
-		name, value, ok := strings.Cut(strings.TrimSpace(part), "=")
-		if !ok || name == "" {
-			continue
-		}
-		pairs[name] = value
-	}
-	pairs["_csrf"] = token
-	return join(pairs)
-}

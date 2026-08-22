@@ -16,6 +16,11 @@ import (
 // identifies the grant, not the asset, and no code path in this tool uses it.
 const entitlementField = "id"
 
+// unusedImageFields are image sizes the captures carry but the pinned query does not
+// request. Dropping them keeps a fixture shaped exactly like a real response to the
+// query the client actually sends.
+var unusedImageFields = []string{"icon", "big", "small", "facebook"}
+
 // Scrub rewrites one captured `searchMyAssets` batch response into fixture form,
 // preserving key order-independent structure and stable indentation so the committed
 // file diffs cleanly. It fails rather than guessing when the payload is not the batch
@@ -39,6 +44,13 @@ func Scrub(raw []byte) ([]byte, error) {
 				return nil, fmt.Errorf("result row is %T, want object", row)
 			}
 			delete(m, entitlementField)
+			if product, ok := m["product"].(map[string]any); ok {
+				if img, ok := product["mainImage"].(map[string]any); ok {
+					for _, f := range unusedImageFields {
+						delete(img, f)
+					}
+				}
+			}
 		}
 	}
 	var out bytes.Buffer

@@ -41,7 +41,7 @@ func TestCommittedFixturesCarryNoAccountData(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		if d.IsDir() || !strings.HasSuffix(path, ".json") {
+		if d.IsDir() {
 			return nil
 		}
 		seen++
@@ -66,6 +66,6 @@ func TestCommittedFixturesCarryNoAccountData(t *testing.T) {
 		t.Fatalf("walk testdata: %v", err)
 	}
 	if seen == 0 {
-		t.Fatal("no JSON fixtures found; the guard would pass vacuously")
+		t.Fatal("no fixtures found; the guard would pass vacuously")
 	}
 }

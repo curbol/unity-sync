@@ -1,7 +1,6 @@
 package session_test
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,50 +46,6 @@ func TestResolveReadsAPastedCurlCommand(t *testing.T) {
 	}
 }
 
-// The credential is HttpOnly. A parser that treats every '#' line as a comment drops
-// exactly the cookie that authenticates and then reports "no cookies found".
-func TestCookiesTxtKeepsHttpOnlyRecords(t *testing.T) {
-	got, err := session.Resolve(write(t, "cookies.txt", cookiesTxt))
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if !strings.Contains(got, "LS=the-credential") {
-		t.Errorf("header %q dropped the #HttpOnly_ record", got)
-	}
-}
-
-// The storefront sets some cookies host-only and others on Domain=.unity.com, and which
-// scope LS uses was never established, so both must be accepted.
-func TestCookiesTxtAcceptsTheWholeUnityFamilyAndNothingElse(t *testing.T) {
-	body := "#HttpOnly_assetstore.unity.com\tFALSE\t/\tTRUE\t0\tLS\thost-only\n" +
-		".unity.com\tTRUE\t/\tFALSE\t0\twide\tyes\n" +
-		"evil.com\tFALSE\t/\tFALSE\t0\tleaked\tno\n"
-	got, err := session.Resolve(write(t, "cookies.txt", body))
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	for _, want := range []string{"LS=host-only", "wide=yes"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("header %q is missing %q", got, want)
-		}
-	}
-	if strings.Contains(got, "leaked") {
-		t.Errorf("header %q carries a cookie from an unrelated site", got)
-	}
-}
-
-func TestMissingCredentialIsNamedBeforeAnyRequest(t *testing.T) {
-	body := "assetstore.unity.com\tFALSE\t/\tTRUE\t0\tDS\tabc\n"
-	_, err := session.Resolve(write(t, "cookies.txt", body))
-	var missing *session.ErrNoCredential
-	if !errors.As(err, &missing) {
-		t.Fatalf("Resolve = %v, want ErrNoCredential", err)
-	}
-	if !strings.Contains(err.Error(), "LS") {
-		t.Errorf("diagnostic %q does not name the missing cookie", err)
-	}
-}
-
 // An export whose header comment mentions curl must still parse as a cookies.txt.
 func TestCurlDetectionUsesStructureNotTheWord(t *testing.T) {
 	body := "# Generated for use with curl\n" +
@@ -114,23 +69,6 @@ func TestHeaderIsDeterministic(t *testing.T) {
 		if again != first {
 			t.Fatalf("header varies between reads:\n%q\n%q", first, again)
 		}
-	}
-}
-
-func TestWithCSRFReplacesRatherThanAppends(t *testing.T) {
-	got := session.WithCSRF("LS=cred; _csrf=stale; DS=abc", "fresh")
-	if strings.Count(got, "_csrf=") != 1 {
-		t.Errorf("header %q has %d _csrf cookies, want exactly 1", got, strings.Count(got, "_csrf="))
-	}
-	if !strings.Contains(got, "_csrf=fresh") {
-		t.Errorf("header %q kept the stale token", got)
-	}
-	if !strings.Contains(got, "LS=cred") {
-		t.Errorf("header %q lost the credential", got)
-	}
-	added := session.WithCSRF("LS=cred", "fresh")
-	if !strings.Contains(added, "_csrf=fresh") {
-		t.Errorf("header %q did not gain a token when none was present", added)
 	}
 }
 

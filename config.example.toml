@@ -1,0 +1,25 @@
+# Example USER config. Copy to your config dir and edit (all keys optional):
+#
+#   mkdir -p ~/.config/unity-sync
+#   cp config.example.toml ~/.config/unity-sync/config.toml
+#
+# Config dir resolution: --config <dir> > $UNITY_SYNC_CONFIG_DIR >
+# $XDG_CONFIG_HOME/unity-sync > ~/.config/unity-sync.
+#
+# This file is user-scoped: session and machine defaults. Which assets a project mirrors
+# is project-scoped and lives in unity-sync.toml instead.
+
+# Where your saved session lives: a pasted-curl file or a cookies.txt export. If unset,
+# unity-sync looks for session.curl or cookies.txt in this config dir.
+#
+# There is no browser option. The cookie the store checks is a session cookie that never
+# reaches a browser's cookie database, so reading one could not authenticate.
+# session_source = "~/.config/unity-sync/session.curl"
+
+# Where packages are cached. Default: $XDG_DATA_HOME/unity-sync
+# (~/.local/share/unity-sync). Or set UNITY_SYNC_LIBRARY / pass --library.
+# library_path = "/path/to/your/unity-library"
+
+# Max simultaneous downloads. Packages here reach 23 GB and the store is someone else's
+# infrastructure, so this is deliberately small.
+concurrency = 2

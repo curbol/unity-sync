@@ -1,0 +1,17 @@
+# Example PROJECT manifest. Commit this (as unity-sync.toml) in the repo that consumes the
+# assets. unity-sync finds it by walking up from the working directory, or point at it
+# with --manifest. Its lockfile is written beside it as unity-sync.lock.json.
+#
+# This file is project-scoped and carries no account identity: your session stays in the
+# user config (~/.config/unity-sync/config.toml).
+#
+# `unity-sync select` manages these entries through a local page; hand-editing is fine.
+# New assets land disabled, so buying one never downloads it behind your back.
+#
+# Entries key on `id`, not `name`: a publisher renaming their asset must not silently
+# deselect it.
+
+# [[asset]]
+#   id = "115488"
+#   name = "Quick Outline"
+#   enabled = true

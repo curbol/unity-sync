@@ -1,0 +1,16 @@
+query SearchMyAssets($page: Int, $pageSize: Int, $ids: [String!]) {
+  searchMyAssets(page: $page, pageSize: $pageSize, ids: $ids) {
+    total
+    results {
+      product {
+        id
+        name
+        state
+        downloadSize
+        currentVersion { id name publishedDate }
+        publisher { id name }
+        mainImage { icon75 }
+      }
+    }
+  }
+}

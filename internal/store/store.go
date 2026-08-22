@@ -49,11 +49,12 @@ var (
 	ErrNotDownloadable = errors.New("asset is not downloadable")
 )
 
-// searchDocument is pinned. Its field set is the tool's contract with the store, and it
+// SearchDocument is pinned. Its field set is the tool's contract with the store, and it
 // deliberately omits the per-row entitlement id and every other account-identifying
 // field the API would return if asked. currentVersion.id is mandatory: it is the diff
-// key, and losing it silently would break every classification.
-const searchDocument = `query SearchMyAssets($page: Int, $pageSize: Int, $ids: [String!]) {
+// key, and losing it silently would break every classification. It is exported so a
+// golden test can compare the whole document, not a substring of it.
+const SearchDocument = `query SearchMyAssets($page: Int, $pageSize: Int, $ids: [String!]) {
   searchMyAssets(page: $page, pageSize: $pageSize, ids: $ids) {
     total
     results {
@@ -297,7 +298,7 @@ func (c *Client) search(ctx context.Context, vars map[string]any) (searchResult,
 
 func (c *Client) searchOnce(ctx context.Context, vars map[string]any) (searchResult, error) {
 	body, err := json.Marshal([]map[string]any{{
-		"query":         searchDocument,
+		"query":         SearchDocument,
 		"variables":     vars,
 		"operationName": "SearchMyAssets",
 	}})

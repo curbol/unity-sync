@@ -1,6 +1,7 @@
 package syncer
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/curbol/unity-sync/internal/cache"
 	"github.com/curbol/unity-sync/internal/lockfile"
 	"github.com/curbol/unity-sync/internal/model"
 	"github.com/curbol/unity-sync/internal/store"
@@ -215,5 +217,80 @@ func TestPreDownloadFailureWritesNoLockfileAtAll(t *testing.T) {
 	}
 	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
 		t.Error("a failure before any download still created a lockfile")
+	}
+}
+
+// The gate the whole adopt design rests on. A file that really is this product, but a
+// different build than the store now advertises, must not be adopted: a wrong adopt is
+// silent and permanent, where a redundant download is loud and self-correcting.
+func TestAdoptRefusesACandidateFromAnotherVersion(t *testing.T) {
+	root, lockPath := newRun(t)
+	a := asset("1", "Asset", "v2", 500)
+
+	// On disk: the right product, stamped with the previous build.
+	p, err := cache.Store(root, a.PublisherSlug(), a.Slug(), bytes.NewReader(pkg(t, "1", "v1", 500)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	fs := &fakeStore{owned: []model.Asset{a}, bodies: map[string][]byte{"1": pkg(t, "1", "v2", 500)}}
+	rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, opts(root, allSelected(a)))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep.Results[0].Class == Adopted {
+		t.Fatal("adopted a package stamped with a different version than the store advertises")
+	}
+	if len(fs.fetched) != 1 {
+		t.Errorf("fetched %v, want the asset re-downloaded instead of adopted", fs.fetched)
+	}
+	_, e, _ := rep.Lockfile.FindByAssetID("1")
+	if e.DeliveredVersionID != "v2" {
+		t.Errorf("deliveredVersionId = %q, want the freshly downloaded build", e.DeliveredVersionID)
+	}
+}
+
+// Adoption exists for a file that is not where the current layout would put it, so the
+// relocation half needs its own coverage: live QA cannot reach it, because its subject
+// already sits at the derived path where relocation is a deliberate no-op.
+func TestAdoptRelocatesACandidateFoundOffTheDerivedPath(t *testing.T) {
+	root, lockPath := newRun(t)
+	a := asset("1", "Renamed Asset", "v1", 500)
+
+	// The package sits under a stale slug, as it would after an upstream rename.
+	stale, err := cache.Store(root, a.PublisherSlug(), "old-slug-1", bytes.NewReader(pkg(t, "1", "v1", 500)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stale.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	fs := &fakeStore{owned: []model.Asset{a}}
+	rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, opts(root, allSelected(a)))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep.Results[0].Class != Adopted {
+		t.Fatalf("class = %v, want Adopted", rep.Results[0].Class)
+	}
+	if len(fs.fetched) != 0 {
+		t.Errorf("adoption downloaded %v", fs.fetched)
+	}
+
+	derived := cache.RelPath(a.PublisherSlug(), a.Slug())
+	_, e, _ := rep.Lockfile.FindByAssetID("1")
+	if e.CachePath != derived {
+		t.Errorf("cachePath = %q, want the derived path %q — a legacy path would keep quarry's "+
+			"facets on the old name and strand the file at the next version bump", e.CachePath, derived)
+	}
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(derived))); err != nil {
+		t.Errorf("the adopted file was not moved: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, a.PublisherSlug(), "old-slug-1")); !os.IsNotExist(err) {
+		t.Error("the emptied source directory survived the adopt")
 	}
 }

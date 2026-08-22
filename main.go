@@ -18,6 +18,7 @@ import (
 	"github.com/curbol/unity-sync/internal/config"
 	"github.com/curbol/unity-sync/internal/lockfile"
 	"github.com/curbol/unity-sync/internal/manifest"
+	"github.com/curbol/unity-sync/internal/model"
 	"github.com/curbol/unity-sync/internal/selfupdate"
 	"github.com/curbol/unity-sync/internal/session"
 	"github.com/curbol/unity-sync/internal/store"
@@ -185,7 +186,14 @@ func resolveSession(cfg config.Config, configDir string) (string, error) {
 	return session.Resolve(src)
 }
 
-func selectAssets(ctx context.Context, client *store.Client, manifestPath, addr string) error {
+// enumerator is the slice of the store client that `select` needs. Narrowing it here lets
+// the command be driven by a fake in tests, which is the only way its happy path gets
+// covered at all: everything above it needs a live session.
+type enumerator interface {
+	Enumerate(ctx context.Context) ([]model.Asset, error)
+}
+
+func selectAssets(ctx context.Context, client enumerator, manifestPath, addr string) error {
 	m, err := manifest.Load(manifestPath)
 	if err != nil {
 		return err
@@ -213,7 +221,7 @@ func selectAssets(ctx context.Context, client *store.Client, manifestPath, addr 
 	return nil
 }
 
-func syncOrStatus(ctx context.Context, client *store.Client, cfg config.Config,
+func syncOrStatus(ctx context.Context, client syncer.Store, cfg config.Config,
 	manifestPath, lockPath, only string, verify, dry bool) (int, error) {
 
 	m, err := manifest.Load(manifestPath)

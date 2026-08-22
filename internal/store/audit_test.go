@@ -5,6 +5,8 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -190,5 +192,22 @@ func TestSlowBodyIsAllowedButSlowHeadersAreNot(t *testing.T) {
 	}, store.WithResponseHeaderTimeout(50*time.Millisecond))
 	if _, err := slowHeaders.Fetch(context.Background(), "1"); err == nil {
 		t.Error("Fetch waited indefinitely for headers")
+	}
+}
+
+// The pinned document is the tool's contract with the store, and every field in it is
+// load-bearing: losing currentVersion.id would break every classification silently, and
+// adding a field back would start requesting account data the tool has no use for. A
+// substring check would miss both, so the whole document is golden.
+func TestQueryDocumentMatchesItsGoldenCopy(t *testing.T) {
+	want, err := os.ReadFile(filepath.Join("testdata", "search_query.graphql"))
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+	if store.SearchDocument != string(want) {
+		t.Errorf("the pinned query document changed.\n--- got ---\n%s\n--- want ---\n%s\n"+
+			"If this change is intended, update testdata/search_query.graphql and say why in the "+
+			"commit: the field set is a privacy boundary as well as a correctness one.",
+			store.SearchDocument, want)
 	}
 }

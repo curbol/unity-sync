@@ -90,8 +90,8 @@ unity-sync list     # print the current lockfile
 ```
 
 Useful flags: `--manifest <path>`, `--only <asset-slug-glob>`, `--library <dir>`,
-`--concurrency <n>`, `--verify`, `--config <dir>`, `--session <file>`,
-`--addr <host:port>` (the `select` page's address).
+`--concurrency <n>`, `--verify`, `--dry-run` (makes `sync` behave like `status`),
+`--config <dir>`, `--session <file>`, `--addr <host:port>` (the `select` page's address).
 
 ## Selecting assets
 

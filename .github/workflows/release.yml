@@ -1,0 +1,74 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  check-branch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Verify tag is on main
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor ${{ github.sha }} origin/main || {
+            echo "Error: tag must point to a commit on main"
+            exit 1
+          }
+
+  test:
+    needs: check-branch
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - name: Get version from tag
+        id: version
+        run: echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build release artifacts
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
+        run: |
+          mkdir -p dist
+
+          platforms=(
+            "darwin/amd64/mac-intel"
+            "darwin/arm64/mac-apple"
+            "linux/amd64/linux-intel"
+            "linux/arm64/linux-arm64"
+            "windows/amd64/win"
+          )
+
+          for p in "${platforms[@]}"; do
+            IFS='/' read -r goos goarch label <<< "$p"
+            bin="unity-sync"
+            if [ "$goos" = "windows" ]; then bin="unity-sync.exe"; fi
+
+            CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build \
+              -ldflags "-X main.version=${VERSION}" \
+              -o "dist/$bin" .
+            (cd dist && zip "unity-sync-${VERSION}-${label}.zip" "$bin" && rm "$bin")
+          done
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/*.zip

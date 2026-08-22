@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Called by release.yml as its gate, so the bar for tagging is exactly the bar for
+  # merging rather than a second copy that drifts.
+  workflow_call:
+
+permissions:
+  contents: read
+
+# A push to a PR branch would otherwise run twice, and superseded runs on the same ref
+# are pointless once a newer commit exists.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+
+      - run: go build ./...
+
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - run: go vet ./...
+
+      # The syncer fans out downloads under a semaphore and persists the lockfile from
+      # each goroutine, so the suite is worth running under the detector. No network and
+      # no session are needed: everything runs against httptest servers and the
+      # committed, scrubbed fixtures.
+      - run: go test -race ./...

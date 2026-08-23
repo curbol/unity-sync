@@ -159,6 +159,31 @@ it was a republish. It is deliberately *not* "the delivered id differs from the 
 id", which is a steady state for some products and would switch the floor off permanently
 for exactly them.
 
+## Adoption
+
+A package can be on disk with no lockfile resolution behind it: the lockfile was deleted,
+the asset was mirrored on another machine, or a rename moved the path out from under the
+record. Rather than re-fetching gigabytes, a run scans the library for a file whose own
+descriptor claims that product and adopts it — recording its size, digest and delivered
+version id, and moving it to the path the current layout dictates before recording it,
+so quarry's facets and the lockfile agree.
+
+Three gates keep adoption from laundering a bad file into the cache. The descriptor's
+product id must match. Its version id must match what the store currently advertises, so a
+stale build cannot be recorded as current. And the file must clear the same size floor a
+download must clear, because that is the one route into the cache that skips the download
+guards entirely.
+
+A file that just failed verification is excluded from the scan. A truncation or a mid-file
+flip leaves the descriptor intact and a small truncation clears the floor, so without that
+exclusion the damaged bytes would be re-hashed and their digest recorded as the asset's
+truth — the precise outcome every other guard exists to prevent.
+
+Nothing deletes a package the tool mirrored, with one exception: when a download lands at
+a different derived path than the entry's previous one, the superseded copy of that same
+asset is removed. That is not the de-owned case, which is reported and left in place; it
+is the asset's own prior build, and the cache holds only current versions.
+
 ## Failure model
 
 | Observation | Meaning |

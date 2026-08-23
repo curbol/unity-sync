@@ -143,9 +143,11 @@ re-fetches anything missing or failing its check. Deleting the cache and re-sync
 rebuilds it. Durability of the assets you actually ship belongs in the consuming project,
 not here.
 
-unity-sync never deletes a package it mirrored. When an asset leaves your account, its
-entry drops out of the lockfile and the run tells you which file is now unreferenced, so
-you can decide.
+When an asset leaves your account, unity-sync does not delete anything: its entry drops
+out of the lockfile and the run tells you which file is now unreferenced, so you can
+decide. The one thing a run does remove is an asset's own superseded copy — if a package
+you already mirror is renamed and updated in the same run, the new build lands at the new
+path and the old one is cleaned up rather than left as a duplicate.
 
 ## Browsing what you have
 

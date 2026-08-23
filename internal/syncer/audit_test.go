@@ -14,6 +14,7 @@ import (
 	"github.com/curbol/unity-sync/internal/cache"
 	"github.com/curbol/unity-sync/internal/lockfile"
 	"github.com/curbol/unity-sync/internal/model"
+	"github.com/curbol/unity-sync/internal/retry"
 	"github.com/curbol/unity-sync/internal/store"
 )
 
@@ -481,4 +482,39 @@ func TestDownloadWarnings(t *testing.T) {
 			t.Errorf("warning = %q, want it to report the received count", rep.Results[0].Warning)
 		}
 	})
+}
+
+// Retrying either of these wastes a backoff on something a second attempt cannot fix, and
+// the waste is invisible: the run still ends the same way, just later.
+func TestPermanentDownloadFailuresAreNotRetried(t *testing.T) {
+	for name, sentinel := range map[string]error{
+		"pulled asset":    store.ErrNotDownloadable,
+		"expired session": store.ErrExpiredSession,
+	} {
+		t.Run(name, func(t *testing.T) {
+			root, lockPath := newRun(t)
+			a := asset("1", "Asset", "v1", 500)
+			fs := &fakeStore{owned: []model.Asset{a}, fetchEr: map[string]error{"1": sentinel}}
+
+			o := opts(root, allSelected(a))
+			o.Retry = retryPolicyWithAttempts(3)
+
+			rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, o)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if len(fs.fetched) != 1 {
+				t.Errorf("fetched %d times, want exactly 1: %v cannot be fixed by trying again",
+					len(fs.fetched), sentinel)
+			}
+			if rep.Results[0].Err == nil {
+				t.Error("the failure was swallowed")
+			}
+		})
+	}
+}
+
+// retryPolicyWithAttempts gives a test a real attempt budget without real sleeping.
+func retryPolicyWithAttempts(n int) retry.Policy {
+	return retry.Policy{Attempts: n, Base: time.Millisecond, Sleep: func(time.Duration) {}}
 }

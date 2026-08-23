@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -346,7 +347,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 			// recorded as its own truth.
 			err := retry.Do(poolCtx, opts.Retry, func(int) error {
 				var attemptErr error
-				r, warning, resolved, attemptErr = download(ctx, s, opts, res.Asset)
+				r, warning, resolved, attemptErr = download(poolCtx, s, opts, res.Asset)
 				// Neither of these improves on a second attempt: the asset is gone, or
 				// the session is.
 				if errors.Is(attemptErr, store.ErrExpiredSession) ||
@@ -441,7 +442,16 @@ func download(ctx context.Context, s Store, opts Options, a model.Asset) (resolu
 	}
 	defer dl.Body.Close()
 
-	pending, err := cache.Store(opts.LibraryRoot, a.PublisherSlug(), a.Slug(), dl.Body)
+	// A 23 GB package would otherwise report nothing between "fetching" and "done", so
+	// progress is counted off the body as it streams rather than announced up front.
+	body := &progressReader{
+		r:     dl.Body,
+		total: a.AdvertisedSize,
+		report: func(read, total int64) {
+			opts.Progress(fmt.Sprintf("  %s: %s", a.Name, progressLine(read, total)))
+		},
+	}
+	pending, err := cache.Store(opts.LibraryRoot, a.PublisherSlug(), a.Slug(), body)
 	if err != nil {
 		return resolution{}, "", false, err
 	}
@@ -622,4 +632,31 @@ func humanBytes(n int64) string {
 		exp++
 	}
 	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "kMGT"[exp])
+}
+
+// progressReader reports how far a transfer has got, at most once a second, so a
+// multi-gigabyte download is visibly alive without flooding the terminal.
+type progressReader struct {
+	r      io.Reader
+	total  int64
+	read   int64
+	last   time.Time
+	report func(read, total int64)
+}
+
+func (p *progressReader) Read(b []byte) (int, error) {
+	n, err := p.r.Read(b)
+	p.read += int64(n)
+	if now := time.Now(); now.Sub(p.last) >= time.Second {
+		p.last = now
+		p.report(p.read, p.total)
+	}
+	return n, err
+}
+
+func progressLine(read, total int64) string {
+	if total <= 0 {
+		return humanBytes(read)
+	}
+	return fmt.Sprintf("%s of %s (%d%%)", humanBytes(read), humanBytes(total), read*100/total)
 }

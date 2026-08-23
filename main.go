@@ -287,6 +287,14 @@ func printReport(w io.Writer, rep syncer.Report, dry bool, libraryPath string) {
 			fmt.Fprintf(w, "failed: %s: %v\n", r.Asset.Name, r.Err)
 		}
 	}
+	// A tally of one among hundreds of owned assets does not tell the user which package
+	// the store stopped serving, and that is the only thing they can act on.
+	for _, r := range rep.Results {
+		if r.Class == syncer.Undownloadable {
+			fmt.Fprintf(w, "delisted, cannot be downloaded: %s (%s), state %s\n",
+				r.Asset.Name, r.Asset.ID, r.Asset.State)
+		}
+	}
 	// A dropped asset leaves its bytes on disk; the summary names them so the user can
 	// decide. Losing ownership of an asset never deletes its package; the only copy a run
 	// removes is an asset's own superseded build after a rename moved its path.

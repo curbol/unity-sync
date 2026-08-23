@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/curbol/unity-sync/internal/manifest"
+	"github.com/curbol/unity-sync/internal/model"
+	"github.com/curbol/unity-sync/internal/syncer"
 )
 
 // Failure models the CLI must keep pinned: ways a command could do something other than
@@ -60,5 +63,27 @@ func TestMissingSessionIsExplained(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "session") {
 		t.Errorf("error %q does not mention the session", err)
+	}
+}
+
+// The class tally counts a delisted asset but cannot say which one, and which one is the
+// only part the user can act on.
+func TestTheSummaryNamesEachDelistedAsset(t *testing.T) {
+	buf := &bytes.Buffer{}
+	printReport(buf, syncer.Report{
+		Owned: 2,
+		Results: []syncer.Result{
+			{Asset: model.Asset{ID: "1", Name: "Still Fine", State: model.StatePublished}, Class: syncer.Unchanged},
+			{Asset: model.Asset{ID: "193760", Name: "Fantasy Sounds Bundle", State: model.StateDisabled}, Class: syncer.Undownloadable},
+		},
+	}, false, "/lib")
+	out := buf.String()
+	for _, want := range []string{"Fantasy Sounds Bundle", "193760", "disabled"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the summary does not name %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Still Fine") {
+		t.Errorf("the summary named an asset that is not delisted:\n%s", out)
 	}
 }

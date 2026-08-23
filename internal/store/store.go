@@ -363,8 +363,14 @@ func (c *Client) searchOnce(ctx context.Context, vars map[string]any) (searchRes
 		if resp.StatusCode == http.StatusInternalServerError && op.Errors[0].Message == "" {
 			return searchResult{}, retry.Permanent(ErrExpiredSession)
 		}
-		return searchResult{}, retry.Permanent(fmt.Errorf("store returned %s: %q",
-			op.Errors[0].ErrorCode, op.Errors[0].Message))
+		err := fmt.Errorf("store returned %s: %q", op.Errors[0].ErrorCode, op.Errors[0].Message)
+		// Only the empty-message shape is the session verdict. A server error that
+		// bothered to say what went wrong is still a server error, and the ordinary
+		// backoff applies.
+		if retry.Retryable(resp.StatusCode) {
+			return searchResult{}, err
+		}
+		return searchResult{}, retry.Permanent(err)
 	}
 	if op.Data.Search == nil {
 		return searchResult{}, retry.Permanent(fmt.Errorf("response carries neither data nor errors"))

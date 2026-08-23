@@ -241,3 +241,29 @@ func TestFetchSendsTheHeadersTheDownloadEndpointNeeds(t *testing.T) {
 		t.Errorf("Cookie %q does not carry the credential", got.Get("Cookie"))
 	}
 }
+
+// Only the empty-message shape is the session verdict. A 5xx that says what went wrong is
+// an ordinary server error, and short-circuiting it would turn a transient outage into an
+// immediate failure.
+func TestAServerErrorThatExplainsItselfStillRetries(t *testing.T) {
+	var calls int
+	c, _ := serve(t, csrfRouter(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls == 1 {
+			w.WriteHeader(http.StatusInternalServerError)
+			io.WriteString(w, `[{"data":null,"errors":[{"errorCode":"Backend","message":"upstream timeout"}]}]`)
+			return
+		}
+		io.WriteString(w, `[{"data":{"searchMyAssets":{"total":0,"results":[]}}}]`)
+	}))
+	if err := c.Bootstrap(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Enumerate(context.Background()); err != nil {
+		t.Fatalf("Enumerate = %v, want the second attempt to succeed", err)
+	}
+	if calls < 2 {
+		t.Errorf("made %d calls, want the explained 5xx to be retried", calls)
+	}
+}

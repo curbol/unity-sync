@@ -14,6 +14,9 @@
 #
 # There is no browser option. The cookie the store checks is a session cookie that never
 # reaches a browser's cookie database, so reading one could not authenticate.
+# session_source = "browser" reads a signed-in Firefox-family session store, which is the
+# only way to avoid re-pasting when the session expires. It also accepts a path to a pasted
+# curl file, a cookies.txt, a browser profile directory, or a recovery.jsonlz4.
 # session_source = "~/.config/unity-sync/session.curl"
 
 # Where packages are cached. Default: $XDG_DATA_HOME/unity-sync

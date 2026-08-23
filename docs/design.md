@@ -38,9 +38,27 @@ The GraphQL body is a batch: a JSON array of operations, answered by a positiona
 full owned list; a junk or absent `__Secure-next-auth.session-token` changes nothing;
 removing `LS` turns any user-scoped query into an HTTP 500 with an empty `GraphqlError`.
 
-`LS` is a session cookie, so it never reaches a browser's cookie database. That is why the
-only supported session sources are a pasted curl command and a `cookies.txt` export, and
-why there is no browser-reading mode: it could not work.
+`LS` is a session cookie, so it never reaches `cookies.sqlite`. It does reach a
+Firefox-family **session store**, which is a different file for a different purpose:
+Gecko's `sessionstore-backups/recovery.jsonlz4` records the cookies of every host the
+browsing session touched so the session can be restored. Measured on a real profile: `LS`
+and `_csrf` are both in there, and the two of them alone return HTTP 200 with the full
+owned list.
+
+Two properties decide what that can promise. The jar is **not tab-scoped** — on the profile
+measured, 156 of 169 cookie hosts had no tab open anywhere in the session, and
+`assetstore.unity.com` was one of them — so the credential survives closing the tab and
+lasts as long as the browsing session. And the file is rewritten **periodically**, not on
+every cookie change, so it lags a sign-in by seconds.
+
+The supported sources are therefore a session store, a pasted curl command, and a
+`cookies.txt` export. Which one a path is gets decided by reading it: a session store is
+identified by its `mozLz40\0` magic, a curl paste by its structure. Chromium keeps session
+cookies in an encrypted SQLite database instead, so it is out of scope.
+
+The session store is read narrowly on purpose. It holds credentials for every host the
+session touched, so `internal/session` filters to the `unity.com` family before anything
+leaves the package, and no cookie value is ever logged.
 
 The `_csrf` cookie is a double-submit token required by the GraphQL endpoint only. Not
 every storefront route issues it — `/` and `/publishers/{id}` answer 200 and set nothing,

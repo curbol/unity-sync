@@ -1,0 +1,2011 @@
+[
+  {
+    "data": {
+      "searchMyAssets": {
+        "results": [
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1344228",
+                "name": "1.10.4",
+                "publishedDate": "2026-08-18T02:50:14Z"
+              },
+              "downloadSize": "410768352",
+              "id": "234255",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/881019ea-8af0-4d97-910f-08f50e4e22c2.png"
+              },
+              "name": "POLYGON - Meadow Forest - Nature Biomes - 3D Environment Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1450672",
+                "name": "3.6.22",
+                "publishedDate": "2026-08-17T14:49:20Z"
+              },
+              "downloadSize": "381108720",
+              "id": "271742",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/c32b83ff-43d3-40fe-b0e2-f47f4b886bf0.png"
+              },
+              "name": "COZY: Stylized Weather 3",
+              "publisher": {
+                "id": "40676",
+                "name": "Distant Lands"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1451476",
+                "name": "1.9.2",
+                "publishedDate": "2026-08-18T10:34:11Z"
+              },
+              "downloadSize": "124330544",
+              "id": "137126",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/e895e0c0-5864-4419-b003-7dd31d90f8dc.png"
+              },
+              "name": "POLYGON - Prototype Pack - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1455206",
+                "name": "1.03",
+                "publishedDate": "2026-08-19T20:54:18Z"
+              },
+              "downloadSize": "62329520",
+              "id": "258357",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/540cf39e-7c51-4116-9cd2-e0a200ba2aa6.png"
+              },
+              "name": "STYLIZED Fantasy Forge \u0026 Armory - Low Poly 3D Art",
+              "publisher": {
+                "id": "82433",
+                "name": "Daniel Mistage"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1455240",
+                "name": "1.22",
+                "publishedDate": "2026-08-15T11:11:09Z"
+              },
+              "downloadSize": "45844352",
+              "id": "249203",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/d89ebf71-4ec1-45ef-a2fd-d23e607432d8.png"
+              },
+              "name": "STYLIZED Fantasy Armory - Low Poly 3D Art",
+              "publisher": {
+                "id": "82433",
+                "name": "Daniel Mistage"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1451246",
+                "name": "1.4.1",
+                "publishedDate": "2026-08-18T03:19:10Z"
+              },
+              "downloadSize": "118370384",
+              "id": "168372",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/842d003c-538f-4cb5-8457-4e260a04c181.png"
+              },
+              "name": "POLYGON - Particle FX Pack - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1454706",
+                "name": "1.0",
+                "publishedDate": "2022-01-16T08:28:12Z"
+              },
+              "downloadSize": "1384007920",
+              "id": "211348",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/f85b17c7-b4e2-4864-b6b9-7e7d6a91ae02.png"
+              },
+              "name": "Wyrms",
+              "publisher": {
+                "id": "10181",
+                "name": "Dmitriy Dryzhak"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1451100",
+                "name": "1.2.1",
+                "publishedDate": "2026-08-17T23:49:09Z"
+              },
+              "downloadSize": "170034608",
+              "id": "120152",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/9fa2e075-eb09-4b6b-a28f-d0faa6253007.png"
+              },
+              "name": "POLYGON - Nature Pack - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1455186",
+                "name": "1.04",
+                "publishedDate": "2026-08-19T21:09:09Z"
+              },
+              "downloadSize": "49821984",
+              "id": "260824",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/a337b2bd-7fd5-4382-b5dc-9a6759305fd1.png"
+              },
+              "name": "STYLIZED Fantasy Market - Low Poly 3D Art",
+              "publisher": {
+                "id": "82433",
+                "name": "Daniel Mistage"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1353434",
+                "name": "1.6.2",
+                "publishedDate": "2026-08-18T04:04:10Z"
+              },
+              "downloadSize": "148676576",
+              "id": "92579",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/497ec2f3-4f11-4809-a8c8-ad0690e62cfd.png"
+              },
+              "name": "POLYGON - Pirate Pack - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1451602",
+                "name": "1.2.1",
+                "publishedDate": "2026-08-18T10:34:12Z"
+              },
+              "downloadSize": "114664160",
+              "id": "156819",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/6e243fac-4f94-471a-aab5-a129fe57f0f6.png"
+              },
+              "name": "POLYGON - Starter Pack - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1450236",
+                "name": "1.4.1",
+                "publishedDate": "2026-08-17T07:33:10Z"
+              },
+              "downloadSize": "164470832",
+              "id": "143468",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/629f4436-4f44-4921-aca5-814597e682ad.png"
+              },
+              "name": "POLYGON - Modular Fantasy Hero Characters Pack - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1343060",
+                "name": "1.10.4",
+                "publishedDate": "2026-08-18T01:51:09Z"
+              },
+              "downloadSize": "261514240",
+              "id": "234254",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/1ad28ece-190c-4ef3-989a-f8d784f61c5a.png"
+              },
+              "name": "POLYGON - Swamp Marshland - Nature Biomes - 3D Environment Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1450152",
+                "name": "1.2.2",
+                "publishedDate": "2026-08-17T04:03:11Z"
+              },
+              "downloadSize": "127717968",
+              "id": "202117",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/e44eb0c6-cc18-40f4-a984-b451aa3b2847.png"
+              },
+              "name": "POLYGON - Icons Pack - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1451122",
+                "name": "1.10.5",
+                "publishedDate": "2026-08-18T02:06:10Z"
+              },
+              "downloadSize": "280778352",
+              "id": "234253",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/17df8081-ecbe-4ae9-b6d7-a9d625ab67e2.png"
+              },
+              "name": "POLYGON - Tropical Jungle - Nature Biomes - 3D Environment Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1451572",
+                "name": "1.7.1",
+                "publishedDate": "2026-08-18T15:49:18Z"
+              },
+              "downloadSize": "128628848",
+              "id": "89551",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/fa945e09-1bed-4103-9d8a-5bdd652e34cc.png"
+              },
+              "name": "POLYGON - Samurai Pack - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1450188",
+                "name": "1.6.2",
+                "publishedDate": "2026-08-17T05:18:12Z"
+              },
+              "downloadSize": "138812272",
+              "id": "83694",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/29ce21ee-922b-4328-b2f7-3f78ed670230.png"
+              },
+              "name": "POLYGON - Knights Pack - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1443860",
+                "name": "3.8.0",
+                "publishedDate": "2026-08-18T11:04:24Z"
+              },
+              "downloadSize": "15232192",
+              "id": "104017",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/380870e7-418c-439e-9631-ff31faf61238.png"
+              },
+              "name": "Polyverse Skies | Low Poly Skybox Shaders",
+              "publisher": {
+                "id": "20529",
+                "name": "BOXOPHOBIC"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1442968",
+                "name": "4.9.12",
+                "publishedDate": "2026-08-09T21:36:10Z"
+              },
+              "downloadSize": "161756256",
+              "id": "143368",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/c516c43b-9b15-4e82-bf16-e70d22fdf7cb.png"
+              },
+              "name": "Flat Kit: Toon Shading and Water",
+              "publisher": {
+                "id": "16150",
+                "name": "Dustyroom"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1346974",
+                "name": "1.6.1",
+                "publishedDate": "2026-08-17T00:18:11Z"
+              },
+              "downloadSize": "114824416",
+              "id": "97186",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/0b7ee5a6-1ed2-4cd5-b368-f446affa6775.png"
+              },
+              "name": "POLYGON - Fantasy Characters Pack - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1450234",
+                "name": "1.7.1",
+                "publishedDate": "2026-08-17T06:18:12Z"
+              },
+              "downloadSize": "121372240",
+              "id": "122084",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/6e1805c7-e18a-4ccf-9107-46f6d03e709e.png"
+              },
+              "name": "POLYGON MINI - Fantasy Character Pack - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1450036",
+                "name": "1.4.2",
+                "publishedDate": "2026-08-17T01:02:10Z"
+              },
+              "downloadSize": "119597840",
+              "id": "118399",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/07bdc399-3221-4fb3-b017-06a67fe031c3.png"
+              },
+              "name": "POLYGON - Fantasy Rivals Pack - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1344268",
+                "name": "1.4.1",
+                "publishedDate": "2026-08-17T06:33:10Z"
+              },
+              "downloadSize": "119818704",
+              "id": "96800",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/857b27ab-7c0a-4f05-b1bc-7b9a35fa054a.png"
+              },
+              "name": "POLYGON MINI - Fantasy Pack - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1343046",
+                "name": "1.5.1",
+                "publishedDate": "2026-08-18T04:34:10Z"
+              },
+              "downloadSize": "132651904",
+              "id": "85664",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/053ac792-3f6d-4ff4-ac05-d34d08ba7aa4.png"
+              },
+              "name": "POLYGON - Vikings Pack - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1446094",
+                "name": "1.6.1",
+                "publishedDate": "2026-08-13T07:00:46Z"
+              },
+              "downloadSize": "232818896",
+              "id": "224020",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/ac5c83c0-716c-4b74-b9d7-f52fad39984b.png"
+              },
+              "name": "POLYGON - Ancient Empire Pack - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1445746",
+                "name": "6.0.5",
+                "publishedDate": "2026-07-13T17:47:09Z"
+              },
+              "downloadSize": "94958240",
+              "id": "133704",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/6dd90315-d360-4f76-8069-4571aa3a9b61.png"
+              },
+              "name": "RPG VFX Bundle",
+              "publisher": {
+                "id": "28391",
+                "name": "Hovl Studio"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1450038",
+                "name": "1.12.5",
+                "publishedDate": "2026-08-17T03:33:10Z"
+              },
+              "downloadSize": "278496384",
+              "id": "164532",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/7e90c4ff-c0ef-482d-9400-4b2573657da9.png"
+              },
+              "name": "POLYGON - Fantasy Kingdom Pack - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1442862",
+                "name": "2.17",
+                "publishedDate": "2026-08-09T19:21:16Z"
+              },
+              "downloadSize": "47344",
+              "id": "282348",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/683d7f6c-b78e-4d92-80dd-2f6731547265.png"
+              },
+              "name": "RPG Animations Pack(Bundle)",
+              "publisher": {
+                "id": "99592",
+                "name": "DoubleL"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1449170",
+                "name": "1.3.4",
+                "publishedDate": "2026-08-16T21:47:09Z"
+              },
+              "downloadSize": "10914544",
+              "id": "182328",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/44005ad2-d1ab-4c3c-ba1d-57d6c25a4fde.png"
+              },
+              "name": "Grabbit - Editor Physics Transforms",
+              "publisher": {
+                "id": "36143",
+                "name": "Jungle"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1447634",
+                "name": "1.10.2",
+                "publishedDate": "2026-08-14T05:52:10Z"
+              },
+              "downloadSize": "163896224",
+              "id": "102677",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/1564c479-107d-4789-83fb-8ea4689cc39e.png"
+              },
+              "name": "POLYGON - Dungeons Pack - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1442808",
+                "name": "1.10",
+                "publishedDate": "2026-08-09T19:21:10Z"
+              },
+              "downloadSize": "297530528",
+              "id": "309179",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/4b877d35-7e95-4009-9a0c-6cf7b3c8e8e4.png"
+              },
+              "name": "RPG_Animations - Two Hand Base",
+              "publisher": {
+                "id": "99592",
+                "name": "DoubleL"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1447640",
+                "name": "1.3.2",
+                "publishedDate": "2026-08-14T05:22:11Z"
+              },
+              "downloadSize": "114301584",
+              "id": "143026",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/e21f218a-49b9-4a02-9d36-6227610d3a65.png"
+              },
+              "name": "POLYGON - Fantasy Dungeon Map - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1447646",
+                "name": "1.4.5",
+                "publishedDate": "2026-08-14T07:52:31Z"
+              },
+              "downloadSize": "186585328",
+              "id": "189093",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/0d96a9df-dcf7-4ac4-8062-a85cb18483f7.png"
+              },
+              "name": "POLYGON - Dungeon Realms Pack - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1442810",
+                "name": "1.6",
+                "publishedDate": "2026-08-09T19:36:11Z"
+              },
+              "downloadSize": "266475040",
+              "id": "309180",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/785bee30-ea83-4981-8b66-26c9c0b22c54.png"
+              },
+              "name": "RPG_Animations - Two Hand Up",
+              "publisher": {
+                "id": "99592",
+                "name": "DoubleL"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1344704",
+                "name": "6.0",
+                "publishedDate": "2026-07-19T14:48:11Z"
+              },
+              "downloadSize": "316587600",
+              "id": "183370",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/0f44cacc-0406-4a7b-bb8a-63859b223e54.png"
+              },
+              "name": "Feel",
+              "publisher": {
+                "id": "10305",
+                "name": "More Mountains"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1422362",
+                "name": "4.0.2.3",
+                "publishedDate": "2026-07-22T13:55:09Z"
+              },
+              "downloadSize": "6290368",
+              "id": "89041",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/6497b8ed-fee7-4580-9507-54690d70fec4.png"
+              },
+              "name": "Odin Inspector and Serializer",
+              "publisher": {
+                "id": "3727",
+                "name": "Sirenix"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1419322",
+                "name": "3.5.27",
+                "publishedDate": "2026-07-18T09:35:09Z"
+              },
+              "downloadSize": "256992",
+              "id": "768",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/3f104c5c-f7eb-470b-8201-168e80f305bf.png"
+              },
+              "name": "Easy Save - The Complete Save Game \u0026 Data Serializer System",
+              "publisher": {
+                "id": "486",
+                "name": "Moodkie"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1423508",
+                "name": "2.6.0",
+                "publishedDate": "2026-07-21T13:47:10Z"
+              },
+              "downloadSize": "219234432",
+              "id": "154574",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/cfa4737f-10de-4074-a1b3-8b73e9041528.png"
+              },
+              "name": "Ultimate Clean GUI Pack",
+              "publisher": {
+                "id": "18519",
+                "name": "gamevanilla"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1413752",
+                "name": "1.8.2",
+                "publishedDate": "2026-07-13T07:47:21Z"
+              },
+              "downloadSize": "124846384",
+              "id": "80585",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/952cc307-b8a3-4822-9f37-217dec345be2.png"
+              },
+              "name": "POLYGON - Adventure Pack - Art by Synty",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1393792",
+                "name": "1.0.430",
+                "publishedDate": "2026-06-23T11:24:13Z"
+              },
+              "downloadSize": "603360",
+              "id": "32416",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/cf534981-836c-4f21-a66a-f9e7e504bbf7.png"
+              },
+              "name": "DOTween Pro",
+              "publisher": {
+                "id": "1341",
+                "name": "Demigiant"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1407502",
+                "name": "1.31.1",
+                "publishedDate": "2026-06-13T19:07:09Z"
+              },
+              "downloadSize": "23164235200",
+              "id": "89126",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/fa39240f-65fb-43aa-bd99-35023d0c7112.png"
+              },
+              "name": "Total Music Collection",
+              "publisher": {
+                "id": "4078",
+                "name": "Andrew Sitkov Music"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1393790",
+                "name": "1.3.030",
+                "publishedDate": "2026-06-23T10:54:10Z"
+              },
+              "downloadSize": "243120",
+              "id": "27676",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/778803bc-a2db-49ff-92e2-609bbf31ac9f.png"
+              },
+              "name": "DOTween (HOTween v2)",
+              "publisher": {
+                "id": "1341",
+                "name": "Demigiant"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1401782",
+                "name": "1.5",
+                "publishedDate": "2026-07-01T18:58:11Z"
+              },
+              "downloadSize": "79283824",
+              "id": "309183",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/ba395a76-e85e-4d0c-b0da-07ca9d3d9f38.png"
+              },
+              "name": "RPG_Animations - Action \u0026 Dead Pose",
+              "publisher": {
+                "id": "99592",
+                "name": "DoubleL"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1389838",
+                "name": "3.0.5",
+                "publishedDate": "2026-03-20T11:41:12Z"
+              },
+              "downloadSize": "2836958224",
+              "id": "132195",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/f64a8b5f-8e7f-4728-8006-706a0515e050.png"
+              },
+              "name": "Meadow Environment - Dynamic Nature",
+              "publisher": {
+                "id": "6887",
+                "name": "NatureManufacture"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1403586",
+                "name": "2.11",
+                "publishedDate": "2026-07-03T05:10:23Z"
+              },
+              "downloadSize": "127113344",
+              "id": "15567",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/4137b417-21a8-4971-bb31-4430c32cca00.png"
+              },
+              "name": "BIRDS PACK",
+              "publisher": {
+                "id": "265",
+                "name": "PROTOFACTOR, INC"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1393638",
+                "name": "2.6.4",
+                "publishedDate": "2026-06-23T07:09:09Z"
+              },
+              "downloadSize": "135255472",
+              "id": "203178",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/247103b7-9b85-48d3-a99d-ad5fc9203d9b.png"
+              },
+              "name": "Quibli: Anime Shaders and Tools",
+              "publisher": {
+                "id": "16150",
+                "name": "Dustyroom"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1384352",
+                "name": "1.6",
+                "publishedDate": "2026-06-19T21:47:09Z"
+              },
+              "downloadSize": "179761360",
+              "id": "217205",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/ea71498b-df62-4322-ba53-9981a0b4b72b.png"
+              },
+              "name": "Ivy Studio - Procedural vine generation",
+              "publisher": {
+                "id": "6503",
+                "name": "ARTnGAME"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1394542",
+                "name": "1.3.2",
+                "publishedDate": "2026-06-24T03:42:17Z"
+              },
+              "downloadSize": "1792112",
+              "id": "159992",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/54fa1ee6-a54d-4a77-832b-588f0d5f9479.png"
+              },
+              "name": "Jupiter - Procedural Sky Shader \u0026 Day Night Cycle",
+              "publisher": {
+                "id": "17305",
+                "name": "Pinwheel Studio"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1389544",
+                "name": "32.2.2",
+                "publishedDate": "2026-06-18T21:36:11Z"
+              },
+              "downloadSize": "34980432",
+              "id": "225934",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/95be70a7-172e-4405-ba62-d873e18ab64d.png"
+              },
+              "name": "Radiant Global Illumination",
+              "publisher": {
+                "id": "15018",
+                "name": "Kronnect"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1381398",
+                "name": "6.23",
+                "publishedDate": "2026-06-11T20:21:09Z"
+              },
+              "downloadSize": "23453600",
+              "id": "158988",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/87d9a20e-2f07-4887-9f2f-619b6c1134b3.png"
+              },
+              "name": "Sprite Shaders Ultimate",
+              "publisher": {
+                "id": "45819",
+                "name": "Ekincan Tas"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1387780",
+                "name": "1.2",
+                "publishedDate": "2026-06-17T14:26:13Z"
+              },
+              "downloadSize": "68256368",
+              "id": "309181",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/9b294624-2a69-4f1c-9579-46ddac78f6de.png"
+              },
+              "name": "RPG_Animations - NPC Actions",
+              "publisher": {
+                "id": "99592",
+                "name": "DoubleL"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1383192",
+                "name": "1.6",
+                "publishedDate": "2026-06-13T10:28:11Z"
+              },
+              "downloadSize": "256785136",
+              "id": "309182",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/adbc82f3-cb1d-4c3a-86cb-8cf7d16df4b5.png"
+              },
+              "name": "RPG_Animations - Torch,Lantern,Enemy Attack,Hit,Magic",
+              "publisher": {
+                "id": "99592",
+                "name": "DoubleL"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1388338",
+                "name": "4.4.2",
+                "publishedDate": "2026-06-18T00:56:22Z"
+              },
+              "downloadSize": "14146000",
+              "id": "230509",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/99964151-b71a-450b-9a26-60569b0bcac0.png"
+              },
+              "name": "Flexalon Pro: 3D \u0026 UI Layouts",
+              "publisher": {
+                "id": "72095",
+                "name": "Virtual Maker"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1349310",
+                "name": "1.6",
+                "publishedDate": "2026-05-28T12:12:10Z"
+              },
+              "downloadSize": "3503953968",
+              "id": "229460",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/8f75c6cd-a955-487c-9466-922b4ea7b737.png"
+              },
+              "name": "6200 Fantasy RPG Icons Pack",
+              "publisher": {
+                "id": "41787",
+                "name": "CraftPix"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1378814",
+                "name": "1.0.2",
+                "publishedDate": "2026-06-09T14:17:10Z"
+              },
+              "downloadSize": "5485024",
+              "id": "148408",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/8834c4b6-04b5-4223-868f-d74058652051.png"
+              },
+              "name": "IK Helper Tool",
+              "publisher": {
+                "id": "36307",
+                "name": "Kevin Iglesias"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1373424",
+                "name": "2.02",
+                "publishedDate": "2026-06-04T04:06:11Z"
+              },
+              "downloadSize": "10904544",
+              "id": "194727",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/d8e0529c-9387-485f-9ae8-cc36be902091.png"
+              },
+              "name": "Pixelate - Pixel Art Converter",
+              "publisher": {
+                "id": "42030",
+                "name": "Tom Black"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1361204",
+                "name": "1.9",
+                "publishedDate": "2026-05-23T07:57:09Z"
+              },
+              "downloadSize": "199251504",
+              "id": "323439",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/cd07a668-193e-4f3f-8b67-09d36cde71a5.png"
+              },
+              "name": "Base Move Animation",
+              "publisher": {
+                "id": "99592",
+                "name": "DoubleL"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1351146",
+                "name": "4.2.0",
+                "publishedDate": "2026-03-05T14:18:14Z"
+              },
+              "downloadSize": "55913936",
+              "id": "50282",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/c311904a-5d51-4ee7-aa53-89ee2b9e7022.png"
+              },
+              "name": "Turn Based Strategy Framework",
+              "publisher": {
+                "id": "17793",
+                "name": "Crooked Head"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1343516",
+                "name": "2.0",
+                "publishedDate": "2026-05-06T12:18:19Z"
+              },
+              "downloadSize": "210158944",
+              "id": "162341",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/e25b18b8-9afe-45b5-b0b3-48da849d20a4.png"
+              },
+              "name": "Human Mega Animations Pack",
+              "publisher": {
+                "id": "36307",
+                "name": "Kevin Iglesias"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1337694",
+                "name": "2.5.1",
+                "publishedDate": "2026-04-30T09:21:11Z"
+              },
+              "downloadSize": "53836656",
+              "id": "157744",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/00a7471d-99ae-4203-8316-4aefd00e3a84.png"
+              },
+              "name": "Human Basic Motions",
+              "publisher": {
+                "id": "36307",
+                "name": "Kevin Iglesias"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1353276",
+                "name": "1.2.48",
+                "publishedDate": "2026-05-15T00:08:11Z"
+              },
+              "downloadSize": "31302416",
+              "id": "135594",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/4559f61c-3507-4eec-ab7e-8f3ce317c698.png"
+              },
+              "name": "Boing Kit: Dynamic Bouncy Bones, Grass, and More",
+              "publisher": {
+                "id": "33759",
+                "name": "Long Bunny Labs"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1342458",
+                "name": "1.10",
+                "publishedDate": "2026-05-05T14:03:10Z"
+              },
+              "downloadSize": "327960496",
+              "id": "309177",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/cb4ebbe5-0725-4126-94ba-961a4eeaeb87.png"
+              },
+              "name": "RPG_Animations - One Hand Base",
+              "publisher": {
+                "id": "99592",
+                "name": "DoubleL"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1341510",
+                "name": "2.4.0",
+                "publishedDate": "2024-12-02T15:29:14Z"
+              },
+              "downloadSize": "21483104",
+              "id": "108753",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/fbefb7dc-1b57-449e-9532-39e94c8a51e4.png"
+              },
+              "name": "SC Post Effects Pack (for Unity 2020-2023)",
+              "publisher": {
+                "id": "15580",
+                "name": "Staggart Creations"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1342510",
+                "name": "1.10",
+                "publishedDate": "2026-05-06T15:51:22Z"
+              },
+              "downloadSize": "302579376",
+              "id": "309178",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/3f5aeb12-ea15-4191-8ecc-a540e22bdb0d.png"
+              },
+              "name": "RPG_Animations - One Hand Up",
+              "publisher": {
+                "id": "99592",
+                "name": "DoubleL"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1322324",
+                "name": "10.0",
+                "publishedDate": "2025-10-15T23:40:18Z"
+              },
+              "downloadSize": "258868928",
+              "id": "54733",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/f27170ce-59eb-419a-8ccc-78d7cbf232bb.png"
+              },
+              "name": "Low Poly Ultimate Pack",
+              "publisher": {
+                "id": "19123",
+                "name": "polyperfect"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1327366",
+                "name": "3.7",
+                "publishedDate": "2026-04-19T11:32:10Z"
+              },
+              "downloadSize": "38446560",
+              "id": "157187",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/e51e38cb-3dc6-4355-8a3b-94db4fae5c76.png"
+              },
+              "name": "Easy Performant Outline 2D | 3D (URP / HDRP)",
+              "publisher": {
+                "id": "21614",
+                "name": "Pirate Parrot"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1341518",
+                "name": "1.10",
+                "publishedDate": "2026-05-04T13:38:11Z"
+              },
+              "downloadSize": "245836528",
+              "id": "309184",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/2f9cbca5-c5c2-4d57-896a-76436eb458b3.png"
+              },
+              "name": "RPG_Animations - Bow",
+              "publisher": {
+                "id": "99592",
+                "name": "DoubleL"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1322240",
+                "name": "4.1.1",
+                "publishedDate": "2025-08-14T00:01:12Z"
+              },
+              "downloadSize": "130309120",
+              "id": "93089",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/65c27d72-90da-4717-adef-bb8fab369cd2.png"
+              },
+              "name": "Low Poly Animated Animals",
+              "publisher": {
+                "id": "19123",
+                "name": "polyperfect"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1321388",
+                "name": "3.02",
+                "publishedDate": "2025-11-30T17:12:33Z"
+              },
+              "downloadSize": "69129536",
+              "id": "156748",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/b4777594-7859-4ffc-ac18-19cbffad6930.png"
+              },
+              "name": "Low Poly Animated People",
+              "publisher": {
+                "id": "19123",
+                "name": "polyperfect"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1317166",
+                "name": "1.32.1",
+                "publishedDate": "2026-04-10T11:54:07Z"
+              },
+              "downloadSize": "38718320",
+              "id": "177023",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/12904059-22ab-4ec2-a022-14795e18fc7f.png"
+              },
+              "name": "Map Graph",
+              "publisher": {
+                "id": "39394",
+                "name": "Insane Scatterbrain"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1326074",
+                "name": "2.5.18",
+                "publishedDate": "2026-04-18T08:47:09Z"
+              },
+              "downloadSize": "1986960",
+              "id": "205336",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/4afcc942-a01a-44b6-9d3f-c01dc145ee03.png"
+              },
+              "name": "SensorToolkit 2",
+              "publisher": {
+                "id": "22315",
+                "name": "Micosmo"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1312902",
+                "name": "2.6.2",
+                "publishedDate": "2026-04-07T14:22:27Z"
+              },
+              "downloadSize": "96192",
+              "id": "112837",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/63934f4d-23d7-43ca-9941-fd29beaa0d15.png"
+              },
+              "name": "Asset Usage Detector",
+              "publisher": {
+                "id": "22792",
+                "name": "yasirkula"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1292966",
+                "name": "1.5",
+                "publishedDate": "2026-03-14T11:24:29Z"
+              },
+              "downloadSize": "31130656",
+              "id": "137259",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/a90f91f4-e27c-449f-be64-aa8067273389.png"
+              },
+              "name": "Quirky Series - Animals Mega Pack Vol 1",
+              "publisher": {
+                "id": "19311",
+                "name": "Omabuarts Studio"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1301960",
+                "name": "1.5",
+                "publishedDate": "2026-03-23T09:56:14Z"
+              },
+              "downloadSize": "29964416",
+              "id": "183280",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/dd9b99c6-4b76-48cb-b1a4-aa4bbff662f3.png"
+              },
+              "name": "Quirky Series - Animals Mega Pack Vol 2",
+              "publisher": {
+                "id": "19311",
+                "name": "Omabuarts Studio"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1258142",
+                "name": "1.0",
+                "publishedDate": "2026-02-12T12:50:23Z"
+              },
+              "downloadSize": "1216250880",
+              "id": "152412",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/a9f8c83e-0c18-4a35-8b23-25ec6d27db7c.png"
+              },
+              "name": "Demonic UI 8k + Icons",
+              "publisher": {
+                "id": "38930",
+                "name": "PONETI"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1234028",
+                "name": "7.2.2",
+                "publishedDate": "2026-01-20T06:43:16Z"
+              },
+              "downloadSize": "154211504",
+              "id": "63772",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/dbc04e94-67cb-42e7-87c6-819146a48967.png"
+              },
+              "name": "RPG Character Mecanim Animation Pack",
+              "publisher": {
+                "id": "3415",
+                "name": "Explosive"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1258132",
+                "name": "1.01",
+                "publishedDate": "2026-02-12T22:05:13Z"
+              },
+              "downloadSize": "610242160",
+              "id": "193841",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/3c71011f-adfe-4190-8f27-e4daa7bc3f74.png"
+              },
+              "name": "Classic Fantasy RPG - UI Kit",
+              "publisher": {
+                "id": "38930",
+                "name": "PONETI"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1267174",
+                "name": "1.6",
+                "publishedDate": "2026-02-04T10:01:06Z"
+              },
+              "downloadSize": "25414870",
+              "id": "183075",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/b2af1f9b-9e5d-41cd-8120-91af030eeb72.png"
+              },
+              "name": "Unity Learn | Foundations of Real-Time Audio | URP",
+              "publisher": {
+                "id": "1",
+                "name": "Unity Technologies"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1257540",
+                "name": "1.03",
+                "publishedDate": "2026-02-12T01:37:10Z"
+              },
+              "downloadSize": "2807614464",
+              "id": "180688",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/c2c3f43d-c445-42d6-957a-d572e631f64c.png"
+              },
+              "name": "Medieval Kingdom UI",
+              "publisher": {
+                "id": "38930",
+                "name": "PONETI"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1225076",
+                "name": "1.99",
+                "publishedDate": "2026-01-12T13:09:39Z"
+              },
+              "downloadSize": "29543760",
+              "id": "111398",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/ab225426-93f1-4771-bc6e-61c07443e66f.png"
+              },
+              "name": "Character Creator 2D",
+              "publisher": {
+                "id": "34299",
+                "name": "Simpleton"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1214888",
+                "name": "1.3",
+                "publishedDate": "2026-01-02T16:14:16Z"
+              },
+              "downloadSize": "57083264",
+              "id": "135882",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/7969defd-9f66-4bfe-971d-94ead7d16503.png"
+              },
+              "name": "Gothic UI",
+              "publisher": {
+                "id": "38930",
+                "name": "PONETI"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1216840",
+                "name": "1.2",
+                "publishedDate": "2026-01-05T09:29:12Z"
+              },
+              "downloadSize": "50304",
+              "id": "319643",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/432f1fb1-c37d-4c20-b81e-4c3686b931ca.png"
+              },
+              "name": "Easy FBX Anim Modifier",
+              "publisher": {
+                "id": "99592",
+                "name": "DoubleL"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1218204",
+                "name": "1.0",
+                "publishedDate": "2018-08-02T22:51:19Z"
+              },
+              "downloadSize": "404090272",
+              "id": "123499",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/788cfe1b-dc4c-434f-8ae0-dda3674802c6.png"
+              },
+              "name": "Citadel RPG GUI",
+              "publisher": {
+                "id": "5183",
+                "name": "Kodiak Graphics"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1215720",
+                "name": "22.1.3",
+                "publishedDate": "2025-08-05T15:08:15Z"
+              },
+              "downloadSize": "19373744",
+              "id": "134149",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/5e77cd21-c32b-437c-95a2-ff69748fd193.png"
+              },
+              "name": "Highlight Plus - All in One Outline \u0026 Selection Effects",
+              "publisher": {
+                "id": "15018",
+                "name": "Kronnect"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1156730",
+                "name": "1.0",
+                "publishedDate": "2019-12-18T08:05:10Z"
+              },
+              "downloadSize": "7021840",
+              "id": "159068",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/2deaf83f-722d-4284-bf41-841a42321cfd.png"
+              },
+              "name": "GUI Parts",
+              "publisher": {
+                "id": "38930",
+                "name": "PONETI"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1158758",
+                "name": "2.1",
+                "publishedDate": "2025-11-05T00:02:14Z"
+              },
+              "downloadSize": "383190928",
+              "id": "112002",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/3bf08591-4a60-4838-acb0-f8225b9ec6aa.png"
+              },
+              "name": "Sci-Fi Turret Constructor",
+              "publisher": {
+                "id": "12193",
+                "name": "Slava Z."
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1129684",
+                "name": "2.1.1",
+                "publishedDate": "2025-05-07T04:35:46Z"
+              },
+              "downloadSize": "6056048",
+              "id": "47302",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/89ceeeb0-f8f2-468f-8a5a-f59cc5ffb1d6.png"
+              },
+              "name": "Crossbow Warrior Mecanim Animation Pack",
+              "publisher": {
+                "id": "3415",
+                "name": "Explosive"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1106040",
+                "name": "1.0.9",
+                "publishedDate": "2025-08-29T18:56:15Z"
+              },
+              "downloadSize": "1040271056",
+              "id": "215197",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/3e3599d8-d9de-4152-92e5-46bdbfaa4706.png"
+              },
+              "name": "Toon Fantasy Nature",
+              "publisher": {
+                "id": "18116",
+                "name": "SICS Games"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1146608",
+                "name": "1.0.1",
+                "publishedDate": "2025-05-03T08:36:12Z"
+              },
+              "downloadSize": "52608",
+              "id": "190683",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/0443bc51-6608-4849-8156-e65928e46f82.png"
+              },
+              "name": "Warrior Pack Super Bundle",
+              "publisher": {
+                "id": "3415",
+                "name": "Explosive"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1129476",
+                "name": "2.6.1",
+                "publishedDate": "2025-05-07T05:05:13Z"
+              },
+              "downloadSize": "6669808",
+              "id": "35101",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/aa08f459-41e1-4ade-8e21-c09531e17655.png"
+              },
+              "name": "Karate Warrior Mecanim Animation Pack",
+              "publisher": {
+                "id": "3415",
+                "name": "Explosive"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1127882",
+                "name": "2.0.1",
+                "publishedDate": "2025-05-07T04:35:34Z"
+              },
+              "downloadSize": "6311296",
+              "id": "42286",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/e9b295a8-585f-4c4c-a045-2fa73d436c79.png"
+              },
+              "name": "2-Handed Warrior Mecanim Animation Pack",
+              "publisher": {
+                "id": "3415",
+                "name": "Explosive"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1129470",
+                "name": "2.4.1",
+                "publishedDate": "2025-05-07T04:35:40Z"
+              },
+              "downloadSize": "5948256",
+              "id": "35577",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/3fc9921f-3766-4cb4-92c8-c3d371826851.png"
+              },
+              "name": "Brute Warrior Mecanim Animation Pack",
+              "publisher": {
+                "id": "3415",
+                "name": "Explosive"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1129670",
+                "name": "2.8.1",
+                "publishedDate": "2025-05-07T10:35:17Z"
+              },
+              "downloadSize": "8427008",
+              "id": "35814",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/3b435b1d-6ddc-4691-b011-d4ea8450c163.png"
+              },
+              "name": "Sorceress Warrior Mecanim Animation Pack",
+              "publisher": {
+                "id": "3415",
+                "name": "Explosive"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1129674",
+                "name": "2.3.1",
+                "publishedDate": "2025-05-07T04:51:34Z"
+              },
+              "downloadSize": "6106288",
+              "id": "43153",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/56dc3ae6-85b5-4aae-a4f0-c44578682b85.png"
+              },
+              "name": "Swordsman Warrior Mecanim Animation Pack",
+              "publisher": {
+                "id": "3415",
+                "name": "Explosive"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1130712",
+                "name": "3.2.1",
+                "publishedDate": "2025-05-07T04:51:27Z"
+              },
+              "downloadSize": "10606272",
+              "id": "35307",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/027c15f6-ce99-4eb5-85c2-46162b04d6e8.png"
+              },
+              "name": "Ninja Warrior Mecanim Animation Pack",
+              "publisher": {
+                "id": "3415",
+                "name": "Explosive"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1127880",
+                "name": "2.2.1",
+                "publishedDate": "2025-05-07T04:35:27Z"
+              },
+              "downloadSize": "6177360",
+              "id": "41714",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/b942e066-73b9-4774-a1ad-ae92e1714e58.png"
+              },
+              "name": "Archer Warrior Mecanim Animation Pack",
+              "publisher": {
+                "id": "3415",
+                "name": "Explosive"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1129478",
+                "name": "2.7.1",
+                "publishedDate": "2025-05-07T04:51:11Z"
+              },
+              "downloadSize": "7166592",
+              "id": "38814",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/7d486bbe-371d-42c5-87fc-5586af73925f.png"
+              },
+              "name": "Knight Warrior Mecanim Animation Pack",
+              "publisher": {
+                "id": "3415",
+                "name": "Explosive"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1129472",
+                "name": "2.1.1",
+                "publishedDate": "2025-05-07T04:35:15Z"
+              },
+              "downloadSize": "6568624",
+              "id": "46860",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/512458a2-9782-40dc-a2e6-5b7895b88975.png"
+              },
+              "name": "Hammer Warrior Mecanim Animation Pack",
+              "publisher": {
+                "id": "3415",
+                "name": "Explosive"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1129480",
+                "name": "2.4.1",
+                "publishedDate": "2025-05-07T04:51:19Z"
+              },
+              "downloadSize": "6424448",
+              "id": "39519",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/acd458c4-960d-456e-a250-626bb4e0cec1.png"
+              },
+              "name": "Mage Warrior Mecanim Animation Pack",
+              "publisher": {
+                "id": "3415",
+                "name": "Explosive"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1129672",
+                "name": "2.2.1",
+                "publishedDate": "2025-05-07T04:51:29Z"
+              },
+              "downloadSize": "6182048",
+              "id": "46399",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/d2ac582e-b6d1-4997-bda3-ca1368e4516a.png"
+              },
+              "name": "Spearman Warrior Mecanim Animation Pack",
+              "publisher": {
+                "id": "3415",
+                "name": "Explosive"
+              },
+              "state": "published"
+            }
+          }
+        ],
+        "total": 176
+      }
+    }
+  }
+]

@@ -1,0 +1,1531 @@
+[
+  {
+    "data": {
+      "searchMyAssets": {
+        "results": [
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1095832",
+                "name": "4.0",
+                "publishedDate": "2025-08-06T16:53:13Z"
+              },
+              "downloadSize": "211058768",
+              "id": "64248",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/e4bf5216-4c2f-4720-940a-0f21979d149e.png"
+              },
+              "name": "Little Dragons: Tiger",
+              "publisher": {
+                "id": "16163",
+                "name": "MalberS Animations"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1113190",
+                "name": "3.5.2",
+                "publishedDate": "2025-09-10T11:12:15Z"
+              },
+              "downloadSize": "63142032",
+              "id": "266535",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/d680075a-394b-4ec6-b757-377a24ced8b8.png"
+              },
+              "name": "Body Proportions",
+              "publisher": {
+                "id": "59523",
+                "name": "OnlyNew Studio"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1080711",
+                "name": "1.0.1",
+                "publishedDate": "2025-06-23T08:52:15Z"
+              },
+              "downloadSize": "2903760",
+              "id": "148410",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/276b62dd-b4dd-4b81-a261-967e651e90fd.png"
+              },
+              "name": "RPG Poly Pack - Lite",
+              "publisher": {
+                "id": "42095",
+                "name": "Gigel3d"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1094273",
+                "name": "1.0.0",
+                "publishedDate": "2024-03-20T09:34:05Z"
+              },
+              "downloadSize": "12640",
+              "id": "262163",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/6e2d5d2a-4487-4080-a729-0938710fbe10.png"
+              },
+              "name": "UI Toolkit Bundle 1",
+              "publisher": {
+                "id": "37829",
+                "name": "KAMGAM"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1069514",
+                "name": "1.0",
+                "publishedDate": "2025-06-10T09:44:12Z"
+              },
+              "downloadSize": "159429792",
+              "id": "179083",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/31f22bf7-395a-4cbd-a20d-f52776445348.png"
+              },
+              "name": "Monsters Ultimate Pack 02 Cute Series",
+              "publisher": {
+                "id": "3867",
+                "name": "Meshtint Studio"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "637666",
+                "name": "1.6",
+                "publishedDate": "2021-08-26T15:57:14Z"
+              },
+              "downloadSize": "87409280",
+              "id": "61157",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/2e3bc354-323c-459d-baca-ac98b9e4e530.png"
+              },
+              "name": "Underwater FX",
+              "publisher": {
+                "id": "2575",
+                "name": "Rivermill Studios"
+              },
+              "state": "disabled"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "643695",
+                "name": "1.0",
+                "publishedDate": "2021-05-17T09:41:09Z"
+              },
+              "downloadSize": "121657712",
+              "id": "193760",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/1a0a6a99-02ac-488d-a385-5c41b67cfe50.png"
+              },
+              "name": "Fantasy Sounds Bundle",
+              "publisher": {
+                "id": "16881",
+                "name": "Cafofo"
+              },
+              "state": "disabled"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1078634",
+                "name": "1.0",
+                "publishedDate": "2018-10-01T13:07:06Z"
+              },
+              "downloadSize": "625728",
+              "id": "127775",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/27d23e8e-6446-4e05-8277-2a8d7b64d32f.png"
+              },
+              "name": "Low Poly Fantasy Warrior",
+              "publisher": {
+                "id": "38620",
+                "name": "asoliddev"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1058207",
+                "name": "3.42",
+                "publishedDate": "2025-05-01T21:20:15Z"
+              },
+              "downloadSize": "399312",
+              "id": "96925",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/809f22b5-3b8a-466c-ace1-13d9ae3e545f.png"
+              },
+              "name": "Smooth Sync",
+              "publisher": {
+                "id": "20301",
+                "name": "Noble Whale Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1063362",
+                "name": "2.0.0",
+                "publishedDate": "2024-04-15T22:16:13Z"
+              },
+              "downloadSize": "548052304",
+              "id": "163280",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/9d0f079a-ff91-4e84-ad85-d7e947c0f9d5.png"
+              },
+              "name": "5000 Fantasy Icons",
+              "publisher": {
+                "id": "38930",
+                "name": "PONETI"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1017477",
+                "name": "1.2.1",
+                "publishedDate": "2025-02-03T18:45:11Z"
+              },
+              "downloadSize": "5410304",
+              "id": "205222",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/9bd43fdc-bee1-4832-9f07-4e461ae6b1f2.png"
+              },
+              "name": "Pixel Art Full GUI / UI Kit + 151 icons!",
+              "publisher": {
+                "id": "5245",
+                "name": "HONETi"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1016949",
+                "name": "1.0.3",
+                "publishedDate": "2025-01-29T17:02:22Z"
+              },
+              "downloadSize": "3040904275",
+              "id": "213197",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/0f944911-416f-474a-9073-fc872015a707.png"
+              },
+              "name": "Unity Terrain - URP Demo Scene",
+              "publisher": {
+                "id": "1",
+                "name": "Unity Technologies"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1056339",
+                "name": "0.1.0",
+                "publishedDate": "2023-09-14T14:37:11Z"
+              },
+              "downloadSize": "48544",
+              "id": "262495",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/b747be4c-fca1-40b5-8f90-ad34df0f8846.png"
+              },
+              "name": "Utility USS",
+              "publisher": {
+                "id": "89401",
+                "name": "Robby K"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1030373",
+                "name": "1.12.13",
+                "publishedDate": "2024-01-22T01:19:13Z"
+              },
+              "downloadSize": "24521904",
+              "id": "160144",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/54ff8831-e6df-4f10-8508-1c07ebe3ef84.png"
+              },
+              "name": "Magica Cloth",
+              "publisher": {
+                "id": "36991",
+                "name": "Magica Soft"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1047025",
+                "name": "1.5",
+                "publishedDate": "2025-04-06T09:59:11Z"
+              },
+              "downloadSize": "50476272",
+              "id": "152053",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/e30cc1e2-eedb-4d96-b369-139bbf132115.png"
+              },
+              "name": "RPG \u0026 MMO UI X",
+              "publisher": {
+                "id": "3533",
+                "name": "Evil"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "979796",
+                "name": "1.8.2",
+                "publishedDate": "2024-10-21T07:08:12Z"
+              },
+              "downloadSize": "1883744",
+              "id": "177877",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/ecb49962-d7c2-4063-990f-7e5d3e32fec0.png"
+              },
+              "name": "ProPixelizer - Realtime 3D Pixel Art",
+              "publisher": {
+                "id": "49852",
+                "name": "ElliotB256"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "998405",
+                "name": "1.692",
+                "publishedDate": "2024-12-09T13:43:00Z"
+              },
+              "downloadSize": "272226032",
+              "id": "231178",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/c7c08c5e-f345-46cf-b7b3-9eb01cdf12d1.png"
+              },
+              "name": "Dragon Crashers - UI Toolkit Sample project",
+              "publisher": {
+                "id": "1",
+                "name": "Unity Technologies"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "1008063",
+                "name": "4.0",
+                "publishedDate": "2025-01-07T17:11:32Z"
+              },
+              "downloadSize": "238291072",
+              "id": "186580",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/6b3bdab9-8714-4a93-9680-2b5737649c18.png"
+              },
+              "name": "Easy AR : Make Awesome AR Apps Without Coding",
+              "publisher": {
+                "id": "47462",
+                "name": "Render Island"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "947306",
+                "name": "1.2.0",
+                "publishedDate": "2024-07-20T20:55:10Z"
+              },
+              "downloadSize": "335387776",
+              "id": "146014",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/820684d8-011d-4ec4-967a-76253d48f6d2.png"
+              },
+              "name": "AllSky Free - 10 Sky / Skybox Set",
+              "publisher": {
+                "id": "3830",
+                "name": "rpgwhitelock"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "918644",
+                "name": "1.1",
+                "publishedDate": "2021-07-19T10:34:35Z"
+              },
+              "downloadSize": "91462928",
+              "id": "160253",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/4a9c5254-9c3e-4161-b496-409ffefdcd2c.png"
+              },
+              "name": "Classic RPG GUI",
+              "publisher": {
+                "id": "38930",
+                "name": "PONETI"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "965924",
+                "name": "1.4.1",
+                "publishedDate": "2024-09-13T17:03:09Z"
+              },
+              "downloadSize": "44284368",
+              "id": "251843",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/648debc1-9e39-4ed4-8f95-d704bc6e46d2.png"
+              },
+              "name": "URP+ 2022 - Improved Universal Render Pipeline",
+              "publisher": {
+                "id": "46006",
+                "name": "ShadowShardTools"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "895314",
+                "name": "1.4.0",
+                "publishedDate": "2023-01-03T08:29:59Z"
+              },
+              "downloadSize": "21649024",
+              "id": "221125",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/fcda904d-5100-470c-99a1-629ce2105f0b.png"
+              },
+              "name": "Skill \u0026 Attack Indicators",
+              "publisher": {
+                "id": "35054",
+                "name": "DTT"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "928824",
+                "name": "1.0",
+                "publishedDate": "2022-10-14T11:24:16Z"
+              },
+              "downloadSize": "928667344",
+              "id": "234071",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/5ffa31e9-ad6c-4732-ba5b-ba71a4fb27ac.png"
+              },
+              "name": "Fantasy RPG Music Collection - Fallen Kingdom",
+              "publisher": {
+                "id": "55342",
+                "name": "Marcin Szmuc"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "875570",
+                "name": "1.1.2",
+                "publishedDate": "2023-11-28T16:07:12Z"
+              },
+              "downloadSize": "1118524096",
+              "id": "89624",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/3d1c2570-4f74-47f5-9e34-cc80bb0889fd.png"
+              },
+              "name": "SciFi Space Base",
+              "publisher": {
+                "id": "3021",
+                "name": "Daelonik Artworks"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "905707",
+                "name": "1.0.2",
+                "publishedDate": "2023-11-15T23:00:18Z"
+              },
+              "downloadSize": "2184784",
+              "id": "81692",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/80d8b213-bfc7-4fad-8559-60bb18cb95c9.png"
+              },
+              "name": "Simple Forest Animals - Cartoon Assets",
+              "publisher": {
+                "id": "5217",
+                "name": "Synty Studios"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "898246",
+                "name": "1.4",
+                "publishedDate": "2020-01-17T09:57:12Z"
+              },
+              "downloadSize": "191259600",
+              "id": "136564",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/50b90022-5d84-4028-a2be-1f4784fd0baa.png"
+              },
+              "name": "500 Skill Icons",
+              "publisher": {
+                "id": "38930",
+                "name": "PONETI"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "858190",
+                "name": "1.3",
+                "publishedDate": "2023-06-27T10:15:28Z"
+              },
+              "downloadSize": "95393792",
+              "id": "221389",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/d2ebdca7-60b8-4529-a2b3-5abb933f3436.png"
+              },
+              "name": "Brute Force - Snow \u0026 Ice Shader",
+              "publisher": {
+                "id": "52742",
+                "name": "BRUTE FORCE STUDIO"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "872804",
+                "name": "1.2",
+                "publishedDate": "2023-06-16T21:47:12Z"
+              },
+              "downloadSize": "32205840",
+              "id": "207966",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/273a2497-efe9-43c4-ae58-fd028269798b.png"
+              },
+              "name": "Shiny Items VFX for URP",
+              "publisher": {
+                "id": "57633",
+                "name": "Paul Jewell"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "856476",
+                "name": "1.9.5",
+                "publishedDate": "2023-08-01T08:40:16Z"
+              },
+              "downloadSize": "2299743520",
+              "id": "115747",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/2297589a-1306-4ed0-a48b-ef19207cef5c.png"
+              },
+              "name": "Unity Learn | 3D Game Kit",
+              "publisher": {
+                "id": "1",
+                "name": "Unity Technologies"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "847756",
+                "name": "1.1",
+                "publishedDate": "2023-09-02T19:30:26Z"
+              },
+              "downloadSize": "607672928",
+              "id": "213593",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/dec49d89-714f-4aa2-9c1a-b10b0f874e0e.png"
+              },
+              "name": "Fantasy Map Creator",
+              "publisher": {
+                "id": "38930",
+                "name": "PONETI"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "888774",
+                "name": "1.0",
+                "publishedDate": "2019-03-27T13:25:08Z"
+              },
+              "downloadSize": "1338836112",
+              "id": "142554",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/44dcbfa1-2a21-452f-a85e-9a1e5feab231.png"
+              },
+              "name": "Forest animals",
+              "publisher": {
+                "id": "12623",
+                "name": "Red Deer"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "878127",
+                "name": "1.34",
+                "publishedDate": "2023-12-15T13:55:11Z"
+              },
+              "downloadSize": "356912",
+              "id": "235062",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/592efcd1-bca5-4efd-a6f3-77b506a1948d.png"
+              },
+              "name": "Exporter for Unreal to Unity 2023",
+              "publisher": {
+                "id": "26243",
+                "name": "Ciprian Stanciu"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "895993",
+                "name": "1.6",
+                "publishedDate": "2024-02-20T15:31:44Z"
+              },
+              "downloadSize": "461868736",
+              "id": "191447",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/dd972b1b-c6d2-4518-abab-83610fc05aba.png"
+              },
+              "name": "5592 Fantasy RPG Icons",
+              "publisher": {
+                "id": "41787",
+                "name": "CraftPix"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "799231",
+                "name": "1.0",
+                "publishedDate": "2023-04-03T13:03:13Z"
+              },
+              "downloadSize": "82775552",
+              "id": "198411",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/3ff9f3e5-5f90-4bd3-a9f5-8de61174630e.png"
+              },
+              "name": "Party Monster Rumble PBR",
+              "publisher": {
+                "id": "23554",
+                "name": "Dungeon Mason"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "830668",
+                "name": "2.0",
+                "publishedDate": "2023-07-10T14:08:52Z"
+              },
+              "downloadSize": "326481040",
+              "id": "64768",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/4125a11c-e529-4fe1-980a-75a5cb842fdb.png"
+              },
+              "name": "Skill And Ability Icons",
+              "publisher": {
+                "id": "21903",
+                "name": "Yusuf Artun"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "848851",
+                "name": "1.1.1",
+                "publishedDate": "2023-09-06T16:07:11Z"
+              },
+              "downloadSize": "8264192",
+              "id": "161366",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/19ae8c50-d16c-4b3c-b276-88f4fdc591f1.png"
+              },
+              "name": "Seamless Texture Generator",
+              "publisher": {
+                "id": "37262",
+                "name": "FImpossible Creations"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "743936",
+                "name": "1.07",
+                "publishedDate": "2023-07-10T14:28:13Z"
+              },
+              "downloadSize": "28805888",
+              "id": "154032",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/1411cc37-cc9b-420d-95ab-9f899d84b867.png"
+              },
+              "name": "Powerslide Kart Physics",
+              "publisher": {
+                "id": "4634",
+                "name": "JustInvoke"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "822628",
+                "name": "1.7.6a",
+                "publishedDate": "2023-06-14T03:10:18Z"
+              },
+              "downloadSize": "23661984",
+              "id": "44361",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/cfe8a505-1adf-460d-bef4-27cb2d41c9ea.png"
+              },
+              "name": "ProTips - Tooltip System",
+              "publisher": {
+                "id": "7702",
+                "name": "ModelShark Studio"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "773259",
+                "name": "2.1",
+                "publishedDate": "2023-01-13T22:52:11Z"
+              },
+              "downloadSize": "6291278720",
+              "id": "151756",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/b3772630-55e9-4a53-ab7c-73e3d7ddf618.png"
+              },
+              "name": "Ultimate Sound FX Bundle",
+              "publisher": {
+                "id": "39089",
+                "name": "Sidearm Studios"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "773585",
+                "name": "1.0",
+                "publishedDate": "2023-01-14T22:41:11Z"
+              },
+              "downloadSize": "130365232",
+              "id": "176744",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/a0ee1a91-3926-4b05-b955-eed7630ad2b0.png"
+              },
+              "name": "Monster Sounds Pack",
+              "publisher": {
+                "id": "16881",
+                "name": "Cafofo"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "659998",
+                "name": "1.0.6",
+                "publishedDate": "2023-02-14T11:13:13Z"
+              },
+              "downloadSize": "972558697",
+              "id": "208063",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/53239341-b683-41d4-83d8-3b270a763d31.png"
+              },
+              "name": "Interactive Guide: Cross-Platform UI",
+              "publisher": {
+                "id": "1",
+                "name": "Unity Technologies"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "683375",
+                "name": "1.1",
+                "publishedDate": "2022-03-07T16:46:24Z"
+              },
+              "downloadSize": "33824",
+              "id": "115488",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/3c58effc-acb7-48f1-9da3-e760bba1afdc.png"
+              },
+              "name": "Quick Outline",
+              "publisher": {
+                "id": "35813",
+                "name": "Chris Nolet"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "665322",
+                "name": "4.3",
+                "publishedDate": "2022-01-04T09:32:16Z"
+              },
+              "downloadSize": "288215056",
+              "id": "103633",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/0ff283e5-baff-4a39-9854-3e46bec419eb.png"
+              },
+              "name": "Skybox Series Free",
+              "publisher": {
+                "id": "31837",
+                "name": "Avionx"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "699375",
+                "name": "1.1.1",
+                "publishedDate": "2022-04-29T06:06:15Z"
+              },
+              "downloadSize": "1799677570",
+              "id": "29140",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/b48a0552-cab7-479d-b73c-801ce3a16bf5.png"
+              },
+              "name": "Viking Village URP",
+              "publisher": {
+                "id": "1",
+                "name": "Unity Technologies"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "737537",
+                "name": "1.5.3",
+                "publishedDate": "2022-09-15T16:17:12Z"
+              },
+              "downloadSize": "2956018592",
+              "id": "65780",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/735b81ed-59ce-4ae4-a213-c148773e2527.png"
+              },
+              "name": "Eternal Temple",
+              "publisher": {
+                "id": "12379",
+                "name": "Mana Station"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "761161",
+                "name": "1.0",
+                "publishedDate": "2022-11-27T21:00:17Z"
+              },
+              "downloadSize": "348447648",
+              "id": "154257",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/1e9faf26-3081-477f-82ba-6f8a96189774.png"
+              },
+              "name": "Sci-Fi Sound Pack",
+              "publisher": {
+                "id": "16881",
+                "name": "Cafofo"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "712205",
+                "name": "1.5.0",
+                "publishedDate": "2022-06-16T11:23:14Z"
+              },
+              "downloadSize": "336057360",
+              "id": "73563",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/2c18f034-f017-4320-b66e-9637559cb62b.png"
+              },
+              "name": "Lighting Optimisation Tutorial",
+              "publisher": {
+                "id": "1",
+                "name": "Unity Technologies"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "778177",
+                "name": "1.0",
+                "publishedDate": "2023-01-29T21:28:12Z"
+              },
+              "downloadSize": "101036256",
+              "id": "201671",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/b2245728-ec37-47ef-b125-6813a4d1833f.png"
+              },
+              "name": "Human Vocal Sounds (PRO)",
+              "publisher": {
+                "id": "16881",
+                "name": "Cafofo"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "729133",
+                "name": "1.2.1",
+                "publishedDate": "2022-08-15T14:24:14Z"
+              },
+              "downloadSize": "6956576",
+              "id": "162025",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/f98cab8f-151b-48ad-9a31-894593cda6a5.png"
+              },
+              "name": "Stylized Water For URP",
+              "publisher": {
+                "id": "4931",
+                "name": "Alexander Ameye"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "758521",
+                "name": "1.0",
+                "publishedDate": "2022-11-22T23:02:13Z"
+              },
+              "downloadSize": "4681200",
+              "id": "151985",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/a8940c88-062c-4d9e-be01-0f5c3563ef45.png"
+              },
+              "name": "Weapon Sounds",
+              "publisher": {
+                "id": "16881",
+                "name": "Cafofo"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "758522",
+                "name": "1.0",
+                "publishedDate": "2022-11-22T23:00:19Z"
+              },
+              "downloadSize": "3630992",
+              "id": "153777",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/1d9da85a-c559-4bb9-b67e-fc6b4f6a194c.png"
+              },
+              "name": "Shield Sounds",
+              "publisher": {
+                "id": "16881",
+                "name": "Cafofo"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "694429",
+                "name": "2.0.0",
+                "publishedDate": "2022-04-13T14:18:15Z"
+              },
+              "downloadSize": "209465539",
+              "id": "174461",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/a6c909f0-6db2-42a4-9044-70cee8623d0d.png"
+              },
+              "name": "Tiling Textures - 3D Microgame Add-Ons",
+              "publisher": {
+                "id": "1",
+                "name": "Unity Technologies"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "703276",
+                "name": "5.1.0",
+                "publishedDate": "2022-05-16T11:17:13Z"
+              },
+              "downloadSize": "133409047",
+              "id": "25422",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/ee3d744e-6d87-4dd3-8815-9e2aa85f6777.png"
+              },
+              "name": "Shader Calibration Scene",
+              "publisher": {
+                "id": "1",
+                "name": "Unity Technologies"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "649555",
+                "name": "1.0",
+                "publishedDate": "2020-05-07T10:24:11Z"
+              },
+              "downloadSize": "77948704",
+              "id": "165660",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/d4f24e01-7f9d-4935-9b03-5197e02abf35.png"
+              },
+              "name": "Footsteps Sound Pack",
+              "publisher": {
+                "id": "16881",
+                "name": "Cafofo"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "563902",
+                "name": "1.0",
+                "publishedDate": "2020-10-14T15:46:16Z"
+              },
+              "downloadSize": "75408912",
+              "id": "180881",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/085cc0a8-1324-4dc8-9d37-86627ed65709.png"
+              },
+              "name": "300+ RPG Flat Icons Pack",
+              "publisher": {
+                "id": "34661",
+                "name": "Kat Grabowska"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "709653",
+                "name": "1.0",
+                "publishedDate": "2022-06-08T11:26:21Z"
+              },
+              "downloadSize": "21301264",
+              "id": "224138",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/3d826d36-dcd4-45a5-a0dd-ddbbd36377e9.png"
+              },
+              "name": "RPG Flat Skills 05",
+              "publisher": {
+                "id": "67736",
+                "name": "A-ravlik"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "503516",
+                "name": "1.01",
+                "publishedDate": "2020-02-06T08:11:15Z"
+              },
+              "downloadSize": "117497872",
+              "id": "82713",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/6e9c83dd-cfd3-4457-a128-bfbe3b11b994.png"
+              },
+              "name": "Flat Skills Icons",
+              "publisher": {
+                "id": "13229",
+                "name": "REXARD"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "656436",
+                "name": "1.6.3",
+                "publishedDate": "2021-11-20T18:49:13Z"
+              },
+              "downloadSize": "2987776",
+              "id": "80667",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/5865c88c-1b3a-48b2-8b3b-c392a8dcd32f.png"
+              },
+              "name": "Soft Mask",
+              "publisher": {
+                "id": "26352",
+                "name": "Oleg Knyazev"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "568583",
+                "name": "1.2",
+                "publishedDate": "2020-11-04T18:22:16Z"
+              },
+              "downloadSize": "20175488",
+              "id": "180105",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/6407ee40-ca4f-40c9-b371-a8c1587481fe.png"
+              },
+              "name": "Stylized RPG Cursors",
+              "publisher": {
+                "id": "47074",
+                "name": "Lid Games"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "633111",
+                "name": "1.0",
+                "publishedDate": "2021-05-31T11:51:11Z"
+              },
+              "downloadSize": "893115456",
+              "id": "194725",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/f4574f0a-bb29-41a2-80c3-f0d917ad33f4.png"
+              },
+              "name": "Fantasy Music Pack Vol 1",
+              "publisher": {
+                "id": "16881",
+                "name": "Cafofo"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "627207",
+                "name": "1.0",
+                "publishedDate": "2021-06-23T12:49:10Z"
+              },
+              "downloadSize": "160195248",
+              "id": "196149",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/461be42e-63f2-464d-b357-3d337f5fa672.png"
+              },
+              "name": "Fire Sounds Pack",
+              "publisher": {
+                "id": "16881",
+                "name": "Cafofo"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "544739",
+                "name": "1.2",
+                "publishedDate": "2020-07-22T07:23:39Z"
+              },
+              "downloadSize": "14557680",
+              "id": "150771",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/921b8cf0-7be6-43a6-a6e3-2d8cde538a8e.png"
+              },
+              "name": "Classic UI icons",
+              "publisher": {
+                "id": "38930",
+                "name": "PONETI"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "482588",
+                "name": "1.0",
+                "publishedDate": "2019-10-17T09:21:09Z"
+              },
+              "downloadSize": "655103888",
+              "id": "155819",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/a16f1332-ed91-40ff-8e21-c13c46237481.png"
+              },
+              "name": "Flat Icons Megapack",
+              "publisher": {
+                "id": "38930",
+                "name": "PONETI"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "610037",
+                "name": "1.7",
+                "publishedDate": "2020-08-26T12:22:16Z"
+              },
+              "downloadSize": "9317856",
+              "id": "129638",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/6665b031-8c41-4aab-a4b3-346c1703b3fa.png"
+              },
+              "name": "Fast Mobile Post Processing: Color Correction(LUT), Blur, Bloom ( URP , VR , AR , LWRP )",
+              "publisher": {
+                "id": "39057",
+                "name": "Rufat's ShaderLab"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "536726",
+                "name": "1.5",
+                "publishedDate": "2020-06-22T09:29:20Z"
+              },
+              "downloadSize": "1584368",
+              "id": "120049",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/5a668076-acd7-4b52-9972-609650c5979b.png"
+              },
+              "name": "Fantasy RPG Cursors (silver)",
+              "publisher": {
+                "id": "11690",
+                "name": "Leonid Deburger"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "534904",
+                "name": "1.0",
+                "publishedDate": "2020-06-30T08:47:10Z"
+              },
+              "downloadSize": "1049008",
+              "id": "173127",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/a12bace8-8c8f-48f6-90fd-aa20444ab0aa.png"
+              },
+              "name": "Low Poly Hex Tiles Vol.2 (Dungeons)",
+              "publisher": {
+                "id": "28031",
+                "name": "InvasionFields"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "547620",
+                "name": "1.0",
+                "publishedDate": "2020-03-13T08:51:12Z"
+              },
+              "downloadSize": "266485824",
+              "id": "163516",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/35b850b9-15e2-41b6-8194-a30d0107a680.png"
+              },
+              "name": "Water Sounds Pack",
+              "publisher": {
+                "id": "16881",
+                "name": "Cafofo"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "550643",
+                "name": "1.0",
+                "publishedDate": "2019-03-20T10:07:09Z"
+              },
+              "downloadSize": "25998768",
+              "id": "141915",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/ce59d9fb-a75f-487f-b303-8fb2cb9e19d4.png"
+              },
+              "name": "Dragon Mobile UI",
+              "publisher": {
+                "id": "38930",
+                "name": "PONETI"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "544945",
+                "name": "1.2",
+                "publishedDate": "2020-07-23T08:29:11Z"
+              },
+              "downloadSize": "27039984",
+              "id": "164168",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/08cdfd01-8682-40ea-9e86-a2c2b21e34ad.png"
+              },
+              "name": "Attribute Icons",
+              "publisher": {
+                "id": "38930",
+                "name": "PONETI"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "532727",
+                "name": "1.0",
+                "publishedDate": "2020-09-15T07:22:11Z"
+              },
+              "downloadSize": "43239168",
+              "id": "171260",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/a9ad2632-eeea-4c14-902e-96161819dd06.png"
+              },
+              "name": "Rock Sounds Pack",
+              "publisher": {
+                "id": "16881",
+                "name": "Cafofo"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "453085",
+                "name": "1.2",
+                "publishedDate": "2019-06-26T07:26:12Z"
+              },
+              "downloadSize": "674272",
+              "id": "136082",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/c8981f98-b1b1-4d5f-9995-a3e09f40184b.png"
+              },
+              "name": "Bézier Path Creator",
+              "publisher": {
+                "id": "40478",
+                "name": "Sebastian Lague"
+              },
+              "state": "deprecated"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "513402",
+                "name": "2.0",
+                "publishedDate": "2015-07-14T21:29:53Z"
+              },
+              "downloadSize": "33239824",
+              "id": "15257",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/23bda8fe-db8c-464a-9253-f48ae97e04f0.png"
+              },
+              "name": "Gothic RPG Buttons",
+              "publisher": {
+                "id": "5183",
+                "name": "Kodiak Graphics"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "370031",
+                "name": "1.0",
+                "publishedDate": "2018-07-10T17:50:27Z"
+              },
+              "downloadSize": "2563680",
+              "id": "120952",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/76a44737-ab2d-4e29-bd79-d51bdac4cb3d.png"
+              },
+              "name": "Low Poly Hex Tiles Vol.1",
+              "publisher": {
+                "id": "28031",
+                "name": "InvasionFields"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "478972",
+                "name": "1.0",
+                "publishedDate": "2019-10-29T05:57:12Z"
+              },
+              "downloadSize": "1038320",
+              "id": "156221",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/2a64dd49-4ded-4340-9b91-46f1f57489d8.png"
+              },
+              "name": "TBS Stylized Hex and Platforms",
+              "publisher": {
+                "id": "28031",
+                "name": "InvasionFields"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "352735",
+                "name": "1.6",
+                "publishedDate": "2018-04-13T17:49:33Z"
+              },
+              "downloadSize": "281968",
+              "id": "69448",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/ab0e423e-ab31-40b7-aa35-9f3d35823d18.png"
+              },
+              "name": "Transition Blocks",
+              "publisher": {
+                "id": "23166",
+                "name": "ATesh Games"
+              },
+              "state": "published"
+            }
+          },
+          {
+            "product": {
+              "currentVersion": {
+                "id": "161469",
+                "name": "1.0",
+                "publishedDate": "2016-01-22T22:00:32Z"
+              },
+              "downloadSize": "99312",
+              "id": "43321",
+              "mainImage": {
+                "icon75": "//assetstorev1-prd-cdn.unity3d.com/key-image/71c45fa0-df9f-4919-9957-e508dd77f146.png"
+              },
+              "name": "RTS camera",
+              "publisher": {
+                "id": "12535",
+                "name": "Denis Sylkin"
+              },
+              "state": "deprecated"
+            }
+          }
+        ],
+        "total": 176
+      }
+    }
+  }
+]

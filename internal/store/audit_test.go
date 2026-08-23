@@ -8,9 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/curbol/unity-sync/internal/retry"
 	"github.com/curbol/unity-sync/internal/store"
 )
 
@@ -297,5 +299,82 @@ func TestATransientCSRFMismatchRecoversOnce(t *testing.T) {
 	}
 	if issued < 2 {
 		t.Errorf("bootstrap ran %d times, want a re-bootstrap after the mismatch", issued)
+	}
+}
+
+// The syncer shares one client across its download pool, and a CSRF mismatch re-bootstraps
+// from inside a request, so the credential pair is written while other goroutines read it.
+// Without synchronisation this reports a data race under -race; a torn Cookie value on the
+// wire would present as an unreproducible mid-sync "session expired".
+func TestTheClientIsSafeToShareAcrossTheDownloadPool(t *testing.T) {
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/packages":
+			http.SetCookie(w, &http.Cookie{Name: "_csrf", Value: "token", Path: "/"})
+			w.WriteHeader(http.StatusNotFound)
+		case "/api/graphql/batch":
+			// Always a mismatch, so every call re-bootstraps mid-flight.
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, "csrf token mismatch")
+		default:
+			w.Header().Set("Content-Type", "application/octet-stream")
+			io.WriteString(w, "\x1f\x8b\x08\x00payload")
+		}
+	})
+	if err := c.Bootstrap(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	var wg sync.WaitGroup
+	for i := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if i%2 == 0 {
+				c.Lookup(context.Background(), "1")
+				return
+			}
+			if dl, err := c.Fetch(context.Background(), "1"); err == nil {
+				io.Copy(io.Discard, dl.Body)
+				dl.Body.Close()
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// A 403 says the same thing on the second attempt, and the download policy's backoff is
+// measured in seconds per asset, so the status has to reach the caller as permanent. Run
+// through retry.Do, which is the only public way to observe that.
+func TestANonRetryableDownloadStatusIsNotRetried(t *testing.T) {
+	var calls int
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusForbidden)
+	})
+	policy := retry.Policy{Attempts: 3, Base: time.Millisecond, Sleep: func(time.Duration) {}}
+	err := retry.Do(context.Background(), policy, func(int) error {
+		_, err := c.Fetch(context.Background(), "1")
+		return err
+	})
+	if err == nil {
+		t.Fatal("Fetch on a 403 = nil, want an error")
+	}
+	if calls != 1 {
+		t.Errorf("the store was called %d times for a 403, want 1", calls)
+	}
+
+	// A 503 is the opposite case, and proves the test can tell the difference.
+	calls = 0
+	busy, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	retry.Do(context.Background(), policy, func(int) error {
+		_, err := busy.Fetch(context.Background(), "1")
+		return err
+	})
+	if calls != 3 {
+		t.Errorf("a 503 was attempted %d times, want all 3", calls)
 	}
 }

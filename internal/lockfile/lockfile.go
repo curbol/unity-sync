@@ -74,9 +74,6 @@ type Entry struct {
 }
 
 // Lockfile is the whole document.
-//
-// There is deliberately no run timestamp. Stamping one would dirty a committed file on
-// every no-op run, which is exactly the churn that buries the changelog.
 type Lockfile struct {
 	Assets map[string]Entry `json:"assets"`
 }

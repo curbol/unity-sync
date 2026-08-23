@@ -186,9 +186,7 @@ func resolveSession(cfg config.Config, configDir string) (string, error) {
 	return session.Resolve(src)
 }
 
-// enumerator is the slice of the store client that `select` needs. Narrowing it here lets
-// the command be driven by a fake in tests, which is the only way its happy path gets
-// covered at all: everything above it needs a live session.
+// enumerator is the slice of the store client that `select` needs.
 type enumerator interface {
 	Enumerate(ctx context.Context) ([]model.Asset, error)
 }

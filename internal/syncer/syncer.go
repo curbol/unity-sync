@@ -284,7 +284,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 			if opts.DryRun {
 				break
 			}
-			r, err := adopt(opts, a, found, derived)
+			r, err := adopt(opts, a, found, derived, excludeRel)
 			if err != nil {
 				res.Err = err
 				report.Retryable++
@@ -380,10 +380,13 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 				mu.Lock()
 				resolutions[res.Asset.ID] = r
 				// Persisting per download is what keeps a run that dies at asset 90 of
-				// 100 from discarding the 89 it already fetched.
-				snapshot := build(owned, prior, resolutions, opts, nil)
+				// 100 from discarding the 89 it already fetched. The write stays inside
+				// the lock: released first, two goroutines can reach the rename in the
+				// order opposite to how they built their snapshots, and the older one
+				// wins — losing exactly the record this write exists to keep.
+				err := lockfile.Save(lockPath, build(owned, prior, resolutions, opts, nil))
 				mu.Unlock()
-				if err := lockfile.Save(lockPath, snapshot); err != nil {
+				if err != nil {
 					res.Err = fmt.Errorf("persisting progress: %w", err)
 				}
 			}
@@ -415,7 +418,17 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 
 // adopt records a package already on disk, relocating it to where the layout puts it so
 // the cache does not drift and quarry's facets stay right.
-func adopt(opts Options, a model.Asset, found cache.Candidate, derived string) (resolution, error) {
+func adopt(opts Options, a model.Asset, found cache.Candidate, derived, damagedRel string) (resolution, error) {
+	// Relocate refuses an occupied destination, which is what stops it certifying bytes
+	// nothing checked. The one occupant that must not stop it is this asset's own recorded
+	// copy after it failed verification: a download would rename straight over that file,
+	// so a verified copy of the same package may replace it too. Without this the good copy
+	// can never move in, nothing is resolved, and every later run repeats the refusal.
+	if damagedRel != "" && damagedRel == derived {
+		if err := cache.RemoveStale(opts.LibraryRoot, damagedRel); err != nil {
+			return resolution{}, err
+		}
+	}
 	if err := cache.Relocate(opts.LibraryRoot, found.RelPath, derived); err != nil {
 		return resolution{}, err
 	}
@@ -432,7 +445,6 @@ func adopt(opts Options, a model.Asset, found cache.Candidate, derived string) (
 		// classify Changed on the next run and re-download.
 		resolvedVersionID:  a.Version.ID,
 		deliveredVersionID: found.Metadata.VersionID,
-		// downloadedAt stays empty: the tool found the file, it did not fetch it.
 	}, nil
 }
 
@@ -497,7 +509,15 @@ func download(ctx context.Context, s Store, opts Options, a model.Asset) (resolu
 			a.Name, pending.Size, a.AdvertisedSize)
 	}
 	if a.AdvertisedSize > 0 && (pending.Size > a.AdvertisedSize || pending.Size < a.AdvertisedSize-64) {
-		warning = fmt.Sprintf("%s: received %d bytes, advertised %d", a.Name, pending.Size, a.AdvertisedSize)
+		// Appended, not assigned: a package can both be served at a different version than
+		// advertised and land outside the window, and the version notice is the one the
+		// lockfile's two ids need explaining.
+		size := fmt.Sprintf("%s: received %d bytes, advertised %d", a.Name, pending.Size, a.AdvertisedSize)
+		if warning == "" {
+			warning = size
+		} else {
+			warning += "; " + size
+		}
 	}
 
 	if err := pending.Commit(); err != nil {

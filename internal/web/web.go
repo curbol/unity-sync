@@ -97,14 +97,22 @@ type Selection map[string]bool
 
 // Handler renders the page and accepts one save. It is separated from Serve so the
 // behaviour can be tested without a socket.
+//
+// A refused save is answered and nothing more: the page stays up so the user can correct
+// the mistake the refusal describes. Tearing the server down instead would make the 409's
+// own advice impossible to follow, and would let any page the user has open end their
+// selection with a single cross-origin POST.
 type Handler struct {
 	assets  []model.Asset
 	enabled map[string]bool
 	token   string
 
 	done chan Selection
-	err  chan error
 }
+
+// Selection delivers the one accepted save, so a caller without a socket can wait on the
+// same channel Serve does.
+func (h *Handler) Selection() <-chan Selection { return h.done }
 
 // NewHandler builds the page handler for one run.
 func NewHandler(assets []model.Asset, enabled map[string]bool) *Handler {
@@ -115,7 +123,6 @@ func NewHandler(assets []model.Asset, enabled map[string]bool) *Handler {
 		enabled: enabled,
 		token:   hex.EncodeToString(buf),
 		done:    make(chan Selection, 1),
-		err:     make(chan error, 1),
 	}
 }
 
@@ -153,7 +160,6 @@ func (h *Handler) save(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.PostFormValue("token") != h.token {
 		http.Error(w, ErrStaleTab.Error(), http.StatusConflict)
-		h.err <- ErrStaleTab
 		return
 	}
 	chosen := Selection{}
@@ -162,14 +168,13 @@ func (h *Handler) save(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(chosen) == 0 && anyEnabled(h.enabled) {
 		http.Error(w, ErrWouldEmptySelection.Error(), http.StatusConflict)
-		h.err <- ErrWouldEmptySelection
 		return
 	}
 	fmt.Fprintf(w, "Saved %d selection(s). You can close this tab.", len(chosen))
 	h.done <- chosen
 }
 
-// Serve runs the page until it is saved once, the context ends, or a save is refused.
+// Serve runs the page until it is saved once or the context ends.
 func Serve(ctx context.Context, addr string, assets []model.Asset, enabled map[string]bool) (Selection, error) {
 	h := NewHandler(assets, enabled)
 	ln, err := net.Listen("tcp", addr)
@@ -187,8 +192,6 @@ func Serve(ctx context.Context, addr string, assets []model.Asset, enabled map[s
 	select {
 	case sel := <-h.done:
 		return sel, nil
-	case err := <-h.err:
-		return nil, err
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}

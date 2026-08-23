@@ -3,9 +3,7 @@
 // and lives with the consuming project, not with the tool, and it carries no account
 // identity.
 //
-// Only `select` ever writes it. Reconcile and Save exist for that one command: a `sync`
-// that rewrote the manifest would re-encode a hand-edited committed file on every run,
-// and a wrong-org enumeration would delete the user's curated selections.
+// Only `select` ever writes it.
 package manifest
 
 import (

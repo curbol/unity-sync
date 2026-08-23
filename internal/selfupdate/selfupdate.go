@@ -36,7 +36,7 @@ func New(apiBase, token string) *Client {
 		apiBase = "https://api.github.com"
 	}
 	return &Client{
-		// No CheckRedirect: the asset endpoint 302s to a signed CDN URL by design.
+		// This client follows redirects: the asset endpoint 302s to a signed CDN URL.
 		http:    &http.Client{Timeout: 10 * time.Minute},
 		apiBase: strings.TrimSuffix(apiBase, "/"),
 		token:   token,

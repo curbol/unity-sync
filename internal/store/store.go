@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/curbol/unity-sync/internal/model"
@@ -49,11 +50,9 @@ var (
 	ErrNotDownloadable = errors.New("asset is not downloadable")
 )
 
-// SearchDocument is pinned. Its field set is the tool's contract with the store, and it
-// deliberately omits the per-row entitlement id and every other account-identifying
-// field the API would return if asked. currentVersion.id is mandatory: it is the diff
-// key, and losing it silently would break every classification. It is exported so a
-// golden test can compare the whole document, not a substring of it.
+// SearchDocument is pinned. Its field set is the tool's contract with the store: it asks
+// for no account-identifying field, and currentVersion.id is mandatory, being the key
+// every classification diffs on.
 const SearchDocument = `query SearchMyAssets($page: Int, $pageSize: Int, $ids: [String!]) {
   searchMyAssets(page: $page, pageSize: $pageSize, ids: $ids) {
     total
@@ -75,10 +74,29 @@ const SearchDocument = `query SearchMyAssets($page: Int, $pageSize: Int, $ids: [
 type Client struct {
 	http    *http.Client
 	base    string
-	cookie  string
-	csrf    string
 	agent   string
 	retries retry.Policy
+
+	// A CSRF mismatch re-bootstraps mid-flight, and the syncer's download pool shares one
+	// client, so these two are written while other goroutines are reading them.
+	mu     sync.RWMutex
+	cookie string
+	csrf   string
+}
+
+// credentials reads the pair that every request carries.
+func (c *Client) credentials() (cookie, csrf string) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.cookie, c.csrf
+}
+
+// adoptCSRF folds a freshly issued token into both the header and the cookie jar.
+func (c *Client) adoptCSRF(token string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.csrf = token
+	c.cookie = withCSRF(c.cookie, token)
 }
 
 // Option adjusts a Client for tests.
@@ -136,7 +154,8 @@ func (c *Client) Bootstrap(ctx context.Context) error {
 	}
 	req.Header.Set("User-Agent", c.agent)
 	req.Header.Set("Accept", "text/html,*/*")
-	req.Header.Set("Cookie", c.cookie)
+	cookie, _ := c.credentials()
+	req.Header.Set("Cookie", cookie)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return fmt.Errorf("csrf bootstrap: %w", err)
@@ -145,8 +164,7 @@ func (c *Client) Bootstrap(ctx context.Context) error {
 
 	for _, ck := range resp.Cookies() {
 		if ck.Name == "_csrf" && ck.Value != "" {
-			c.csrf = ck.Value
-			c.cookie = withCSRF(c.cookie, ck.Value)
+			c.adoptCSRF(ck.Value)
 			return nil
 		}
 	}
@@ -320,8 +338,9 @@ func (c *Client) searchOnce(ctx context.Context, vars map[string]any) (searchRes
 	req.Header.Set("X-Source", "storefront")
 	req.Header.Set("Operations", "SearchMyAssets")
 	req.Header.Set("Accept-Encoding", "identity")
-	req.Header.Set("X-Csrf-Token", c.csrf)
-	req.Header.Set("Cookie", c.cookie)
+	cookie, csrf := c.credentials()
+	req.Header.Set("X-Csrf-Token", csrf)
+	req.Header.Set("Cookie", cookie)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -398,7 +417,8 @@ func (c *Client) Fetch(ctx context.Context, id string) (*Download, error) {
 	req.Header.Set("Accept", "*/*")
 	req.Header.Set("Referer", c.base+"/")
 	req.Header.Set("X-Requested-With", "XMLHttpRequest")
-	req.Header.Set("Cookie", c.cookie)
+	cookie, _ := c.credentials()
+	req.Header.Set("Cookie", cookie)
 	// Asking for identity is not hygiene: the endpoint honours Accept-Encoding: gzip by
 	// gzipping the already-gzipped package, and Go does not transparently decode an
 	// encoding the caller requested, so the cache would receive a double-gzipped blob
@@ -419,7 +439,13 @@ func (c *Client) Fetch(ctx context.Context, id string) (*Download, error) {
 	}
 	if resp.StatusCode != http.StatusOK {
 		drain(resp)
-		return nil, fmt.Errorf("download %s: status %d", id, resp.StatusCode)
+		err := fmt.Errorf("download %s: status %d", id, resp.StatusCode)
+		// A 403 or a 400 will say the same thing on the second attempt, and the download
+		// policy's backoff is measured in seconds per asset.
+		if !retry.Retryable(resp.StatusCode) {
+			return nil, retry.Permanent(err)
+		}
+		return nil, err
 	}
 	if enc := resp.Header.Get("Content-Encoding"); enc != "" {
 		drain(resp)

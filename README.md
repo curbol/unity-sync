@@ -118,8 +118,8 @@ downloads it behind your back. Hand-editing the file is fine.
 ## What it does
 
 - Lists every owned asset with its current version inline, so a run that changes nothing
-  costs only the enumeration: one bootstrap plus a page request per 100 owned assets, and
-  no package bytes at all.
+  costs only the enumeration: one bootstrap, a page request per 100 owned assets plus the
+  empty page that ends the walk, and no package bytes at all.
 - Downloads only what is new, changed, or missing from the cache, into
   `<library>/<publisher>/<asset>/<asset>.unitypackage`.
 - Records everything in `unity-sync.lock.json` beside the manifest: what is owned, at what
@@ -146,9 +146,9 @@ not here.
 
 When an asset leaves your account, unity-sync does not delete anything: its entry drops
 out of the lockfile and the run tells you which file is now unreferenced, so you can
-decide. The one thing a run does remove is an asset's own superseded copy — if a package
-you already mirror is renamed and updated in the same run, the new build lands at the new
-path and the old one is cleaned up rather than left as a duplicate.
+decide. A run removes a file only when it is replacing that same asset's own copy: the
+superseded build after a rename moved its path, and a copy that failed its check when a
+good copy of the same package is adopted over it.
 
 ## Browsing what you have
 

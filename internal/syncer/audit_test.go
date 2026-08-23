@@ -464,6 +464,28 @@ func TestDownloadWarnings(t *testing.T) {
 		}
 	})
 
+	t.Run("both a version mismatch and a size outside the window", func(t *testing.T) {
+		root, lockPath := newRun(t)
+		// 200 short of 4000: past the +-64 window, inside the floor's 500-byte allowance.
+		a := asset("1", "Asset", "v-advertised", 4000)
+		fs := &fakeStore{owned: []model.Asset{a},
+			bodies: map[string][]byte{"1": pkg(t, "1", "v-delivered", 3800)}}
+
+		rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, opts(root, allSelected(a)))
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		got := rep.Results[0].Warning
+		// The size notice must not silence the version one: the lockfile now holds two
+		// different ids and this line is the only thing that explains why.
+		if !strings.Contains(got, "v-delivered") {
+			t.Errorf("warning = %q, want the version mismatch kept alongside the size notice", got)
+		}
+		if !strings.Contains(got, "3800") {
+			t.Errorf("warning = %q, want the size notice too", got)
+		}
+	})
+
 	t.Run("outside the advisory window but above the floor", func(t *testing.T) {
 		root, lockPath := newRun(t)
 		// 200 bytes short of 4000: past the +-64 window, inside the floor's 500-byte
@@ -548,5 +570,67 @@ func TestMemoizeRunsTheProbeOnce(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Errorf("a false result was recomputed %d times, want 1", calls)
+	}
+}
+
+// The damaged file sits at the derived path, so a good copy found elsewhere has nowhere to
+// land unless the damaged one goes first. Getting this wrong is not a bad classification,
+// it is a permanent one: nothing resolves, the prior entry carries forward, and every later
+// run refuses in exactly the same way.
+func TestAGoodCopyReplacesTheDamagedFileHoldingItsPath(t *testing.T) {
+	root, lockPath := newRun(t)
+	a := asset("1", "Asset", "v1", 4000)
+	good := pkg(t, "1", "v1", 4000)
+
+	derived, err := cache.Store(root, a.PublisherSlug(), a.Slug(), bytes.NewReader(good))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := derived.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	stray, err := cache.Store(root, "somewhere", "else-1", bytes.NewReader(good))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stray.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Truncating leaves the descriptor intact, so the scan still sees a candidate; only the
+	// recorded size no longer matches, which is what fails verification.
+	full := filepath.Join(root, filepath.FromSlash(derived.RelPath))
+	if err := os.Truncate(full, derived.Size-100); err != nil {
+		t.Fatal(err)
+	}
+
+	prior := lockfile.New()
+	prior.Assets[a.Slug()] = lockfile.Entry{
+		AssetID: "1", Name: a.Name, Tracked: true,
+		ResolvedVersionID: "v1", DeliveredVersionID: "v1",
+		SizeBytes: derived.Size, SHA256: derived.SHA256, CachePath: derived.RelPath,
+		Version: lockfile.Version{ID: "v1"},
+	}
+
+	fs := &fakeStore{owned: []model.Asset{a}}
+	rep, err := Run(context.Background(), fs, prior, lockPath, opts(root, allSelected(a)))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep.Results[0].Err != nil {
+		t.Fatalf("adoption failed: %v", rep.Results[0].Err)
+	}
+	if rep.Results[0].Class != Adopted {
+		t.Fatalf("class = %v, want Adopted", rep.Results[0].Class)
+	}
+	if len(fs.fetched) != 0 {
+		t.Errorf("downloaded %v; a good copy was already on disk", fs.fetched)
+	}
+	if got := cache.VerifyDeep(root, derived.RelPath, stray.SHA256); !got {
+		t.Error("the derived path does not hold the good copy's bytes")
+	}
+	e, ok := rep.Lockfile.Assets[a.Slug()]
+	if !ok || e.CachePath != derived.RelPath || e.SHA256 != stray.SHA256 {
+		t.Errorf("lockfile records %+v, want the adopted copy at the derived path", e)
 	}
 }

@@ -15,10 +15,7 @@ import (
 
 // Config is the resolved user-scoped configuration.
 type Config struct {
-	// SessionSource is a path to a pasted-curl file or a cookies.txt. There is
-	// deliberately no browser default: the Asset Store's credential is a session
-	// cookie no browser cookie database holds, so defaulting to one would make every
-	// out-of-box run fail with a confusing diagnostic.
+	// SessionSource is a path to a pasted-curl file or a cookies.txt.
 	SessionSource string
 
 	// LibraryPath is where packages are mirrored. A user may point this at Unity's own

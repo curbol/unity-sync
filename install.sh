@@ -20,6 +20,9 @@ auth_header() {
     token=$(gh auth token 2>/dev/null || true)
   fi
   [[ -n "$token" ]] && echo "Authorization: token $token"
+  # Under `set -e` a bare failing test would abort the caller's assignment, so no
+  # credential has to look like success here; the caller decides what to do with "".
+  return 0
 }
 
 detect_platform() {

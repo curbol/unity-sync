@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -289,6 +290,16 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 				res.Err = err
 				report.Retryable++
 			} else {
+				// Same rule the download branch applies: the entry's own prior copy is
+				// superseded by what just landed at the derived path, and nothing else
+				// will ever mention it again — the summary names only assets that left
+				// the account, so an orphan here is one the tool made and never reports.
+				if old := prev.CachePath; old != "" && old != r.cachePath {
+					if rmErr := cache.RemoveStale(opts.LibraryRoot, old); rmErr != nil {
+						res.Warning = fmt.Sprintf(
+							"could not remove the superseded copy at %s: %v", old, rmErr)
+					}
+				}
 				resolutions[a.ID] = r
 			}
 		case Unchanged:
@@ -509,9 +520,9 @@ func download(ctx context.Context, s Store, opts Options, a model.Asset) (resolu
 			a.Name, pending.Size, a.AdvertisedSize)
 	}
 	if a.AdvertisedSize > 0 && (pending.Size > a.AdvertisedSize || pending.Size < a.AdvertisedSize-64) {
-		// Appended, not assigned: a package can both be served at a different version than
-		// advertised and land outside the window, and the version notice is the one the
-		// lockfile's two ids need explaining.
+		// A package can both be served at a different version than advertised and land
+		// outside the window, and the version notice is the one the lockfile's two ids
+		// need explaining.
 		size := fmt.Sprintf("%s: received %d bytes, advertised %d", a.Name, pending.Size, a.AdvertisedSize)
 		if warning == "" {
 			warning = size
@@ -618,6 +629,11 @@ func build(owned []model.Asset, prior lockfile.Lockfile, resolutions map[string]
 				report.Removed = append(report.Removed, e)
 			}
 		}
+		// Map order otherwise, which would reorder the summary between two runs that
+		// found the same thing.
+		sort.Slice(report.Removed, func(i, j int) bool {
+			return report.Removed[i].Name < report.Removed[j].Name
+		})
 	}
 	return out
 }

@@ -343,15 +343,13 @@ func SweepTemps(root string, olderThan time.Time) (int, int64, error) {
 		}
 		return nil
 	})
-	if os.IsNotExist(err) {
-		return 0, 0, nil
-	}
 	return count, bytes, err
 }
 
-// RemoveStale deletes a package this tool mirrored for an asset whose derived path has
-// since changed, and prunes the directories the removal empties. It is only ever called
-// with a path the lockfile itself recorded, never with a file the tool did not write.
+// RemoveStale deletes a package this tool mirrored and is now replacing with another copy
+// of the same asset, and prunes the directories the removal empties. It is only ever
+// called with a path the lockfile itself recorded, never with a file the tool did not
+// write.
 func RemoveStale(root, rel string) error {
 	full, err := resolve(root, rel)
 	if err != nil {

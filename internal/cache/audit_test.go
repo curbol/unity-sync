@@ -104,3 +104,15 @@ func TestUnsafePathsAreRefused(t *testing.T) {
 		}
 	}
 }
+
+// A library that does not exist yet is the first-run case, not an error: the sweep runs
+// before anything has been written.
+func TestSweepingAMissingRootIsNotAnError(t *testing.T) {
+	n, bytes, err := cache.SweepTemps(filepath.Join(t.TempDir(), "never-created"), time.Now())
+	if err != nil {
+		t.Errorf("SweepTemps on a missing root = %v, want nil", err)
+	}
+	if n != 0 || bytes != 0 {
+		t.Errorf("swept %d files / %d bytes from a missing root", n, bytes)
+	}
+}

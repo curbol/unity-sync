@@ -99,9 +99,7 @@ type Selection map[string]bool
 // behaviour can be tested without a socket.
 //
 // A refused save is answered and nothing more: the page stays up so the user can correct
-// the mistake the refusal describes. Tearing the server down instead would make the 409's
-// own advice impossible to follow, and would let any page the user has open end their
-// selection with a single cross-origin POST.
+// the mistake the refusal describes.
 type Handler struct {
 	assets  []model.Asset
 	enabled map[string]bool

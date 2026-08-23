@@ -294,8 +294,8 @@ func printReport(w io.Writer, rep syncer.Report, dry bool, libraryPath string) {
 		}
 	}
 	// A dropped asset leaves its bytes on disk; the summary names them so the user can
-	// decide. Losing ownership of an asset never deletes its package; the only copy a run
-	// removes is an asset's own superseded build after a rename moved its path.
+	// decide. Losing ownership of an asset never deletes its package: a run only ever
+	// removes a copy it is replacing with a newer one of that same asset.
 	for _, e := range rep.Removed {
 		if e.CachePath != "" {
 			fmt.Fprintf(w, "no longer owned: %s — %s (%d bytes) left in place\n", e.Name, e.CachePath, e.SizeBytes)

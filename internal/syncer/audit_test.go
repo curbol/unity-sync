@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -632,5 +633,98 @@ func TestAGoodCopyReplacesTheDamagedFileHoldingItsPath(t *testing.T) {
 	e, ok := rep.Lockfile.Assets[a.Slug()]
 	if !ok || e.CachePath != derived.RelPath || e.SHA256 != stray.SHA256 {
 		t.Errorf("lockfile records %+v, want the adopted copy at the derived path", e)
+	}
+}
+
+// The candidate can already be at the derived path while the lockfile still points at the
+// old one — a run killed between the commit and the incremental save leaves exactly that.
+// Adoption then relocates nothing, so without an explicit removal the recorded copy is
+// orphaned: unreferenced by the new lockfile and named by nothing in the summary.
+func TestAdoptionRemovesTheEntrysOwnSupersededCopy(t *testing.T) {
+	root, lockPath := newRun(t)
+	a := asset("1", "New Name", "v1", 4000)
+	body := pkg(t, "1", "v1", 4000)
+
+	atDerived, err := cache.Store(root, a.PublisherSlug(), a.Slug(), bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := atDerived.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := cache.Store(root, a.PublisherSlug(), "old-name-1", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stale.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	// Truncated, so the recorded copy fails verification and adoption is what runs.
+	if err := os.Truncate(filepath.Join(root, filepath.FromSlash(stale.RelPath)), stale.Size-100); err != nil {
+		t.Fatal(err)
+	}
+
+	prior := lockfile.New()
+	prior.Assets["old-name-1"] = lockfile.Entry{
+		AssetID: "1", Name: "Old Name", Tracked: true,
+		ResolvedVersionID: "v1", DeliveredVersionID: "v1",
+		SizeBytes: stale.Size, SHA256: stale.SHA256, CachePath: stale.RelPath,
+		Version: lockfile.Version{ID: "v1"},
+	}
+
+	fs := &fakeStore{owned: []model.Asset{a}}
+	rep, err := Run(context.Background(), fs, prior, lockPath, opts(root, allSelected(a)))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep.Results[0].Class != Adopted || rep.Results[0].Err != nil {
+		t.Fatalf("class = %v, err = %v; want a clean Adopted", rep.Results[0].Class, rep.Results[0].Err)
+	}
+	if len(fs.fetched) != 0 {
+		t.Errorf("downloaded %v; the current build was already at the derived path", fs.fetched)
+	}
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(stale.RelPath))); !os.IsNotExist(err) {
+		t.Errorf("the superseded copy at %s survived adoption", stale.RelPath)
+	}
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(atDerived.RelPath))); err != nil {
+		t.Errorf("the adopted copy is gone: %v", err)
+	}
+}
+
+// Two runs that find the same droppped assets must print them the same way; ranging a map
+// does not.
+func TestDroppedAssetsAreReportedInAStableOrder(t *testing.T) {
+	root, lockPath := newRun(t)
+	kept := asset("1", "Kept", "v1", 500)
+
+	prior := lockfile.New()
+	for _, e := range []struct{ id, name string }{
+		{"7", "Zulu"}, {"8", "Alpha"}, {"9", "Mike"}, {"10", "Bravo"},
+	} {
+		prior.Assets[e.name] = lockfile.Entry{AssetID: e.id, Name: e.name, Tracked: true}
+	}
+	prior.Assets[kept.Slug()] = lockfile.Entry{AssetID: "1", Name: "Kept", Tracked: false}
+
+	var first []string
+	for run := range 6 {
+		fs := &fakeStore{owned: []model.Asset{kept}}
+		rep, err := Run(context.Background(), fs, prior, lockPath, opts(root, allSelected(kept)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, e := range rep.Removed {
+			names = append(names, e.Name)
+		}
+		if run == 0 {
+			first = names
+			if want := []string{"Alpha", "Bravo", "Mike", "Zulu"}; !slices.Equal(names, want) {
+				t.Fatalf("order = %v, want %v", names, want)
+			}
+			continue
+		}
+		if !slices.Equal(names, first) {
+			t.Fatalf("run %d reported %v, run 0 reported %v", run, names, first)
+		}
 	}
 }

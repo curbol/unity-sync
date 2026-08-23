@@ -147,8 +147,8 @@ not here.
 When an asset leaves your account, unity-sync does not delete anything: its entry drops
 out of the lockfile and the run tells you which file is now unreferenced, so you can
 decide. A run removes a file only when it is replacing that same asset's own copy: the
-superseded build after a rename moved its path, and a copy that failed its check when a
-good copy of the same package is adopted over it.
+superseded build after its path changed, whether the new copy was downloaded or adopted,
+and a copy that failed its check when a good copy of the same package is adopted over it.
 
 ## Browsing what you have
 

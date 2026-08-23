@@ -179,10 +179,13 @@ flip leaves the descriptor intact and a small truncation clears the floor, so wi
 exclusion the damaged bytes would be re-hashed and their digest recorded as the asset's
 truth — the precise outcome every other guard exists to prevent.
 
-Nothing deletes a package the tool mirrored, with one exception: when a download lands at
-a different derived path than the entry's previous one, the superseded copy of that same
-asset is removed. That is not the de-owned case, which is reported and left in place; it
-is the asset's own prior build, and the cache holds only current versions.
+A run deletes a package only when it is replacing that same asset's own copy, which
+happens three ways: a download lands at a different derived path than the entry's previous
+one, an adoption does the same, or an adoption replaces a recorded copy that failed its
+check and is sitting on the destination. None of these is the de-owned case, which is
+reported and left in place. The cache holds only current versions, so a superseded copy of
+the same asset is not something to keep, but a copy the tool did not write is never
+touched: every path removed here came out of the lockfile.
 
 ## Failure model
 

@@ -121,7 +121,10 @@ type Options struct {
 	FullVerify  bool
 	Concurrency int
 	Now         func() time.Time
-	Progress    func(string)
+
+	// Progress is called from every download goroutine as well as the main pass, so an
+	// implementation that does more than one write needs its own synchronisation.
+	Progress func(string)
 
 	// Retry governs download attempts. Downloads get their own budget rather than the
 	// API's: re-transferring a multi-gigabyte body is not the same kind of cheap as
@@ -257,6 +260,12 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		// prevent, arriving through the one door that skips them.
 		var excludeRel string
 		adoptable := func() bool {
+			// Decided here rather than before classify: classify short-circuits to
+			// Changed without ever asking, and under --verify the probe is a full
+			// re-hash of a file that is about to be replaced by the download.
+			if hasPrev && prev.Tracked && prev.CachePath != "" && !cacheOK() {
+				excludeRel = prev.CachePath
+			}
 			found, foundOK = cache.Locate(opts.LibraryRoot, a.ID, derived, excludeRel)
 			if !foundOK {
 				return false
@@ -273,9 +282,6 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 
 		if hasPrev && prev.Tracked {
 			priorPaths[a.ID] = prev.CachePath
-			if prev.CachePath != "" && !cacheOK() {
-				excludeRel = prev.CachePath
-			}
 		}
 		class := classify(a, prev, hasPrev, cacheOK, adoptable)
 		res := Result{Asset: a, Class: class}
@@ -323,7 +329,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 
 	if opts.DryRun {
 		report.Results = append(report.Results, pending...)
-		report.Lockfile = build(owned, prior, resolutions, opts, &report)
+		report.Lockfile = build(owned, prior, resolutions, &report)
 		return report, nil
 	}
 
@@ -395,7 +401,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 				// the lock: released first, two goroutines can reach the rename in the
 				// order opposite to how they built their snapshots, and the older one
 				// wins — losing exactly the record this write exists to keep.
-				err := lockfile.Save(lockPath, build(owned, prior, resolutions, opts, nil))
+				err := lockfile.Save(lockPath, build(owned, prior, resolutions, nil))
 				mu.Unlock()
 				if err != nil {
 					res.Err = fmt.Errorf("persisting progress: %w", err)
@@ -420,7 +426,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		report.Results = append(report.Results, res)
 	}
 
-	report.Lockfile = build(owned, prior, resolutions, opts, &report)
+	report.Lockfile = build(owned, prior, resolutions, &report)
 	if err := lockfile.Save(lockPath, report.Lockfile); err != nil {
 		return report, err
 	}
@@ -574,7 +580,7 @@ func republished(ctx context.Context, s Store, a model.Asset) bool {
 // build produces the new lockfile: every owned asset gets an entry, advertised fields are
 // refreshed, and any resolution this run did not touch is carried forward verbatim.
 func build(owned []model.Asset, prior lockfile.Lockfile, resolutions map[string]resolution,
-	opts Options, report *Report) lockfile.Lockfile {
+	report *Report) lockfile.Lockfile {
 
 	out := lockfile.New()
 	kept := map[string]bool{}
@@ -632,7 +638,10 @@ func build(owned []model.Asset, prior lockfile.Lockfile, resolutions map[string]
 		// Map order otherwise, which would reorder the summary between two runs that
 		// found the same thing.
 		sort.Slice(report.Removed, func(i, j int) bool {
-			return report.Removed[i].Name < report.Removed[j].Name
+			if report.Removed[i].Name != report.Removed[j].Name {
+				return report.Removed[i].Name < report.Removed[j].Name
+			}
+			return report.Removed[i].AssetID < report.Removed[j].AssetID
 		})
 	}
 	return out

@@ -225,10 +225,14 @@ type Candidate struct {
 // excludeRel are skipped entirely: a file that just failed verification is not a candidate
 // for adoption, however intact its descriptor still looks.
 func Locate(root, productID, preferRel string, excludeRel ...string) (Candidate, bool) {
+	// Resolved, not compared as strings: excludeRel comes from the lockfile, which is
+	// hand-editable and travels between machines, so "./pub/a/a.unitypackage" has to skip
+	// the same file "pub/a/a.unitypackage" names. Missing the match would re-offer a file
+	// that just failed verification as a candidate to adopt.
 	skip := map[string]bool{}
 	for _, e := range excludeRel {
-		if e != "" {
-			skip[e] = true
+		if full, err := resolve(root, e); err == nil {
+			skip[full] = true
 		}
 	}
 	var found []Candidate
@@ -252,9 +256,10 @@ func Locate(root, productID, preferRel string, excludeRel ...string) (Candidate,
 		if err != nil {
 			return nil
 		}
-		if slug := filepath.ToSlash(rel); !skip[slug] {
-			found = append(found, Candidate{RelPath: slug, Size: fi.Size(), Metadata: m})
+		if skip[filepath.Clean(p)] {
+			return nil
 		}
+		found = append(found, Candidate{RelPath: filepath.ToSlash(rel), Size: fi.Size(), Metadata: m})
 		return nil
 	})
 	if len(found) == 0 {

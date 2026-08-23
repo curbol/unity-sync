@@ -116,3 +116,22 @@ func TestSweepingAMissingRootIsNotAnError(t *testing.T) {
 		t.Errorf("swept %d files / %d bytes from a missing root", n, bytes)
 	}
 }
+
+// The exclude list comes from the lockfile, which is hand-editable and travels between
+// machines. Comparing it as a raw string would let "./pub/a/a.unitypackage" fail to skip
+// the file "pub/a/a.unitypackage" names, re-offering a file that just failed verification
+// as something to adopt.
+func TestLocateSkipsAnExcludedFileWrittenNonCanonically(t *testing.T) {
+	root := t.TempDir()
+	rel := cache.RelPath("pub", "asset-1")
+	storeCommitted(t, root, "pub", "asset-1", pkg(t, "111", "9", 400))
+
+	if _, ok := cache.Locate(root, "111", "", rel); ok {
+		t.Fatal("the canonical exclude did not skip the file")
+	}
+	for _, spelling := range []string{"./" + rel, "pub/./asset-1/asset-1.unitypackage"} {
+		if _, ok := cache.Locate(root, "111", "", spelling); ok {
+			t.Errorf("exclude %q did not skip the same file", spelling)
+		}
+	}
+}

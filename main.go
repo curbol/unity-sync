@@ -246,6 +246,12 @@ func syncOrStatus(ctx context.Context, client syncer.Store, cfg config.Config,
 		Progress:    func(s string) { fmt.Fprintln(os.Stderr, s) },
 	})
 	if err != nil {
+		// Run hands back the report alongside an error, and a late failure — the final
+		// lockfile write, say — comes after a full download pass whose outcome the user
+		// still needs. An error raised before any of that has nothing to show.
+		if len(rep.Results) > 0 {
+			printReport(stdout, rep, dry, cfg.LibraryPath)
+		}
 		return 1, err
 	}
 	printReport(stdout, rep, dry, cfg.LibraryPath)

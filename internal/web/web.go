@@ -21,13 +21,13 @@ import (
 	"github.com/curbol/unity-sync/internal/model"
 )
 
-// ErrWouldEmptySelection is returned when a save would clear every selection at once.
-// A stale tab reopened after the library changed, or a mis-click on "none", should not
-// silently wipe a curated allowlist.
+// ErrWouldEmptySelection is the 409 a save gets when it would clear every selection at
+// once. A stale tab reopened after the library changed, or a mis-click on "none", should
+// not silently wipe a curated allowlist.
 var ErrWouldEmptySelection = errors.New("refusing a save that would deselect everything")
 
-// ErrStaleTab is returned when a POST does not carry this run's token, which means it
-// came from a page some earlier run served.
+// ErrStaleTab is the 409 a POST gets when it does not carry this run's token, which
+// means it came from a page some earlier run served.
 var ErrStaleTab = errors.New("this page was served by an earlier run; reload and choose again")
 
 type row struct {

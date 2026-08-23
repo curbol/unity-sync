@@ -13,7 +13,7 @@ import (
 )
 
 func main() {
-	from := flag.String("from", ".longrun/captures", "directory holding the raw captures")
+	from := flag.String("from", "captures", "directory holding the raw captures")
 	to := flag.String("to", "testdata/store", "directory to write scrubbed fixtures into")
 	flag.Parse()
 
@@ -29,7 +29,9 @@ func run(from, to string) error {
 		return err
 	}
 	if len(matches) == 0 {
-		return fmt.Errorf("no captures in %s (they are git-excluded; see docs/design.md)", from)
+		return fmt.Errorf("no captures in %s: this needs the raw SearchMyAssets responses from a "+
+			"signed-in session, one .json per page, saved there yourself. They are git-excluded "+
+			"because every row carries an entitlement id — see docs/design.md", from)
 	}
 	if err := os.MkdirAll(to, 0o755); err != nil {
 		return err

@@ -262,6 +262,11 @@ from real captures. The fixtures carry no account data, and a guard test fails t
 any appears. Raw captures are never committed, and the scrubber lands before anything that
 consumes fixtures, because git keeps what a later commit deletes.
 
+`go run ./cmd/scrubfixtures` regenerates `testdata/store` from a `captures/` directory of
+raw `SearchMyAssets` responses, one JSON per page. That directory is git-ignored and is not
+in the repo: the captures need a signed-in session, so regenerating the fixtures means
+capturing again rather than re-running the scrubber over something checked in.
+
 ## Open questions
 
 - Whether Firefox's session store (`sessionstore-backups/recovery.jsonlz4`) holds `LS`. If

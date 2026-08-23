@@ -11,8 +11,7 @@ on:
 permissions:
   contents: read
 
-# A push to a PR branch would otherwise run twice, and superseded runs on the same ref
-# are pointless once a newer commit exists.
+# Superseded runs on the same ref are pointless once a newer commit exists.
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true

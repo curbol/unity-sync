@@ -14,15 +14,30 @@ INSTALL_DIR="${HOME}/.local/bin"
 log()  { printf 'INFO: %s\n' "$1"; }
 err()  { printf 'ERROR: %s\n' "$1" >&2; }
 
-auth_header() {
+TMPDIR_SELF=""
+cleanup() { [[ -z "$TMPDIR_SELF" ]] || rm -rf "$TMPDIR_SELF"; }
+trap cleanup EXIT
+
+auth_token() {
   local token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
   if [[ -z "$token" ]] && command -v gh >/dev/null 2>&1; then
     token=$(gh auth token 2>/dev/null || true)
   fi
-  [[ -n "$token" ]] && echo "Authorization: token $token"
-  # Under `set -e` a bare failing test would abort the caller's assignment, so no
-  # credential has to look like success here; the caller decides what to do with "".
-  return 0
+  printf '%s' "$token"
+}
+
+# fetch GETs a URL, passing the credential through a curl config on stdin rather than as an
+# argument, which would put the token in `ps` output for every local user. Callers append
+# `|| true` where they want to report the failure themselves: every one of them assigns from
+# a pipeline, and `set -e` plus `pipefail` would otherwise abort before the diagnostic runs.
+fetch() {
+  local url="$1"; shift
+  local token; token=$(auth_token)
+  if [[ -n "$token" ]]; then
+    printf 'header = "Authorization: token %s"\n' "$token" | curl -fsSL -K - "$@" "$url"
+  else
+    curl -fsSL "$@" "$url"
+  fi
 }
 
 detect_platform() {
@@ -42,10 +57,8 @@ detect_platform() {
 }
 
 latest_version() {
-  local hdr; hdr=$(auth_header)
-  local opts=(-fsSL); [[ -n "$hdr" ]] && opts+=(-H "$hdr")
-  VERSION=$(curl "${opts[@]}" "https://api.github.com/repos/${REPO}/releases/latest" \
-    | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+  VERSION=$(fetch "https://api.github.com/repos/${REPO}/releases/latest" \
+    | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)
   VERSION=${VERSION#v}
   [[ -n "$VERSION" ]] || { err "could not resolve latest version (private repo needs gh auth or GITHUB_TOKEN)"; exit 1; }
   log "latest version: $VERSION"
@@ -53,25 +66,27 @@ latest_version() {
 
 install() {
   local file="${BINARY_NAME}-${VERSION}-${PLATFORM}.zip"
-  local tmp; tmp=$(mktemp -d)
-  local hdr; hdr=$(auth_header)
+  TMPDIR_SELF=$(mktemp -d)
+  local tmp="$TMPDIR_SELF"
   local url
-  if [[ -n "$hdr" ]]; then
+
+  if [[ -n "$(auth_token)" ]]; then
     # Private repo: resolve the asset's API URL, then download with the token.
-    url=$(curl -fsSL -H "$hdr" "https://api.github.com/repos/${REPO}/releases/tags/v${VERSION}" \
-      | grep -F -B3 "\"name\": \"${file}\"" | grep -F '"url"' | sed -E 's/.*"url": "([^"]+)".*/\1/')
-    [[ -n "$url" ]] || { err "asset ${file} not found in release v${VERSION}"; rm -rf "$tmp"; exit 1; }
-    curl -fsSL -H "$hdr" -H "Accept: application/octet-stream" -o "${tmp}/${file}" "$url"
+    url=$(fetch "https://api.github.com/repos/${REPO}/releases/tags/v${VERSION}" \
+      | grep -F -B3 "\"name\": \"${file}\"" | grep -F '"url"' | sed -E 's/.*"url": "([^"]+)".*/\1/' || true)
+    [[ -n "$url" ]] || { err "asset ${file} not found in release v${VERSION}"; exit 1; }
+    fetch "$url" -H "Accept: application/octet-stream" -o "${tmp}/${file}" \
+      || { err "could not download ${file}"; exit 1; }
   else
-    curl -fsSL -o "${tmp}/${file}" "https://github.com/${REPO}/releases/download/v${VERSION}/${file}"
+    curl -fsSL -o "${tmp}/${file}" "https://github.com/${REPO}/releases/download/v${VERSION}/${file}" \
+      || { err "could not download ${file}"; exit 1; }
   fi
 
-  command -v unzip >/dev/null 2>&1 || { err "unzip is required"; rm -rf "$tmp"; exit 1; }
+  command -v unzip >/dev/null 2>&1 || { err "unzip is required"; exit 1; }
   unzip -q "${tmp}/${file}" -d "$tmp"
   mkdir -p "$INSTALL_DIR"
   mv "${tmp}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
   chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
-  rm -rf "$tmp"
   log "installed to ${INSTALL_DIR}/${BINARY_NAME}"
 }
 
@@ -86,4 +101,5 @@ detect_platform
 latest_version
 install
 check_path
-"${INSTALL_DIR}/${BINARY_NAME}" version || err "installed but 'unity-sync version' failed"
+"${INSTALL_DIR}/${BINARY_NAME}" version \
+  || { err "installed but 'unity-sync version' failed"; exit 1; }

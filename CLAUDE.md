@@ -36,10 +36,12 @@ each with a package doc comment stating its contract:
 
 - `model` — domain types and the identity rules. Carries `id` (the store product id) and
   deliberately not `productId`, which is a different value no endpoint accepts.
-- `config` — user settings by precedence: defaults → `config.toml` → env → flags. There is
-  no browser session default, because a browser session cannot work here.
-- `session` — builds the Cookie header from a pasted curl file or a `cookies.txt`, and
-  asserts the `LS` cookie is present before any request.
+- `config` — user settings by precedence: defaults → `config.toml` → env → flags.
+- `session` — builds the Cookie header from a Firefox-family session store, a pasted curl
+  file, or a `cookies.txt`, and asserts the `LS` cookie is present before any request. The
+  source is identified by reading it, not by configuration. `mozlz4.go` decodes Gecko's
+  compressed session store; the jar it holds spans every host the browsing session touched,
+  so it is filtered to `unity.com` before anything leaves the package.
 - `retry` — backoff policy. `retry.Permanent` lets a caller stop on a body-based verdict
   that the status code alone would have retried.
 - `unitypackage` — reads the store descriptor from a package's gzip FEXTRA field.
@@ -57,7 +59,11 @@ each with a package doc comment stating its contract:
 
 - **`LS` is the credential.** Not the NextAuth session token, which neither endpoint
   consults. Its absence is reported before any request, because the store answers a
-  missing `LS` with an opaque 500.
+  missing `LS` with an opaque 500. It is absent from `cookies.sqlite` but present in a
+  Gecko session store, which is what makes the browser source possible.
+- **No cookie value is ever logged**, and a session store is filtered to the `unity.com`
+  family inside `internal/session`. That file carries credentials for every host the
+  browsing session touched.
 - **No store client follows a redirect.** An unauthenticated download 302s to Unity's
   OAuth page. `selfupdate` is the deliberate exception: it talks to GitHub, whose asset
   API 302s to a signed CDN URL by design.

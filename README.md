@@ -58,12 +58,33 @@ default; override with `library_path`, `UNITY_SYNC_LIBRARY`, or `--library`.
 ## Session
 
 The store gates everything behind your signed-in session, and the cookie it actually
-checks — `LS` — is a session cookie that lives only in your browser's memory. No browser
-cookie database has it, so unity-sync cannot read your session automatically the way a
-tool for some other store might. You paste one instead:
+checks is `LS`. It is a session cookie, so `cookies.sqlite` never holds it — but a
+Firefox-family session store does, because Gecko records the cookies of every host the
+browsing session touched.
 
-In DevTools → Network, right-click any `assetstore.unity.com` request → Copy → Copy as
-cURL, and save it:
+**If you use Firefox, Zen, LibreWolf, Waterfox or Floorp**, sign in to the Asset Store once
+in that browser and point unity-sync at it:
+
+```toml
+# ~/.config/unity-sync/config.toml
+session_source = "browser"
+```
+
+```bash
+unity-sync status     # no paste, no expiry to babysit
+```
+
+It reads only the `unity.com` cookies out of the session store and discards the rest of the
+file. You do not need to keep an Asset Store tab open; the cookie lasts as long as the
+browsing session does. `--session browser` does the same thing for one run, and the run
+prints which profile it read.
+
+Chromium-family browsers keep session cookies somewhere else entirely, encrypted, so they
+are not supported.
+
+**Otherwise, paste a session.** In DevTools → Network, right-click any
+`assetstore.unity.com` request → Copy → Copy as cURL, and save the whole thing verbatim —
+no extracting values, no escaping:
 
 ```bash
 $EDITOR ~/.config/unity-sync/session.curl     # paste, save
@@ -75,10 +96,15 @@ A Netscape `cookies.txt` export works too, as long as your exporter keeps HttpOn
 `session_source` in `config.toml`, or just save it as `session.curl` or `cookies.txt` in
 the config dir, where unity-sync looks by default.
 
-If the file is missing the `LS` cookie, unity-sync says so before making any request,
-because the store's own answer in that case is an HTTP 500 that reads like a server fault.
+`--session` also takes a browser profile directory or a `recovery.jsonlz4` straight, which
+covers a Gecko browser this does not know where to look for. Whatever you point it at,
+unity-sync works out what the file is by reading it.
 
-A pasted session expires. When it does, re-copy it.
+If the session has no `LS` cookie, unity-sync says so before making any request, because
+the store's own answer in that case is an HTTP 500 that reads like a server fault.
+
+A pasted session expires. When it does, re-copy it, or switch to `session_source =
+"browser"` and stop re-copying.
 
 ## Commands
 

@@ -15,7 +15,8 @@ import (
 
 // Config is the resolved user-scoped configuration.
 type Config struct {
-	// SessionSource is a path to a pasted-curl file or a cookies.txt.
+	// SessionSource is "browser" to read a signed-in Firefox-family session, or a path to
+	// a pasted-curl file, a cookies.txt, a browser profile, or a recovery.jsonlz4.
 	SessionSource string
 
 	// LibraryPath is where packages are mirrored. A user may point this at Unity's own

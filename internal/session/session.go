@@ -1,9 +1,12 @@
 // Package session turns a saved browser session into the Cookie header the Asset Store
 // requires. The credential is the LS cookie: measured against the live store, _csrf plus
 // LS alone returns a full owned-asset list, and the NextAuth session token is not
-// consulted by either endpoint this tool uses. LS is a session cookie, so no browser
-// cookie database ever holds it — which is why the only supported sources are a pasted
-// curl command or a cookies.txt export.
+// consulted by either endpoint this tool uses.
+//
+// LS is a session cookie, so cookies.sqlite never holds it. A Firefox-family session
+// store does, because Gecko records the cookies of the hosts its open tabs are using, and
+// that file is a supported source alongside a pasted curl command and a cookies.txt
+// export. Which one a path is gets decided by reading it, not by configuration.
 package session
 
 import (
@@ -35,27 +38,56 @@ const httpOnlyPrefix = "#HttpOnly_"
 type ErrNoCredential struct{ Source string }
 
 func (e *ErrNoCredential) Error() string {
-	return fmt.Sprintf("session %s has no %s cookie: Unity keeps it in memory only, so a browser "+
-		"cookie database never has it — re-copy the session from DevTools (Network > any "+
-		"assetstore.unity.com request > Copy as cURL) while signed in", e.Source, CredentialCookie)
+	return fmt.Sprintf("session %s has no %s cookie: Unity keeps it in memory only, so cookies.sqlite "+
+		"never has it — re-copy the session from DevTools (Network > any assetstore.unity.com "+
+		"request > Copy as cURL) while signed in, or set session_source = %q to read it from a "+
+		"signed-in Firefox-family tab", e.Source, CredentialCookie, BrowserKeyword)
 }
 
-// Resolve reads a session file and returns the Cookie header for the store. It also
-// asserts the credential is present, whatever the source, so the diagnostic names the
-// real problem instead of leaving it to a 500.
-func Resolve(path string) (string, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
+// Resolve turns a session source into the Cookie header for the store. It also asserts
+// the credential is present, whatever the source, so the diagnostic names the real problem
+// instead of leaving it to a 500.
+//
+// A source is the browser keyword, a directory (a Gecko profile or the root holding
+// several), or a file. A file is identified by its contents: a compressed session store, a
+// pasted curl command, or a cookies.txt.
+func Resolve(source string) (string, error) {
+	header, _, err := ResolveFrom(source)
+	return header, err
+}
+
+// ResolveFrom is Resolve, also reporting which file the credential came from. The browser
+// keyword can search several profiles, and a run that picked one of them should be able to
+// say so rather than leaving the user to guess which tab it read.
+func ResolveFrom(source string) (header, from string, err error) {
+	if source == BrowserKeyword {
+		return resolveBrowser(source)
 	}
-	pairs, err := parse(string(raw))
+	fi, statErr := os.Stat(source)
+	if statErr != nil {
+		return "", "", statErr
+	}
+	if fi.IsDir() {
+		return resolveBrowser(source)
+	}
+
+	raw, err := os.ReadFile(source)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", path, err)
+		return "", "", err
+	}
+	var pairs map[string]string
+	if isMozLZ4(raw) {
+		pairs, err = fromSessionStore(raw)
+	} else {
+		pairs, err = parse(string(raw))
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("%s: %w", source, err)
 	}
 	if _, ok := pairs[CredentialCookie]; !ok {
-		return "", &ErrNoCredential{Source: path}
+		return "", "", &ErrNoCredential{Source: source}
 	}
-	return join(pairs), nil
+	return join(pairs), source, nil
 }
 
 // Discover looks for a session file in the user config dir, so a first run needs no

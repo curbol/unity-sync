@@ -179,11 +179,20 @@ func resolveSession(cfg config.Config, configDir string) (string, error) {
 		}
 	}
 	if src == "" {
-		return "", fmt.Errorf("no session configured: save a pasted-curl file as %s, "+
-			"set session_source in config.toml, or pass --session",
-			filepath.Join(configDir, "session.curl"))
+		return "", fmt.Errorf("no session configured: set session_source = %q in config.toml to read "+
+			"it from a signed-in Firefox-family browser, save a pasted-curl file as %s, or pass "+
+			"--session", session.BrowserKeyword, filepath.Join(configDir, "session.curl"))
 	}
-	return session.Resolve(src)
+	header, from, err := session.ResolveFrom(src)
+	if err != nil {
+		return "", err
+	}
+	// Which profile a browser search settled on is not obvious from `--session browser`,
+	// and a run against the wrong signed-in account is otherwise silent.
+	if src == session.BrowserKeyword {
+		fmt.Fprintln(os.Stderr, "session: read from", from)
+	}
+	return header, nil
 }
 
 // enumerator is the slice of the store client that `select` needs.

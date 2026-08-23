@@ -130,8 +130,9 @@ downloads it behind your back. Hand-editing the file is fine.
 ## Verifying the cache
 
 Every run checks cached files cheaply: the file exists, its size is exactly what was
-recorded, and the version stamped inside the package still matches. That catches a
-truncated or replaced file without reading tens of gigabytes.
+recorded, and — for packages that carry a version stamp — that stamp still matches. That
+catches a truncated or replaced file without reading tens of gigabytes. A package with no
+stamp is checked on size alone, so it does not re-download on every run.
 
 `--verify` re-hashes instead, which is the only way to catch corruption in the middle of a
 file. It is opt-in for the obvious reason.

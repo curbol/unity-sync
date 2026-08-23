@@ -234,15 +234,19 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		_, prev, hasPrev := prior.FindByAssetID(a.ID)
 		derived := cache.RelPath(a.PublisherSlug(), a.Slug())
 
-		cacheOK := func() bool {
-			if prev.CachePath == "" {
+		// Memoized: classify calls this, and so does the excludeRel decision below. Under
+		// --verify each call is a full re-hash, so letting it run twice would double the
+		// cost of verifying a 75 GB library.
+		cacheOK := memoize(func() bool {
+			switch {
+			case prev.CachePath == "":
 				return false
-			}
-			if opts.FullVerify {
+			case opts.FullVerify:
 				return cache.VerifyDeep(opts.LibraryRoot, prev.CachePath, prev.SHA256)
+			default:
+				return cache.Verify(opts.LibraryRoot, prev.CachePath, prev.SizeBytes, prev.DeliveredVersionID)
 			}
-			return cache.Verify(opts.LibraryRoot, prev.CachePath, prev.SizeBytes, prev.DeliveredVersionID)
-		}
+		})
 		var found cache.Candidate
 		var foundOK bool
 		// excludeRel is set when a recorded file exists but failed verification. Adoption
@@ -659,4 +663,16 @@ func progressLine(read, total int64) string {
 		return humanBytes(read)
 	}
 	return fmt.Sprintf("%s of %s (%d%%)", humanBytes(read), humanBytes(total), read*100/total)
+}
+
+// memoize runs a probe at most once. The probes it wraps read or hash whole packages, so
+// a caller asking twice is not merely redundant, it doubles the work.
+func memoize(probe func() bool) func() bool {
+	var done, result bool
+	return func() bool {
+		if !done {
+			done, result = true, probe()
+		}
+		return result
+	}
 }

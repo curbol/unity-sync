@@ -77,3 +77,18 @@ func TestOnlyDisabledIsUndownloadable(t *testing.T) {
 		}
 	}
 }
+
+// A partially non-ASCII name is the interesting case: the run of non-ASCII becomes one
+// separator rather than disappearing, which is also what the store's own slug does.
+func TestPartiallyNonASCIINamesCollapseRatherThanTransliterate(t *testing.T) {
+	a := model.Asset{ID: "136082", Name: "Bézier Path Creator"}
+	if got, want := a.Slug(), "b-zier-path-creator-136082"; got != want {
+		t.Errorf("Slug() = %q, want %q", got, want)
+	}
+	// Whatever the folding does, the result must stay a single safe path element.
+	for _, r := range a.Slug() {
+		if r == '/' || r == '\\' || r < 0x20 {
+			t.Fatalf("slug %q contains a path-unsafe rune", a.Slug())
+		}
+	}
+}

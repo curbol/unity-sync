@@ -90,9 +90,11 @@ func (a Asset) PublisherSlug() string {
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)
 
-// slugify folds to lowercase ASCII and collapses everything else to single hyphens.
-// Non-ASCII letters are dropped rather than transliterated, which is why callers need
-// an empty-result fallback.
+// slugify lowercases ASCII and turns everything else into a separator, so runs of
+// non-ASCII collapse to a single hyphen rather than being transliterated: "Bézier Path
+// Creator" becomes "b-zier-path-creator", which is also what the store itself does. A name
+// with no ASCII at all therefore slugifies to the empty string, which is why callers need
+// a fallback.
 func slugify(s string) string {
 	var b strings.Builder
 	for _, r := range s {

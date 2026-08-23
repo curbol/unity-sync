@@ -518,3 +518,35 @@ func TestPermanentDownloadFailuresAreNotRetried(t *testing.T) {
 func retryPolicyWithAttempts(n int) retry.Policy {
 	return retry.Policy{Attempts: n, Base: time.Millisecond, Sleep: func(time.Duration) {}}
 }
+
+// The probes this wraps re-hash whole packages under --verify, so asking twice does not
+// merely repeat work, it doubles the cost of verifying the whole library.
+func TestMemoizeRunsTheProbeOnce(t *testing.T) {
+	calls := 0
+	probe := memoize(func() bool {
+		calls++
+		return true
+	})
+	for range 5 {
+		if !probe() {
+			t.Fatal("memoized probe changed its answer")
+		}
+	}
+	if calls != 1 {
+		t.Errorf("probe ran %d times, want 1", calls)
+	}
+
+	calls = 0
+	falsey := memoize(func() bool {
+		calls++
+		return false
+	})
+	for range 3 {
+		if falsey() {
+			t.Fatal("memoized probe changed its answer")
+		}
+	}
+	if calls != 1 {
+		t.Errorf("a false result was recomputed %d times, want 1", calls)
+	}
+}

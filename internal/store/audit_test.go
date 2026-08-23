@@ -267,3 +267,35 @@ func TestAServerErrorThatExplainsItselfStillRetries(t *testing.T) {
 		t.Errorf("made %d calls, want the explained 5xx to be retried", calls)
 	}
 }
+
+// The token can expire between the bootstrap and the call that uses it, so one mismatch is
+// worth a re-bootstrap and a second try. A server that always mismatches still reports
+// ErrCSRF, which is what the other test pins; this one pins the recovery.
+func TestATransientCSRFMismatchRecoversOnce(t *testing.T) {
+	var issued, posts int
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/packages" {
+			issued++
+			http.SetCookie(w, &http.Cookie{Name: "_csrf", Value: "token", Path: "/"})
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		posts++
+		if posts == 1 {
+			w.WriteHeader(http.StatusBadRequest)
+			io.WriteString(w, "csrf token mismatch")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `[{"data":{"searchMyAssets":{"total":0,"results":[]}}}]`)
+	})
+	if err := c.Bootstrap(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Enumerate(context.Background()); err != nil {
+		t.Fatalf("Enumerate = %v, want the retry after a re-bootstrap to succeed", err)
+	}
+	if issued < 2 {
+		t.Errorf("bootstrap ran %d times, want a re-bootstrap after the mismatch", issued)
+	}
+}

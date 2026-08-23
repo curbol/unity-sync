@@ -728,3 +728,44 @@ func TestDroppedAssetsAreReportedInAStableOrder(t *testing.T) {
 		}
 	}
 }
+
+// The dry-run test proves the sweep is gated; nothing proved it happens. Deleting the
+// SweepTemps call from Run left the whole suite green.
+func TestARealRunSweepsAbandonedTemps(t *testing.T) {
+	root, lockPath := newRun(t)
+	a := asset("1", "Asset", "v1", 500)
+
+	leaf := filepath.Join(root, "pub-one", "asset-1")
+	if err := os.MkdirAll(leaf, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(leaf, ".unity-sync-dl-stale")
+	if err := os.WriteFile(stale, bytes.Repeat([]byte("x"), 100), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Older than the run start, which opts() pins to 2023-11-14.
+	old := time.Unix(1600000000, 0)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatal(err)
+	}
+	// One the sweep must spare: a concurrent run's transfer, still in flight.
+	live := filepath.Join(leaf, ".unity-sync-dl-live")
+	if err := os.WriteFile(live, []byte("in flight"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fs := &fakeStore{owned: []model.Asset{a}, bodies: map[string][]byte{"1": pkg(t, "1", "v1", 500)}}
+	rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, opts(root, allSelected(a)))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep.Swept != 1 {
+		t.Errorf("Swept = %d, want 1", rep.Swept)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Error("the abandoned temp survived the run")
+	}
+	if _, err := os.Stat(live); err != nil {
+		t.Errorf("the run swept a temp newer than its own start: %v", err)
+	}
+}

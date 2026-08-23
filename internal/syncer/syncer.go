@@ -153,7 +153,6 @@ type Report struct {
 	Removed  []lockfile.Entry
 	Unknown  []manifest.Entry
 	Swept    int
-	Freed    int64
 	Lockfile lockfile.Lockfile
 
 	// Retryable counts failures a later run might fix. A permanently gone asset is
@@ -213,11 +212,8 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 	// Sweeping before classification matters: an abandoned partial left in the tree is
 	// otherwise a candidate the adopt scan could reach.
 	if !opts.DryRun {
-		n, freed, err := cache.SweepTemps(opts.LibraryRoot, started)
-		if err != nil {
-			return report, err
-		}
-		report.Swept, report.Freed = n, freed
+		n, freed := cache.SweepTemps(opts.LibraryRoot, started)
+		report.Swept = n
 		if n > 0 {
 			opts.Progress(fmt.Sprintf("reclaimed %d abandoned download(s), %s", n, humanBytes(freed)))
 		}

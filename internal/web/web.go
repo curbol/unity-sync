@@ -8,11 +8,11 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"html/template"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"runtime"
 	"sort"
@@ -21,14 +21,13 @@ import (
 	"github.com/curbol/unity-sync/internal/model"
 )
 
-// ErrWouldEmptySelection is the 409 a save gets when it would clear every selection at
-// once. A stale tab reopened after the library changed, or a mis-click on "none", should
-// not silently wipe a curated allowlist.
-var ErrWouldEmptySelection = errors.New("refusing a save that would deselect everything")
-
-// ErrStaleTab is the 409 a POST gets when it does not carry this run's token, which
-// means it came from a page some earlier run served.
-var ErrStaleTab = errors.New("this page was served by an earlier run; reload and choose again")
+// The two refusals, as the page states them. A save that would clear every selection at
+// once, and a POST from a page some earlier run served: a stale tab reopened after the
+// library changed, or a mis-click on "none", should not silently wipe a curated allowlist.
+const (
+	msgWouldEmptySelection = "refusing a save that would deselect everything"
+	msgStaleTab            = "this page was served by an earlier run; reload and choose again"
+)
 
 type row struct {
 	ID        string
@@ -157,7 +156,7 @@ func (h *Handler) save(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.PostFormValue("token") != h.token {
-		http.Error(w, ErrStaleTab.Error(), http.StatusConflict)
+		http.Error(w, msgStaleTab, http.StatusConflict)
 		return
 	}
 	chosen := Selection{}
@@ -165,7 +164,7 @@ func (h *Handler) save(w http.ResponseWriter, r *http.Request) {
 		chosen[id] = true
 	}
 	if len(chosen) == 0 && anyEnabled(h.enabled) {
-		http.Error(w, ErrWouldEmptySelection.Error(), http.StatusConflict)
+		http.Error(w, msgWouldEmptySelection, http.StatusConflict)
 		return
 	}
 	fmt.Fprintf(w, "Saved %d selection(s). You can close this tab.", len(chosen))
@@ -184,7 +183,7 @@ func Serve(ctx context.Context, addr string, assets []model.Asset, enabled map[s
 	defer srv.Close()
 
 	url := "http://" + ln.Addr().String()
-	fmt.Println("select assets at", url)
+	fmt.Fprintln(os.Stderr, "select assets at", url)
 	openBrowser(url)
 
 	select {

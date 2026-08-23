@@ -165,3 +165,34 @@ func TestCorruptLockfileIsAnError(t *testing.T) {
 		t.Error("Load accepted a corrupt lockfile")
 	}
 }
+
+// The lockfile is meant to be committed and read by other people and tools. Writing
+// through a temp file and renaming would otherwise leave it owner-only.
+func TestSaveDoesNotMakeTheLockfileOwnerOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unity-sync.lock.json")
+	lf := lockfile.New()
+	lf.Assets["a-1"] = lockfile.Entry{AssetID: "1", Name: "A"}
+
+	if err := lockfile.Save(path, lf); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode().Perm(); got != 0o644 {
+		t.Errorf("a fresh lockfile is mode %04o, want 0644", got)
+	}
+
+	// An existing file keeps whatever mode the user gave it.
+	if err := os.Chmod(path, 0o664); err != nil {
+		t.Fatal(err)
+	}
+	if err := lockfile.Save(path, lf); err != nil {
+		t.Fatal(err)
+	}
+	fi, _ = os.Stat(path)
+	if got := fi.Mode().Perm(); got != 0o664 {
+		t.Errorf("rewriting reset the mode to %04o, want the 0664 it had", got)
+	}
+}

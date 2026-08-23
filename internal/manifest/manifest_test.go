@@ -168,3 +168,32 @@ func TestSaveDoesNotReorderTheCallersSlice(t *testing.T) {
 		t.Error("Save sorted the caller's slice in place")
 	}
 }
+
+// The manifest is committed and hand-edited, so a save must not quietly strip group and
+// other from it.
+func TestSaveDoesNotMakeTheManifestOwnerOnly(t *testing.T) {
+	path := filepath.Join(t.TempDir(), manifest.FileName)
+	m := manifest.Manifest{Assets: []manifest.Entry{{ID: "1", Name: "A", Enabled: true}}}
+
+	if err := manifest.Save(path, m); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode().Perm(); got != 0o644 {
+		t.Errorf("a fresh manifest is mode %04o, want 0644", got)
+	}
+
+	if err := os.Chmod(path, 0o664); err != nil {
+		t.Fatal(err)
+	}
+	if err := manifest.Save(path, m); err != nil {
+		t.Fatal(err)
+	}
+	fi, _ = os.Stat(path)
+	if got := fi.Mode().Perm(); got != 0o664 {
+		t.Errorf("rewriting reset the mode to %04o, want the 0664 it had", got)
+	}
+}

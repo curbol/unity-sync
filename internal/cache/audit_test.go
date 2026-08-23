@@ -72,10 +72,7 @@ func TestSweepWalksTheTreeAndSparesInFlightTemps(t *testing.T) {
 	os.Chtimes(stale, old, old)
 
 	cutoff := time.Now().Add(-time.Hour)
-	n, bytesFreed, err := cache.SweepTemps(root, cutoff)
-	if err != nil {
-		t.Fatalf("SweepTemps: %v", err)
-	}
+	n, bytesFreed := cache.SweepTemps(root, cutoff)
 	// A root-only scan would report zero here while leaving a multi-gigabyte orphan.
 	if n != 1 || bytesFreed != 100 {
 		t.Errorf("swept %d files / %d bytes, want 1 / 100", n, bytesFreed)
@@ -108,10 +105,7 @@ func TestUnsafePathsAreRefused(t *testing.T) {
 // A library that does not exist yet is the first-run case, not an error: the sweep runs
 // before anything has been written.
 func TestSweepingAMissingRootIsNotAnError(t *testing.T) {
-	n, bytes, err := cache.SweepTemps(filepath.Join(t.TempDir(), "never-created"), time.Now())
-	if err != nil {
-		t.Errorf("SweepTemps on a missing root = %v, want nil", err)
-	}
+	n, bytes := cache.SweepTemps(filepath.Join(t.TempDir(), "never-created"), time.Now())
 	if n != 0 || bytes != 0 {
 		t.Errorf("swept %d files / %d bytes from a missing root", n, bytes)
 	}
@@ -132,6 +126,58 @@ func TestLocateSkipsAnExcludedFileWrittenNonCanonically(t *testing.T) {
 	for _, spelling := range []string{"./" + rel, "pub/./asset-1/asset-1.unitypackage"} {
 		if _, ok := cache.Locate(root, "111", "", spelling); ok {
 			t.Errorf("exclude %q did not skip the same file", spelling)
+		}
+	}
+}
+
+// The library root comes from a flag or a config file, so it arrives however the user
+// typed it. Comparing it raw against paths that have been cleaned makes pruning a no-op
+// for the ordinary "./lib" spelling, and nothing else notices.
+func TestPruningSurvivesHoweverTheRootWasSpelled(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	spellings := map[string]func(string) string{
+		"absolute":       func(base string) string { return base },
+		"trailing slash": func(base string) string { return base + string(filepath.Separator) },
+		"dot relative": func(base string) string {
+			rel, err := filepath.Rel(wd, base)
+			if err != nil {
+				t.Skip("temp dir is not reachable relatively from the working directory")
+			}
+			return "." + string(filepath.Separator) + rel
+		},
+	}
+	for name, spell := range spellings {
+		t.Run(name, func(t *testing.T) {
+			base := t.TempDir()
+			root := spell(base)
+			storeCommitted(t, root, "pub", "old-slug-1", pkg(t, "1", "9", 400))
+			if err := cache.Relocate(root, cache.RelPath("pub", "old-slug-1"),
+				cache.RelPath("pub", "new-slug-1")); err != nil {
+				t.Fatalf("Relocate: %v", err)
+			}
+			if _, err := os.Stat(filepath.Join(base, "pub", "old-slug-1")); !os.IsNotExist(err) {
+				t.Errorf("root spelled %q left the emptied directory behind", root)
+			}
+		})
+	}
+}
+
+// An exclusion names a file that must not be adopted. If it cannot be resolved, the scan
+// cannot tell which file that is, and offering a candidate anyway would let the excluded
+// one back in through the door that skips the download guards.
+func TestAnUnresolvableExclusionRefusesEveryCandidate(t *testing.T) {
+	root := t.TempDir()
+	storeCommitted(t, root, "pub", "asset-1", pkg(t, "111", "9", 400))
+
+	if _, ok := cache.Locate(root, "111", ""); !ok {
+		t.Fatal("the candidate is not findable at all")
+	}
+	for _, bad := range []string{"/etc/passwd", "../outside/x.unitypackage"} {
+		if _, ok := cache.Locate(root, "111", "", bad); ok {
+			t.Errorf("exclusion %q was dropped and a candidate offered anyway", bad)
 		}
 	}
 }

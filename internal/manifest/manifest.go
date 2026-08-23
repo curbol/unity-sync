@@ -104,6 +104,16 @@ func Save(path string, m Manifest) error {
 		os.Remove(name)
 		return err
 	}
+	// CreateTemp makes the file 0600 and the rename carries that over, which would quietly
+	// strip group and other from a file this design wants committed and hand-edited.
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	if err := os.Chmod(name, mode); err != nil {
+		os.Remove(name)
+		return err
+	}
 	return os.Rename(name, path)
 }
 

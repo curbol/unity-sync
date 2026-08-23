@@ -231,9 +231,18 @@ func Locate(root, productID, preferRel string, excludeRel ...string) (Candidate,
 	// that just failed verification as a candidate to adopt.
 	skip := map[string]bool{}
 	for _, e := range excludeRel {
-		if full, err := resolve(root, e); err == nil {
-			skip[full] = true
+		if e == "" {
+			continue
 		}
+		full, err := resolve(root, e)
+		if err != nil {
+			// The caller is naming a file that must not be adopted and this cannot tell
+			// which one it is. Refusing every candidate falls back to a re-download,
+			// where the full set of guards applies; guessing would let the excluded file
+			// back in through the one door that skips them.
+			return Candidate{}, false
+		}
+		skip[full] = true
 	}
 	var found []Candidate
 	filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
@@ -309,6 +318,10 @@ func Relocate(root, fromRel, toRel string) error {
 // pruneEmptyParents removes directories the move emptied, walking up but never past the
 // library root.
 func pruneEmptyParents(root, dir string) {
+	// Cleaned, because every path this compares against came through resolve, which
+	// joins and cleans. A root of "./lib" or "lib/" would otherwise match nothing and
+	// silently prune nothing.
+	root = filepath.Clean(root)
 	for {
 		if dir == root || !strings.HasPrefix(dir, root+string(filepath.Separator)) {
 			return
@@ -328,10 +341,14 @@ func pruneEmptyParents(root, dir string) {
 // and how many bytes. It walks rather than scanning the root, because temps live beside
 // their destinations, and it spares anything newer than the cutoff so a concurrent run's
 // in-flight transfer survives.
-func SweepTemps(root string, olderThan time.Time) (int, int64, error) {
+//
+// Nothing here fails: a subtree that cannot be read, or a root that does not exist yet on
+// a first run, is skipped. One unreadable directory must not stop a 75 GB mirror over a
+// housekeeping pass.
+func SweepTemps(root string, olderThan time.Time) (int, int64) {
 	var count int
 	var bytes int64
-	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+	filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil {
 			return nil
 		}
@@ -348,7 +365,7 @@ func SweepTemps(root string, olderThan time.Time) (int, int64, error) {
 		}
 		return nil
 	})
-	return count, bytes, err
+	return count, bytes
 }
 
 // RemoveStale deletes a package this tool mirrored and is now replacing with another copy

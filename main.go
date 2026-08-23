@@ -266,7 +266,7 @@ func printReport(w io.Writer, rep syncer.Report, dry bool, libraryPath string) {
 	if dry {
 		verb = "status (no changes made)"
 	}
-	fmt.Fprintf(w, "%s: %d asset(s) considered\n", verb, len(rep.Results))
+	fmt.Fprintf(w, "%s: %d owned, %d selected\n", verb, rep.Owned, len(rep.Results))
 	for _, class := range []string{"new", "changed", "download-now", "cache-missing", "adopted", "unchanged", "undownloadable"} {
 		if n := counts[class]; n > 0 {
 			fmt.Fprintf(w, "  %-15s %d\n", class, n)

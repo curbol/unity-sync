@@ -2,6 +2,7 @@ package syncer
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"os"
@@ -293,4 +294,191 @@ func TestAdoptRelocatesACandidateFoundOffTheDerivedPath(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, a.PublisherSlug(), "old-slug-1")); !os.IsNotExist(err) {
 		t.Error("the emptied source directory survived the adopt")
 	}
+}
+
+// The one door into the cache that skips every download guard. A truncation or a mid-file
+// flip leaves the descriptor intact and can clear the size floor, so an adopt scan that
+// considered the file which just failed verification would re-hash the damaged bytes and
+// record them as truth.
+func TestAFileThatFailedVerificationIsNotAdoptedBackIn(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		fullVerify bool
+		damage     func(t *testing.T, path string, size int64)
+	}{
+		{
+			name: "truncated",
+			damage: func(t *testing.T, path string, size int64) {
+				if err := os.Truncate(path, size-100); err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name:       "mid-file flip under --verify",
+			fullVerify: true,
+			damage: func(t *testing.T, path string, _ int64) {
+				f, err := os.OpenFile(path, os.O_WRONLY, 0o644)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer f.Close()
+				f.WriteAt([]byte{0xFF}, 3000)
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, lockPath := newRun(t)
+			a := asset("1", "Asset", "v1", 40000)
+			good := pkg(t, "1", "v1", 40000)
+
+			p, err := cache.Store(root, a.PublisherSlug(), a.Slug(), bytes.NewReader(good))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := p.Commit(); err != nil {
+				t.Fatal(err)
+			}
+			prior := lockfile.New()
+			prior.Assets[a.Slug()] = lockfile.Entry{
+				AssetID: "1", Name: a.Name, Tracked: true,
+				ResolvedVersionID: "v1", DeliveredVersionID: "v1",
+				SizeBytes: p.Size, SHA256: p.SHA256, CachePath: p.RelPath,
+				Version: lockfile.Version{ID: "v1"},
+			}
+			tc.damage(t, filepath.Join(root, filepath.FromSlash(p.RelPath)), p.Size)
+
+			fs := &fakeStore{owned: []model.Asset{a}, bodies: map[string][]byte{"1": good}}
+			o := opts(root, allSelected(a))
+			o.FullVerify = tc.fullVerify
+
+			rep, err := Run(context.Background(), fs, prior, lockPath, o)
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if rep.Results[0].Class == Adopted {
+				t.Fatal("a damaged file was adopted back in and its digest recorded as truth")
+			}
+			if len(fs.fetched) != 1 {
+				t.Errorf("fetched %v, want the damaged asset re-downloaded", fs.fetched)
+			}
+			_, e, _ := rep.Lockfile.FindByAssetID("1")
+			if e.SizeBytes != int64(len(good)) {
+				t.Errorf("sizeBytes = %d, want the freshly downloaded %d", e.SizeBytes, len(good))
+			}
+		})
+	}
+}
+
+// A rename that also bumps the version downloads to the new derived path, so the prior
+// directory would otherwise be left holding a superseded copy of the same asset.
+func TestARenameWithAVersionBumpDoesNotStrandTheOldDirectory(t *testing.T) {
+	root, lockPath := newRun(t)
+	renamed := asset("1", "Brand New Name", "v2", 500)
+
+	old, err := cache.Store(root, renamed.PublisherSlug(), "old-name-1", bytes.NewReader(pkg(t, "1", "v1", 500)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := old.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	prior := lockfile.New()
+	prior.Assets["old-name-1"] = lockfile.Entry{
+		AssetID: "1", Name: "Old Name", Tracked: true,
+		ResolvedVersionID: "v1", DeliveredVersionID: "v1",
+		SizeBytes: old.Size, SHA256: old.SHA256, CachePath: old.RelPath,
+		Version: lockfile.Version{ID: "v1"},
+	}
+
+	fs := &fakeStore{owned: []model.Asset{renamed}, bodies: map[string][]byte{"1": pkg(t, "1", "v2", 500)}}
+	rep, err := Run(context.Background(), fs, prior, lockPath, opts(root, allSelected(renamed)))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep.Results[0].Class != Changed {
+		t.Fatalf("class = %v, want Changed", rep.Results[0].Class)
+	}
+	if _, err := os.Stat(filepath.Join(root, renamed.PublisherSlug(), "old-name-1")); !os.IsNotExist(err) {
+		t.Error("the superseded copy's directory was left behind after the rename")
+	}
+	derived := cache.RelPath(renamed.PublisherSlug(), renamed.Slug())
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(derived))); err != nil {
+		t.Errorf("the new build is not at its derived path: %v", err)
+	}
+}
+
+// Both of these tell the user something the design says they should hear, and neither
+// changes any other observable, so only an assertion catches their absence.
+func TestDownloadWarnings(t *testing.T) {
+	t.Run("advertised and delivered versions disagree", func(t *testing.T) {
+		root, lockPath := newRun(t)
+		a := asset("1", "Asset", "v-advertised", 500)
+		fs := &fakeStore{owned: []model.Asset{a},
+			bodies: map[string][]byte{"1": pkg(t, "1", "v-delivered", 500)}}
+
+		rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, opts(root, allSelected(a)))
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if rep.Results[0].Err != nil {
+			t.Fatalf("a version mismatch must not fail the asset: %v", rep.Results[0].Err)
+		}
+		if !strings.Contains(rep.Results[0].Warning, "v-delivered") {
+			t.Errorf("warning = %q, want it to name the build actually served", rep.Results[0].Warning)
+		}
+		_, e, _ := rep.Lockfile.FindByAssetID("1")
+		if e.ResolvedVersionID != "v-advertised" || e.DeliveredVersionID != "v-delivered" {
+			t.Errorf("both ids should be recorded, got resolved=%q delivered=%q",
+				e.ResolvedVersionID, e.DeliveredVersionID)
+		}
+	})
+
+	t.Run("package carries no descriptor", func(t *testing.T) {
+		root, lockPath := newRun(t)
+		a := asset("1", "Asset", "v1", 500)
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		zw.Write(bytes.Repeat([]byte("x"), 400))
+		zw.Close()
+		body := buf.Bytes()
+		for len(body) < 500 {
+			body = append(body, 0)
+		}
+		fs := &fakeStore{owned: []model.Asset{a}, bodies: map[string][]byte{"1": body}}
+
+		rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, opts(root, allSelected(a)))
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if rep.Results[0].Err != nil {
+			t.Fatalf("a descriptor-less package must still be stored: %v", rep.Results[0].Err)
+		}
+		if !strings.Contains(rep.Results[0].Warning, "no store metadata") {
+			t.Errorf("warning = %q, want it to say later checks fall back to size", rep.Results[0].Warning)
+		}
+		_, e, _ := rep.Lockfile.FindByAssetID("1")
+		if e.DeliveredVersionID != "" {
+			t.Errorf("deliveredVersionId = %q, want empty", e.DeliveredVersionID)
+		}
+	})
+
+	t.Run("outside the advisory window but above the floor", func(t *testing.T) {
+		root, lockPath := newRun(t)
+		// 200 bytes short of 4000: past the +-64 window, inside the floor's 500-byte
+		// allowance (4000/8).
+		a := asset("1", "Asset", "v1", 4000)
+		fs := &fakeStore{owned: []model.Asset{a}, bodies: map[string][]byte{"1": pkg(t, "1", "v1", 3800)}}
+
+		rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, opts(root, allSelected(a)))
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		if rep.Results[0].Err != nil {
+			t.Fatalf("a body inside the floor must not fail: %v", rep.Results[0].Err)
+		}
+		if !strings.Contains(rep.Results[0].Warning, "3800") {
+			t.Errorf("warning = %q, want it to report the received count", rep.Results[0].Warning)
+		}
+	})
 }

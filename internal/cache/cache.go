@@ -221,8 +221,16 @@ type Candidate struct {
 // size floor while still carrying an intact descriptor.
 //
 // When several files claim the same product, the one already at preferRel wins, so an
-// adopt that is really a no-op does not turn into a relocation conflict.
-func Locate(root, productID, preferRel string) (Candidate, bool) {
+// adopt that is really a no-op does not turn into a relocation conflict. Paths in
+// excludeRel are skipped entirely: a file that just failed verification is not a candidate
+// for adoption, however intact its descriptor still looks.
+func Locate(root, productID, preferRel string, excludeRel ...string) (Candidate, bool) {
+	skip := map[string]bool{}
+	for _, e := range excludeRel {
+		if e != "" {
+			skip[e] = true
+		}
+	}
 	var found []Candidate
 	filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
@@ -244,7 +252,9 @@ func Locate(root, productID, preferRel string) (Candidate, bool) {
 		if err != nil {
 			return nil
 		}
-		found = append(found, Candidate{RelPath: filepath.ToSlash(rel), Size: fi.Size(), Metadata: m})
+		if slug := filepath.ToSlash(rel); !skip[slug] {
+			found = append(found, Candidate{RelPath: slug, Size: fi.Size(), Metadata: m})
+		}
 		return nil
 	})
 	if len(found) == 0 {
@@ -337,4 +347,22 @@ func SweepTemps(root string, olderThan time.Time) (int, int64, error) {
 		return 0, 0, nil
 	}
 	return count, bytes, err
+}
+
+// RemoveStale deletes a package this tool mirrored for an asset whose derived path has
+// since changed, and prunes the directories the removal empties. It is only ever called
+// with a path the lockfile itself recorded, never with a file the tool did not write.
+func RemoveStale(root, rel string) error {
+	full, err := resolve(root, rel)
+	if err != nil {
+		return err
+	}
+	if err := os.Remove(full); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	pruneEmptyParents(root, filepath.Dir(full))
+	return nil
 }

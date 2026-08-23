@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -139,6 +140,10 @@ type Result struct {
 
 // Report is what a run produced.
 type Report struct {
+	// Owned is every asset the account holds, not only the selected ones, so a run with an
+	// empty allowlist can still say what there is to choose from.
+	Owned int
+
 	Results  []Result
 	Removed  []lockfile.Entry
 	Unknown  []manifest.Entry
@@ -198,7 +203,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		return Report{}, ErrEmptyLibrary
 	}
 
-	report := Report{Unknown: opts.Manifest.UnknownIDs(owned)}
+	report := Report{Owned: len(owned), Unknown: opts.Manifest.UnknownIDs(owned)}
 
 	// Sweeping before classification matters: an abandoned partial left in the tree is
 	// otherwise a candidate the adopt scan could reach.
@@ -214,6 +219,9 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 	}
 
 	resolutions := map[string]resolution{}
+	// priorPaths remembers where each asset's bytes used to live, so a download that lands
+	// somewhere else can clean up after itself.
+	priorPaths := map[string]string{}
 	var mu sync.Mutex
 
 	// Classify everything selected, then fetch what needs fetching.
@@ -236,8 +244,14 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		}
 		var found cache.Candidate
 		var foundOK bool
+		// excludeRel is set when a recorded file exists but failed verification. Adoption
+		// must not reach for that same file: a truncation or a mid-file flip leaves the
+		// descriptor intact and can clear the size floor, so the scan would re-adopt the
+		// damaged bytes and record them as truth — the outcome every other guard exists to
+		// prevent, arriving through the one door that skips them.
+		var excludeRel string
 		adoptable := func() bool {
-			found, foundOK = cache.Locate(opts.LibraryRoot, a.ID, derived)
+			found, foundOK = cache.Locate(opts.LibraryRoot, a.ID, derived, excludeRel)
 			if !foundOK {
 				return false
 			}
@@ -251,6 +265,12 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 			return found.Metadata.VersionID == a.Version.ID
 		}
 
+		if hasPrev && prev.Tracked {
+			priorPaths[a.ID] = prev.CachePath
+			if prev.CachePath != "" && !cacheOK() {
+				excludeRel = prev.CachePath
+			}
+		}
 		class := classify(a, prev, hasPrev, cacheOK, adoptable)
 		res := Result{Asset: a, Class: class}
 
@@ -327,6 +347,12 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 			err := retry.Do(poolCtx, opts.Retry, func(int) error {
 				var attemptErr error
 				r, warning, resolved, attemptErr = download(ctx, s, opts, res.Asset)
+				// Neither of these improves on a second attempt: the asset is gone, or
+				// the session is.
+				if errors.Is(attemptErr, store.ErrExpiredSession) ||
+					errors.Is(attemptErr, store.ErrNotDownloadable) {
+					return retry.Permanent(attemptErr)
+				}
 				return attemptErr
 			})
 			res.Warning, res.Err = warning, err
@@ -337,6 +363,15 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 				return
 			}
 			if err == nil {
+				// A rename that also bumped the version downloads to the new derived
+				// path, so the prior directory would otherwise be left holding a
+				// superseded copy of the same asset.
+				if old := priorPaths[res.Asset.ID]; old != "" && old != r.cachePath {
+					if rmErr := cache.RemoveStale(opts.LibraryRoot, old); rmErr != nil {
+						res.Warning = strings.TrimSpace(res.Warning + " " +
+							fmt.Sprintf("(could not remove the superseded copy at %s: %v)", old, rmErr))
+					}
+				}
 				mu.Lock()
 				resolutions[res.Asset.ID] = r
 				// Persisting per download is what keeps a run that dies at asset 90 of

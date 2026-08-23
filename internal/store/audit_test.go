@@ -211,3 +211,33 @@ func TestQueryDocumentMatchesItsGoldenCopy(t *testing.T) {
 			store.SearchDocument, want)
 	}
 }
+
+// The identity encoding matters most on the download endpoint — that is where asking for
+// gzip makes the store gzip an already-gzipped package — so the download's headers get
+// their own assertion rather than riding on the GraphQL one.
+func TestFetchSendsTheHeadersTheDownloadEndpointNeeds(t *testing.T) {
+	var got http.Header
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Clone()
+		w.Header().Set("Content-Type", "application/octet-stream")
+		io.WriteString(w, "\x1f\x8b\x08\x04payload")
+	})
+	dl, err := c.Fetch(context.Background(), "115488")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	dl.Body.Close()
+
+	for header, want := range map[string]string{
+		"Accept-Encoding":  "identity",
+		"X-Requested-With": "XMLHttpRequest",
+		"User-Agent":       "unity-sync/test",
+	} {
+		if got.Get(header) != want {
+			t.Errorf("%s = %q, want %q", header, got.Get(header), want)
+		}
+	}
+	if !strings.Contains(got.Get("Cookie"), "LS=cred") {
+		t.Errorf("Cookie %q does not carry the credential", got.Get("Cookie"))
+	}
+}

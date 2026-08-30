@@ -118,6 +118,14 @@ func Save(path string, lf Lockfile) error {
 		os.Remove(name)
 		return err
 	}
+	// Flushed before the rename, not merely written: a run persists this file after every
+	// download so a crash at asset 90 of 100 keeps the 89 already fetched, and bytes still
+	// sitting in the page cache when the rename returns are exactly the record that loses.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(name)
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(name)
 		return err

@@ -100,6 +100,13 @@ func Save(path string, m Manifest) error {
 		os.Remove(name)
 		return err
 	}
+	// Flushed before the rename: this file is committed and hand-curated, and a rename that
+	// returns before the bytes are durable can leave it empty after a crash.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(name)
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(name)
 		return err

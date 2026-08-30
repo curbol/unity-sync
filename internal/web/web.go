@@ -17,6 +17,7 @@ import (
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/curbol/unity-sync/internal/model"
 )
@@ -104,6 +105,10 @@ type Handler struct {
 	enabled map[string]bool
 	token   string
 
+	// One save, enforced rather than assumed. Two tabs on this page share the per-run
+	// token, so without this the second POST is answered "Saved ..." and its selection
+	// then sits in a channel Serve has already stopped reading.
+	once sync.Once
 	done chan Selection
 }
 
@@ -167,8 +172,16 @@ func (h *Handler) save(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, msgWouldEmptySelection, http.StatusConflict)
 		return
 	}
+	accepted := false
+	h.once.Do(func() {
+		accepted = true
+		h.done <- chosen
+	})
+	if !accepted {
+		http.Error(w, msgStaleTab, http.StatusConflict)
+		return
+	}
 	fmt.Fprintf(w, "Saved %d selection(s). You can close this tab.", len(chosen))
-	h.done <- chosen
 }
 
 // Serve runs the page until it is saved once or the context ends.

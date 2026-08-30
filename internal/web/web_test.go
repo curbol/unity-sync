@@ -88,6 +88,43 @@ func TestSaveReturnsTheChosenSet(t *testing.T) {
 	}
 }
 
+// Two tabs on this page carry the same per-run token, so the token alone does not stop a
+// second save. Accepting one tells that tab "Saved ..." for a selection Serve has already
+// stopped reading — the user is told their choice was kept while the manifest holds the
+// other tab's.
+func TestOnlyTheFirstSaveIsAccepted(t *testing.T) {
+	h := web.NewHandler(assets(), map[string]bool{"115488": true})
+	token := tokenFrom(t, render(t, h))
+
+	post := func(id string) *httptest.ResponseRecorder {
+		form := url.Values{"token": {token}, "asset": {id}}
+		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+
+	first := post("115488")
+	if first.Code != http.StatusOK {
+		t.Fatalf("first POST = %d: %s", first.Code, first.Body)
+	}
+	if got := <-h.Selection(); !got["115488"] {
+		t.Fatalf("Serve received %v, want the first tab's selection", got)
+	}
+
+	second := post("193760")
+	if second.Code != http.StatusConflict {
+		t.Errorf("second POST = %d, want %d: it must not report a save nobody reads",
+			second.Code, http.StatusConflict)
+	}
+	select {
+	case stranded := <-h.Selection():
+		t.Errorf("a second selection %v was accepted and stranded in the channel", stranded)
+	default:
+	}
+}
+
 // A page served by an earlier run still has a Save button. Honouring it would apply a
 // selection made against a different library.
 func TestStaleTabIsRefused(t *testing.T) {

@@ -9,7 +9,8 @@ import (
 	"time"
 )
 
-// Policy configures Do. A zero Sleep uses time.Sleep, which tests replace.
+// Policy configures Do. A zero Sleep backs off on a timer that a cancelled context cuts
+// short; tests replace it to avoid waiting at all.
 type Policy struct {
 	Attempts int
 	Base     time.Duration
@@ -52,14 +53,15 @@ func Retryable(status int) bool {
 }
 
 // Do calls fn until it returns nil, returns a Permanent error, or the attempts run out,
-// sleeping base<<(n-1) between tries. A cancelled context stops it immediately.
+// backing off base<<(n-1) between tries. A cancelled context stops it: before an attempt,
+// and during the backoff itself.
 func Do(ctx context.Context, p Policy, fn func(attempt int) error) error {
 	if p.Attempts < 1 {
 		p.Attempts = 1
 	}
-	sleep := p.Sleep
-	if sleep == nil {
-		sleep = time.Sleep
+	sleep := backoff
+	if p.Sleep != nil {
+		sleep = func(_ context.Context, d time.Duration) error { p.Sleep(d); return nil }
 	}
 	var last error
 	for attempt := 1; attempt <= p.Attempts; attempt++ {
@@ -77,7 +79,23 @@ func Do(ctx context.Context, p Policy, fn func(attempt int) error) error {
 		if attempt == p.Attempts {
 			break
 		}
-		sleep(p.Base << (attempt - 1))
+		if err := sleep(ctx, p.Base<<(attempt-1)); err != nil {
+			return err
+		}
 	}
 	return fmt.Errorf("gave up after %d attempts: %w", p.Attempts, last)
+}
+
+// backoff waits, or gives up the wait when the context ends. Waiting it out regardless
+// would make a cancelled run pay one full backoff per goroutine still in flight before it
+// could exit, and downloads back off in seconds.
+func backoff(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-t.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

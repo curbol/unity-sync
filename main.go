@@ -94,13 +94,16 @@ func run(args []string) (int, error) {
 		return 1, err
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	// flag.Parse stops at the first non-flag argument, so an unchecked positional would
 	// silently swallow every flag after it: `sync foo --dry-run` would download.
 	if cmd == "update" {
 		if fs.NArg() > 1 {
 			return 1, fmt.Errorf("update takes at most one version, got %d arguments", fs.NArg())
 		}
-		return 0, selfupdate.Run(version, fs.Arg(0))
+		return 0, selfupdate.Run(ctx, version, fs.Arg(0))
 	}
 	if fs.NArg() > 0 {
 		return 1, fmt.Errorf("%s takes no positional arguments (got %q); to limit assets use --only %s",
@@ -137,9 +140,6 @@ func run(args []string) (int, error) {
 		return 1, err
 	}
 	client := store.New(cookie, version)
-
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 
 	if err := client.Bootstrap(ctx); err != nil {
 		return 1, err

@@ -9,6 +9,7 @@ package selfupdate
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -45,13 +46,13 @@ func New(apiBase, token string) *Client {
 
 // Token resolves a GitHub credential from the environment, falling back to the gh CLI.
 // The repository is private, so an unauthenticated update cannot even list releases.
-func Token() string {
+func Token(ctx context.Context) string {
 	for _, k := range []string{"GITHUB_TOKEN", "GH_TOKEN"} {
 		if v := os.Getenv(k); v != "" {
 			return v
 		}
 	}
-	out, err := exec.Command("gh", "auth", "token").Output()
+	out, err := exec.CommandContext(ctx, "gh", "auth", "token").Output()
 	if err != nil {
 		return ""
 	}
@@ -97,8 +98,8 @@ func PlatformAsset(version string) (string, error) {
 	return fmt.Sprintf("unity-sync-%s-%s-%s.zip", version, os_, arch), nil
 }
 
-func (c *Client) get(url, accept string) (*http.Response, error) {
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+func (c *Client) get(ctx context.Context, url, accept string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -120,12 +121,12 @@ func (c *Client) get(url, accept string) (*http.Response, error) {
 }
 
 // Resolve finds a release: the latest, or a specific version when one is named.
-func (c *Client) Resolve(version string) (release, error) {
+func (c *Client) Resolve(ctx context.Context, version string) (release, error) {
 	url := c.apiBase + "/repos/" + repo + "/releases/latest"
 	if version != "" {
 		url = c.apiBase + "/repos/" + repo + "/releases/tags/v" + strings.TrimPrefix(version, "v")
 	}
-	resp, err := c.get(url, "application/vnd.github+json")
+	resp, err := c.get(ctx, url, "application/vnd.github+json")
 	if err != nil {
 		return release{}, err
 	}
@@ -142,7 +143,7 @@ func (c *Client) Resolve(version string) (release, error) {
 
 // DownloadBinary fetches the platform archive for a release and returns the binary
 // inside it.
-func (c *Client) DownloadBinary(rel release) ([]byte, error) {
+func (c *Client) DownloadBinary(ctx context.Context, rel release) ([]byte, error) {
 	want, err := PlatformAsset(strings.TrimPrefix(rel.TagName, "v"))
 	if err != nil {
 		return nil, err
@@ -158,7 +159,7 @@ func (c *Client) DownloadBinary(rel release) ([]byte, error) {
 		return nil, fmt.Errorf("release %s has no asset %s", rel.TagName, want)
 	}
 	// The asset API answers with a 302 to a signed CDN URL; this client follows it.
-	resp, err := c.get(assetURL, "application/octet-stream")
+	resp, err := c.get(ctx, assetURL, "application/octet-stream")
 	if err != nil {
 		return nil, err
 	}
@@ -209,28 +210,65 @@ func Replace(targetPath string, binary []byte) error {
 		os.Remove(name)
 		return err
 	}
+	// Flushed before the rename: the rename publishes this file onto PATH, and a crash
+	// with the bytes still in the page cache would publish a truncated binary.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(name)
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		os.Remove(name)
 		return err
 	}
 	if err := os.Rename(name, targetPath); err != nil {
-		os.Remove(name)
-		return err
+		if !runningImageIsLocked() {
+			os.Remove(name)
+			return err
+		}
+		return replaceAside(name, targetPath, err)
 	}
 	return nil
 }
 
+// runningImageIsLocked reports whether this platform refuses to replace the executable
+// image of a running process. Windows does; every platform this ships to otherwise
+// renames over it happily, so the aside dance below never runs there.
+func runningImageIsLocked() bool { return runtime.GOOS == "windows" }
+
+// replaceAside is the Windows path. Windows will not let a running image be replaced or
+// deleted, but it does allow that image to be renamed, so the update moves the old binary
+// out of the way and takes its name. A failure puts the working binary back rather than
+// leaving nothing on PATH, which is the one outcome an updater must never produce.
+func replaceAside(newPath, targetPath string, direct error) error {
+	aside := targetPath + ".old"
+	os.Remove(aside)
+	if err := os.Rename(targetPath, aside); err != nil {
+		os.Remove(newPath)
+		return fmt.Errorf("%w (and could not move the running binary aside: %v)", direct, err)
+	}
+	if err := os.Rename(newPath, targetPath); err != nil {
+		os.Rename(aside, targetPath)
+		os.Remove(newPath)
+		return err
+	}
+	// Fails while the old image is still running, which is the normal case here. The
+	// leftover is named beside the binary and is replaced by the next update.
+	os.Remove(aside)
+	return nil
+}
+
 // Run performs an update of the running binary.
-func Run(current, version string) error {
+func Run(ctx context.Context, current, version string) error {
 	if current == "dev" {
 		return fmt.Errorf("this is a dev build; install a release first")
 	}
-	token := Token()
+	token := Token(ctx)
 	if token == "" {
 		return fmt.Errorf("no GitHub credential: set GITHUB_TOKEN or run `gh auth login` (the repo is private)")
 	}
 	c := New("", token)
-	rel, err := c.Resolve(version)
+	rel, err := c.Resolve(ctx, version)
 	if err != nil {
 		return err
 	}
@@ -239,7 +277,7 @@ func Run(current, version string) error {
 		fmt.Printf("already on %s\n", current)
 		return nil
 	}
-	binary, err := c.DownloadBinary(rel)
+	binary, err := c.DownloadBinary(ctx, rel)
 	if err != nil {
 		return err
 	}

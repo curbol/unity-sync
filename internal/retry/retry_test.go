@@ -106,3 +106,26 @@ func TestRetryableCoversRateLimitsAndServerErrorsOnly(t *testing.T) {
 		}
 	}
 }
+
+// A run cancelled mid-backoff must not wait the backoff out first. Downloads back off in
+// seconds and the pool holds one of these per goroutine still in flight, so waiting would
+// be the delay a user sees between Ctrl-C and the process exiting.
+func TestCancellationCutsTheBackoffShort(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	attempts := 0
+	start := time.Now()
+	err := retry.Do(ctx, retry.Policy{Attempts: 3, Base: 30 * time.Second}, func(int) error {
+		attempts++
+		cancel() // the user hits Ctrl-C while this attempt is running
+		return errors.New("boom")
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("Do = %v, want context.Canceled", err)
+	}
+	if attempts != 1 {
+		t.Errorf("ran %d attempts after cancellation, want 1", attempts)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("Do waited %v before noticing the cancellation", elapsed)
+	}
+}

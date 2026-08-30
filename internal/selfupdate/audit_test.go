@@ -1,9 +1,12 @@
 package selfupdate_test
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -14,6 +17,31 @@ import (
 
 // The private-repo asset API answers with a 302 to a signed CDN URL, so the test server
 // really redirects. A client that inherited the Asset Store's redirect ban fails here.
+// The one outcome an updater must never produce is no working binary. When the swap
+// cannot happen, the binary already on PATH has to be exactly as it was, and the scratch
+// file must not be left behind for the next run to trip over.
+func TestAFailedReplaceLeavesTheWorkingBinaryAndNoScratch(t *testing.T) {
+	dir := t.TempDir()
+	// A non-empty directory at the target path: the rename cannot succeed onto it.
+	target := filepath.Join(dir, "unity-sync")
+	if err := os.MkdirAll(filepath.Join(target, "occupied"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := selfupdate.Replace(target, []byte("new binary")); err == nil {
+		t.Fatal("Replace reported success against a target it could not take")
+	}
+	if _, err := os.Stat(filepath.Join(target, "occupied")); err != nil {
+		t.Errorf("the existing target was disturbed by a failed replace: %v", err)
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".unity-sync-update-") {
+			t.Errorf("a failed replace left the scratch file %q beside the binary", e.Name())
+		}
+	}
+}
+
 func TestDownloadFollowsTheAssetRedirect(t *testing.T) {
 	archive := zipWithBinary(t, "#!/bin/true\n")
 	var cdn *httptest.Server
@@ -50,11 +78,11 @@ func TestDownloadFollowsTheAssetRedirect(t *testing.T) {
 	defer api.Close()
 
 	c := selfupdate.New(api.URL, "token")
-	rel, err := c.Resolve("")
+	rel, err := c.Resolve(context.Background(), "")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	binary, err := c.DownloadBinary(rel)
+	binary, err := c.DownloadBinary(context.Background(), rel)
 	if err != nil {
 		t.Fatalf("DownloadBinary: %v — a client with the store's redirect ban fails exactly here", err)
 	}

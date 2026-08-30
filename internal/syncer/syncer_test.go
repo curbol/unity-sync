@@ -25,10 +25,11 @@ import (
 // ---- fakes -----------------------------------------------------------------
 
 type fakeStore struct {
-	owned   []model.Asset
-	bodies  map[string][]byte
-	fetchEr map[string]error
-	lookups map[string]model.Asset
+	owned    []model.Asset
+	bodies   map[string][]byte
+	fetchEr  map[string]error
+	lookups  map[string]model.Asset
+	lookupEr map[string]error
 
 	inFlight atomic.Int32
 	maxSeen  atomic.Int32
@@ -40,6 +41,9 @@ type fakeStore struct {
 func (f *fakeStore) Enumerate(context.Context) ([]model.Asset, error) { return f.owned, nil }
 
 func (f *fakeStore) Lookup(_ context.Context, id string) (model.Asset, bool, error) {
+	if err := f.lookupEr[id]; err != nil {
+		return model.Asset{}, false, err
+	}
 	a, ok := f.lookups[id]
 	return a, ok, nil
 }

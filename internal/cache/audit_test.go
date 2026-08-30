@@ -2,6 +2,8 @@ package cache_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
@@ -99,6 +101,57 @@ func TestUnsafePathsAreRefused(t *testing.T) {
 		if _, _, err := cache.Hash(root, rel); err == nil {
 			t.Errorf("Hash accepted path %q", rel)
 		}
+		// RemoveStale deletes. A path that escapes the root would delete a file the tool
+		// never wrote, and the lockfile it takes these from is hand-editable.
+		if err := cache.RemoveStale(root, rel); err == nil {
+			t.Errorf("RemoveStale accepted path %q", rel)
+		}
+	}
+}
+
+// The digest and size Hash returns are what an adoption records as the asset's truth, so a
+// wrong answer here is laundered into the lockfile through the one route that skips the
+// download guards.
+func TestHashReportsTheFilesRealDigestAndSize(t *testing.T) {
+	root := t.TempDir()
+	body := pkg(t, "111", "v1", 4096)
+	p := storeCommitted(t, root, "pub", "asset", body)
+
+	sha, size, err := cache.Hash(root, p.RelPath)
+	if err != nil {
+		t.Fatalf("Hash: %v", err)
+	}
+	want := sha256.Sum256(body)
+	if sha != hex.EncodeToString(want[:]) {
+		t.Errorf("sha = %s, want %s", sha, hex.EncodeToString(want[:]))
+	}
+	if size != int64(len(body)) {
+		t.Errorf("size = %d, want %d", size, len(body))
+	}
+}
+
+// RemoveStale is the only function allowed to delete a mirrored package. It has to take
+// the directories the removal empties with it, or a rename leaves the old publisher and
+// asset folders behind for quarry to index as empty facets.
+func TestRemoveStaleDeletesTheFileAndPrunesItsParents(t *testing.T) {
+	root := t.TempDir()
+	p := storeCommitted(t, root, "pub", "asset", pkg(t, "111", "v1", 1024))
+
+	if err := cache.RemoveStale(root, p.RelPath); err != nil {
+		t.Fatalf("RemoveStale: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(p.RelPath))); !os.IsNotExist(err) {
+		t.Error("the package survived RemoveStale")
+	}
+	if _, err := os.Stat(filepath.Join(root, "pub")); !os.IsNotExist(err) {
+		t.Error("the emptied publisher directory survived")
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Errorf("pruning climbed past the library root: %v", err)
+	}
+	// A run re-records a removal it already made; a missing file is done, not an error.
+	if err := cache.RemoveStale(root, p.RelPath); err != nil {
+		t.Errorf("removing an already-gone file = %v, want nil", err)
 	}
 }
 
@@ -120,11 +173,11 @@ func TestLocateSkipsAnExcludedFileWrittenNonCanonically(t *testing.T) {
 	rel := cache.RelPath("pub", "asset-1")
 	storeCommitted(t, root, "pub", "asset-1", pkg(t, "111", "9", 400))
 
-	if _, ok := cache.Locate(root, "111", "", rel); ok {
+	if _, ok := cache.Scan(root).Find("111", "", rel); ok {
 		t.Fatal("the canonical exclude did not skip the file")
 	}
 	for _, spelling := range []string{"./" + rel, "pub/./asset-1/asset-1.unitypackage"} {
-		if _, ok := cache.Locate(root, "111", "", spelling); ok {
+		if _, ok := cache.Scan(root).Find("111", "", spelling); ok {
 			t.Errorf("exclude %q did not skip the same file", spelling)
 		}
 	}
@@ -172,11 +225,11 @@ func TestAnUnresolvableExclusionRefusesEveryCandidate(t *testing.T) {
 	root := t.TempDir()
 	storeCommitted(t, root, "pub", "asset-1", pkg(t, "111", "9", 400))
 
-	if _, ok := cache.Locate(root, "111", ""); !ok {
+	if _, ok := cache.Scan(root).Find("111", ""); !ok {
 		t.Fatal("the candidate is not findable at all")
 	}
 	for _, bad := range []string{"/etc/passwd", "../outside/x.unitypackage"} {
-		if _, ok := cache.Locate(root, "111", "", bad); ok {
+		if _, ok := cache.Scan(root).Find("111", "", bad); ok {
 			t.Errorf("exclusion %q was dropped and a candidate offered anyway", bad)
 		}
 	}

@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -17,6 +18,7 @@ import (
 	"github.com/curbol/unity-sync/internal/model"
 	"github.com/curbol/unity-sync/internal/retry"
 	"github.com/curbol/unity-sync/internal/store"
+	"github.com/curbol/unity-sync/internal/unitypackage"
 )
 
 // Failure models this package must keep pinned: the guards between a bad response and a
@@ -127,6 +129,98 @@ func TestOneFailedAssetDoesNotStopTheRest(t *testing.T) {
 	}
 	if rep.Failed() {
 		t.Error("a permanently pulled asset made the run report failure")
+	}
+}
+
+// The mirror image of the rule above, and the half with no other observable. An expired
+// session makes every remaining download pointless, so it is the one error that stops the
+// pool; without that, a session dying at asset 5 of 300 sends the other 295 to the store
+// to fail one at a time. Deleting the cancelPool call leaves every other test green.
+func TestAnExpiredSessionStopsThePool(t *testing.T) {
+	root, lockPath := newRun(t)
+	var owned []model.Asset
+	bodies := map[string][]byte{}
+	for i := range 40 {
+		id := fmt.Sprint(i)
+		owned = append(owned, asset(id, "Asset "+id, "v1", 500))
+		bodies[id] = pkg(t, id, "v1", 500)
+	}
+	// The first asset the pool reaches kills the session; every fetch after that is waste.
+	fs := &fakeStore{owned: owned, bodies: bodies, fetchEr: map[string]error{"0": store.ErrExpiredSession}}
+
+	o := opts(root, allSelected(owned...))
+	o.Concurrency = 1
+	rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, o)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(fs.fetched) == len(owned) {
+		t.Errorf("the pool fetched all %d assets after the session expired; it must stop early",
+			len(fs.fetched))
+	}
+	if !rep.Failed() {
+		t.Error("an expired session left the run reporting success")
+	}
+}
+
+// republished keeps the size floor on when the re-read itself fails: a Lookup error says
+// nothing about whether the body was truncated, and reading it as "republished" would
+// discard the one guard that catches a cleanly-ended short stream.
+func TestALookupFailureDoesNotExcuseAShortBody(t *testing.T) {
+	root, lockPath := newRun(t)
+	a := asset("1", "Asset", "v1", 100000)
+	fs := &fakeStore{
+		owned:    []model.Asset{a},
+		bodies:   map[string][]byte{"1": pkg(t, "1", "v1", 400)},
+		lookupEr: map[string]error{"1": errors.New("the store is unreachable")},
+	}
+
+	o := opts(root, allSelected(a))
+	o.Retry = retryPolicyWithAttempts(2)
+	rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, o)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep.Results[0].Err == nil {
+		t.Fatal("a short body passed because the republish re-read failed")
+	}
+	if !strings.Contains(rep.Results[0].Err.Error(), "ended early") {
+		t.Errorf("error = %v, want the short-body verdict", rep.Results[0].Err)
+	}
+	if _, e, _ := rep.Lockfile.FindByAssetID("1"); e.Tracked {
+		t.Error("the truncated body was recorded as the asset's truth")
+	}
+}
+
+// The incremental save runs from inside every download goroutine, so what it writes has to
+// survive them running at once. Each save rebuilds the whole document from the shared
+// resolutions map, and a snapshot that lost a peer's entry — or a rename ordered against
+// the snapshot it came from — shows up here as a mirrored asset missing from the file.
+func TestConcurrentDownloadsEachLandInTheLockfile(t *testing.T) {
+	root, lockPath := newRun(t)
+	var owned []model.Asset
+	bodies := map[string][]byte{}
+	for i := range 12 {
+		id := fmt.Sprint(i)
+		owned = append(owned, asset(id, "Asset "+id, "v1", 500))
+		bodies[id] = pkg(t, id, "v1", 500)
+	}
+	fs := &fakeStore{owned: owned, bodies: bodies, hold: 2 * time.Millisecond}
+	o := opts(root, allSelected(owned...))
+	o.Concurrency = 6
+
+	if _, err := Run(context.Background(), fs, lockfile.New(), lockPath, o); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	saved, err := lockfile.Load(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range owned {
+		_, e, ok := saved.FindByAssetID(a.ID)
+		if !ok || !e.Tracked {
+			t.Errorf("asset %s downloaded but is not in the saved lockfile", a.ID)
+		}
 	}
 }
 
@@ -295,6 +389,54 @@ func TestAdoptRelocatesACandidateFoundOffTheDerivedPath(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, a.PublisherSlug(), "old-slug-1")); !os.IsNotExist(err) {
 		t.Error("the emptied source directory survived the adopt")
+	}
+}
+
+// A lost lockfile makes every owned asset ask the adopt question at once, and the answer
+// comes from one shared scan of the library rather than a walk per asset. Sharing it is
+// where a mix-up would show: an index keyed or reused wrongly hands an asset another
+// product's file, and adoption is the one route that skips the download guards.
+func TestOneScanServesEveryAdoptionInARun(t *testing.T) {
+	root, lockPath := newRun(t)
+	var owned []model.Asset
+	for _, id := range []string{"1", "2", "3", "4"} {
+		a := asset(id, "Asset "+id, "v1", 500)
+		owned = append(owned, a)
+		// Each under a stale slug, so every one of them needs the scan and a relocation.
+		stale, err := cache.Store(root, a.PublisherSlug(), "old-slug-"+id, bytes.NewReader(pkg(t, id, "v1", 500)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := stale.Commit(); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	fs := &fakeStore{owned: owned}
+	rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, opts(root, allSelected(owned...)))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(fs.fetched) != 0 {
+		t.Errorf("adoption downloaded %v", fs.fetched)
+	}
+	for _, a := range owned {
+		_, e, ok := rep.Lockfile.FindByAssetID(a.ID)
+		if !ok || !e.Tracked {
+			t.Fatalf("asset %s was not adopted", a.ID)
+		}
+		derived := cache.RelPath(a.PublisherSlug(), a.Slug())
+		if e.CachePath != derived {
+			t.Errorf("asset %s cachePath = %q, want %q", a.ID, e.CachePath, derived)
+		}
+		// The descriptor at the recorded path must be this asset's own, not a neighbour's.
+		m, err := unitypackage.ReadFile(filepath.Join(root, filepath.FromSlash(e.CachePath)))
+		if err != nil {
+			t.Fatalf("asset %s: reading the adopted file: %v", a.ID, err)
+		}
+		if m.ID != a.ID {
+			t.Errorf("asset %s adopted a package for product %s", a.ID, m.ID)
+		}
 	}
 }
 

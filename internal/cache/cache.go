@@ -169,20 +169,8 @@ func Verify(root, rel string, wantSize int64, wantDeliveredID string) bool {
 // VerifyDeep re-hashes the file. It is opt-in because the library runs to tens of
 // gigabytes, and it is the only check that sees a mid-file corruption.
 func VerifyDeep(root, rel, wantSHA string) bool {
-	full, err := resolve(root, rel)
-	if err != nil {
-		return false
-	}
-	f, err := os.Open(full)
-	if err != nil {
-		return false
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return false
-	}
-	return hex.EncodeToString(h.Sum(nil)) == wantSHA
+	sha, _, err := Hash(root, rel)
+	return err == nil && sha == wantSHA
 }
 
 // Hash returns a cached file's digest and size, for adopting a file the tool did not
@@ -212,39 +200,30 @@ type Candidate struct {
 	Metadata unitypackage.Metadata
 }
 
-// Locate scans the library for a package whose own metadata claims the given product id.
-// It scans rather than probing the derived path because the whole point of adoption is a
-// file that is not where the current layout would put it — after a rename, say.
+// Index is one pass over the library, grouping every package by the product id its own
+// descriptor claims.
+//
+// It exists because adoption is a per-asset question asked against a whole-tree answer.
+// Probing per asset means one walk and one header parse per package per asset, which is
+// quadratic exactly when adoption matters most: a lost lockfile makes every owned asset
+// ask, over a library that already holds them all.
+type Index struct {
+	root      string
+	byProduct map[string][]Candidate
+}
+
+// Scan reads the library once. It is the caller's job to scan after any sweep of
+// abandoned temps and before the adopt probes that consult it.
 //
 // Only files ending .unitypackage and not starting with a dot are considered, so an
 // abandoned download temp can never be adopted: a partial can be large enough to clear a
 // size floor while still carrying an intact descriptor.
 //
-// When several files claim the same product, the one already at preferRel wins, so an
-// adopt that is really a no-op does not turn into a relocation conflict. Paths in
-// excludeRel are skipped entirely: a file that just failed verification is not a candidate
-// for adoption, however intact its descriptor still looks.
-func Locate(root, productID, preferRel string, excludeRel ...string) (Candidate, bool) {
-	// Resolved, not compared as strings: excludeRel comes from the lockfile, which is
-	// hand-editable and travels between machines, so "./pub/a/a.unitypackage" has to skip
-	// the same file "pub/a/a.unitypackage" names. Missing the match would re-offer a file
-	// that just failed verification as a candidate to adopt.
-	skip := map[string]bool{}
-	for _, e := range excludeRel {
-		if e == "" {
-			continue
-		}
-		full, err := resolve(root, e)
-		if err != nil {
-			// The caller is naming a file that must not be adopted and this cannot tell
-			// which one it is. Refusing every candidate falls back to a re-download,
-			// where the full set of guards applies; guessing would let the excluded file
-			// back in through the one door that skips them.
-			return Candidate{}, false
-		}
-		skip[full] = true
-	}
-	var found []Candidate
+// Nothing here fails. An unreadable subtree, a file whose header will not parse, or a root
+// that does not exist yet on a first run simply yields no candidate, and the caller falls
+// back to a download, where the full set of guards applies.
+func Scan(root string) *Index {
+	ix := &Index{root: root, byProduct: map[string][]Candidate{}}
 	filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return nil
@@ -254,7 +233,7 @@ func Locate(root, productID, preferRel string, excludeRel ...string) (Candidate,
 			return nil
 		}
 		m, err := unitypackage.ReadFile(p)
-		if err != nil || m.ID != productID {
+		if err != nil || m.ID == "" {
 			return nil
 		}
 		fi, err := d.Info()
@@ -265,12 +244,55 @@ func Locate(root, productID, preferRel string, excludeRel ...string) (Candidate,
 		if err != nil {
 			return nil
 		}
-		if skip[filepath.Clean(p)] {
-			return nil
-		}
-		found = append(found, Candidate{RelPath: filepath.ToSlash(rel), Size: fi.Size(), Metadata: m})
+		ix.byProduct[m.ID] = append(ix.byProduct[m.ID],
+			Candidate{RelPath: filepath.ToSlash(rel), Size: fi.Size(), Metadata: m})
 		return nil
 	})
+	return ix
+}
+
+// Find returns a package whose own metadata claims the given product id. It answers from
+// the scan rather than probing the derived path, because the whole point of adoption is a
+// file that is not where the current layout would put it — after a rename, say.
+//
+// When several files claim the same product, the one already at preferRel wins, so an
+// adopt that is really a no-op does not turn into a relocation conflict. Paths in
+// excludeRel are skipped entirely: a file that just failed verification is not a candidate
+// for adoption, however intact its descriptor still looks.
+func (ix *Index) Find(productID, preferRel string, excludeRel ...string) (Candidate, bool) {
+	// Resolved, not compared as strings: excludeRel comes from the lockfile, which is
+	// hand-editable and travels between machines, so "./pub/a/a.unitypackage" has to skip
+	// the same file "pub/a/a.unitypackage" names. Missing the match would re-offer a file
+	// that just failed verification as a candidate to adopt.
+	skip := map[string]bool{}
+	for _, e := range excludeRel {
+		if e == "" {
+			continue
+		}
+		full, err := resolve(ix.root, e)
+		if err != nil {
+			// The caller is naming a file that must not be adopted and this cannot tell
+			// which one it is. Refusing every candidate falls back to a re-download,
+			// where the full set of guards applies; guessing would let the excluded file
+			// back in through the one door that skips them.
+			return Candidate{}, false
+		}
+		skip[full] = true
+	}
+	var found []Candidate
+	for _, c := range ix.byProduct[productID] {
+		full, err := resolve(ix.root, c.RelPath)
+		if err != nil || skip[full] {
+			continue
+		}
+		// Re-checked against the filesystem, because a run relocates and removes packages
+		// while it classifies: the scan is a snapshot, and handing back a path that has
+		// since moved would fail an adopt that a re-scan would have completed.
+		if _, err := os.Stat(full); err != nil {
+			continue
+		}
+		found = append(found, c)
+	}
 	if len(found) == 0 {
 		return Candidate{}, false
 	}

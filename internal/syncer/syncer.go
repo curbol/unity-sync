@@ -225,6 +225,18 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 	priorPaths := map[string]string{}
 	var mu sync.Mutex
 
+	// One scan of the library serves every adopt probe below, built on first use and only
+	// from this loop, which is sequential. Scanning eagerly would make the ordinary run —
+	// where everything is already current and nothing asks — pay for a walk it never uses;
+	// scanning per probe would walk the whole tree once per asset.
+	var library *cache.Index
+	scan := func() *cache.Index {
+		if library == nil {
+			library = cache.Scan(opts.LibraryRoot)
+		}
+		return library
+	}
+
 	// Classify everything selected, then fetch what needs fetching.
 	var pending []Result
 	for _, a := range owned {
@@ -262,7 +274,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 			if hasPrev && prev.Tracked && prev.CachePath != "" && !cacheOK() {
 				excludeRel = prev.CachePath
 			}
-			found, foundOK = cache.Locate(opts.LibraryRoot, a.ID, derived, excludeRel)
+			found, foundOK = scan().Find(a.ID, derived, excludeRel)
 			if !foundOK {
 				return false
 			}

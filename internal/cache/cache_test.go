@@ -147,11 +147,11 @@ func TestLocateFindsAPackageByItsOwnIdAndIgnoresTemps(t *testing.T) {
 	os.MkdirAll(tempDir, 0o755)
 	os.WriteFile(filepath.Join(tempDir, ".unity-sync-dl-999"), pkg(t, "333", "9", 400), 0o644)
 
-	got, ok := cache.Locate(root, "222", "")
+	got, ok := cache.Scan(root).Find("222", "")
 	if !ok || !strings.Contains(got.RelPath, "asset-2") {
 		t.Errorf("Locate(222) = %+v, %v", got, ok)
 	}
-	if _, ok := cache.Locate(root, "333", ""); ok {
+	if _, ok := cache.Scan(root).Find("333", ""); ok {
 		t.Error("Locate adopted an abandoned download temp")
 	}
 }
@@ -162,7 +162,7 @@ func TestLocatePrefersTheFileAlreadyAtTheDerivedPath(t *testing.T) {
 	storeCommitted(t, root, "pub", "asset-1", pkg(t, "111", "9", 400))
 	storeCommitted(t, root, "old-pub", "old-asset", pkg(t, "111", "9", 400))
 
-	got, ok := cache.Locate(root, "111", derived)
+	got, ok := cache.Scan(root).Find("111", derived)
 	if !ok || got.RelPath != derived {
 		t.Errorf("Locate = %q, want the copy already at %q", got.RelPath, derived)
 	}

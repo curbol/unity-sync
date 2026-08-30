@@ -43,3 +43,16 @@ jobs:
       # no session are needed: everything runs against httptest servers and the
       # committed, scrubbed fixtures.
       - run: go test -race ./...
+
+  # The release ships Windows binaries, so the path handling the lockfile's cachePath
+  # depends on, the Gecko profile roots, and the rename that replaces a running executable
+  # are all shipped code on a platform the Linux job never executes.
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go build ./...
+      - run: go test ./...

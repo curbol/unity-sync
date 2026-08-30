@@ -186,6 +186,13 @@ descriptor claims that product and adopts it — recording its size, digest and 
 version id, and moving it to the path the current layout dictates before recording it,
 so quarry's facets and the lockfile agree.
 
+The scan is one pass over the library per run, built on first use and shared by every
+asset that asks. Probing per asset instead is quadratic exactly when adoption matters
+most: a lost lockfile makes every owned asset ask, over a library that already holds them
+all. Building it lazily matters too — the ordinary run, where everything is current and
+nothing asks, must not pay for a walk. It is taken after the temp sweep, so an abandoned
+partial is never in it.
+
 Three gates keep adoption from laundering a bad file into the cache. The descriptor's
 product id must match. Its version id must match what the store currently advertises, so a
 stale build cannot be recorded as current. And the file must clear the same size floor a
@@ -269,7 +276,5 @@ capturing again rather than re-running the scrubber over something checked in.
 
 ## Open questions
 
-- Whether Firefox's session store (`sessionstore-backups/recovery.jsonlz4`) holds `LS`. If
-  it does, a reader there would restore a zero-paste workflow. Unverified.
 - Whether the Unity Editor recognises this cache layout if `library_path` points at its
   `Asset Store-5.x` directory. Untested; the docs claim nothing.

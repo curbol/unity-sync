@@ -9,11 +9,10 @@
 # This file is user-scoped: session and machine defaults. Which assets a project mirrors
 # is project-scoped and lives in unity-sync.toml instead.
 
-# Where your saved session lives: a pasted-curl file or a cookies.txt export. If unset,
-# unity-sync looks for session.curl or cookies.txt in this config dir.
+# Where your saved session lives: a signed-in Firefox-family browser, a pasted-curl file,
+# or a cookies.txt export. If unset, unity-sync looks for session.curl or cookies.txt in
+# this config dir.
 #
-# There is no browser option. The cookie the store checks is a session cookie that never
-# reaches a browser's cookie database, so reading one could not authenticate.
 # session_source = "browser" reads a signed-in Firefox-family session store, which is the
 # only way to avoid re-pasting when the session expires. It also accepts a path to a pasted
 # curl file, a cookies.txt, a browser profile directory, or a recovery.jsonlz4.

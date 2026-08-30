@@ -67,8 +67,11 @@ jobs:
             (cd dist && zip "unity-sync-${VERSION}-${label}.zip" "$bin" && rm "$bin")
           done
 
+      # Pinned by commit, not by tag: this job holds contents: write and publishes the
+      # binaries `unity-sync update` installs unattended, and a tag can be repointed.
+      # The comment is the readable half; the SHA is the one that is enforced.
       - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           generate_release_notes: true
           files: dist/*.zip

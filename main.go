@@ -111,18 +111,13 @@ func run(args []string) (int, error) {
 	}
 
 	configDir := config.ResolveDir(*cfgDir)
-	cfg, err := config.Load(configDir)
+	cfg, err := config.Load(configDir, config.Flags{
+		LibraryPath:   *library,
+		SessionSource: *sessionFlag,
+		Concurrency:   *concurrency,
+	})
 	if err != nil {
 		return 1, err
-	}
-	if *library != "" {
-		cfg.LibraryPath = *library
-	}
-	if *concurrency > 0 {
-		cfg.Concurrency = *concurrency
-	}
-	if *sessionFlag != "" {
-		cfg.SessionSource = *sessionFlag
 	}
 
 	manifestPath, err := resolveManifest(*manifestFlag, cmd)

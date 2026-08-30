@@ -42,7 +42,7 @@ func TestResolveDirPrecedence(t *testing.T) {
 
 func TestLoadDefaultsWhenNoFileExists(t *testing.T) {
 	isolate(t)
-	c, err := config.Load(t.TempDir())
+	c, err := config.Load(t.TempDir(), config.Flags{})
 	if err != nil {
 		t.Fatalf("Load with no config.toml: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestFileThenEnvPrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	c, err := config.Load(dir)
+	c, err := config.Load(dir, config.Flags{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestFileThenEnvPrecedence(t *testing.T) {
 
 	t.Setenv("UNITY_SYNC_LIBRARY", "/from/env/lib")
 	t.Setenv("UNITY_SYNC_SESSION", "/from/env.curl")
-	c, err = config.Load(dir)
+	c, err = config.Load(dir, config.Flags{})
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -91,20 +91,80 @@ func TestFileThenEnvPrecedence(t *testing.T) {
 	}
 }
 
-func TestTildeExpands(t *testing.T) {
-	isolate(t)
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "config.toml"),
-		[]byte("library_path = \"~/packages\"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	c, err := config.Load(dir)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if want := filepath.Join(os.Getenv("HOME"), "packages"); c.LibraryPath != want {
-		t.Errorf("LibraryPath = %q, want %q", c.LibraryPath, want)
-	}
+// Every source of a path gets the same expansion. A flag applied after Load returned
+// would skip it, and since filepath never expands "~", `--library '~/packages'` from a
+// script the shell did not expand would mirror a 75 GB library into a directory literally
+// named "~" under the working directory, silently and without an error.
+func TestTildeExpandsFromEverySource(t *testing.T) {
+	home := func() string { return os.Getenv("HOME") }
+
+	t.Run("config.toml", func(t *testing.T) {
+		isolate(t)
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "config.toml"),
+			[]byte("library_path = \"~/packages\"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := config.Load(dir, config.Flags{})
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if want := filepath.Join(home(), "packages"); c.LibraryPath != want {
+			t.Errorf("LibraryPath = %q, want %q", c.LibraryPath, want)
+		}
+	})
+
+	t.Run("environment", func(t *testing.T) {
+		isolate(t)
+		t.Setenv("UNITY_SYNC_LIBRARY", "~/packages")
+		c, err := config.Load(t.TempDir(), config.Flags{})
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if want := filepath.Join(home(), "packages"); c.LibraryPath != want {
+			t.Errorf("LibraryPath = %q, want %q", c.LibraryPath, want)
+		}
+	})
+
+	t.Run("flags", func(t *testing.T) {
+		isolate(t)
+		c, err := config.Load(t.TempDir(), config.Flags{
+			LibraryPath:   "~/packages",
+			SessionSource: "~/session.curl",
+		})
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if want := filepath.Join(home(), "packages"); c.LibraryPath != want {
+			t.Errorf("LibraryPath = %q, want %q", c.LibraryPath, want)
+		}
+		if want := filepath.Join(home(), "session.curl"); c.SessionSource != want {
+			t.Errorf("SessionSource = %q, want %q", c.SessionSource, want)
+		}
+	})
+
+	t.Run("config dir", func(t *testing.T) {
+		isolate(t)
+		if got, want := config.ResolveDir("~/cfg"), filepath.Join(home(), "cfg"); got != want {
+			t.Errorf("ResolveDir(flag) = %q, want %q", got, want)
+		}
+		t.Setenv("UNITY_SYNC_CONFIG_DIR", "~/envcfg")
+		if got, want := config.ResolveDir(""), filepath.Join(home(), "envcfg"); got != want {
+			t.Errorf("ResolveDir($UNITY_SYNC_CONFIG_DIR) = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("library default from XDG_DATA_HOME", func(t *testing.T) {
+		isolate(t)
+		t.Setenv("XDG_DATA_HOME", "~/data")
+		c, err := config.Load(t.TempDir(), config.Flags{})
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if want := filepath.Join(home(), "data", "unity-sync"); c.LibraryPath != want {
+			t.Errorf("LibraryPath = %q, want %q", c.LibraryPath, want)
+		}
+	})
 }
 
 func TestMalformedConfigIsAnError(t *testing.T) {
@@ -113,7 +173,7 @@ func TestMalformedConfigIsAnError(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("concurrency = \"two\"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := config.Load(dir); err == nil {
+	if _, err := config.Load(dir, config.Flags{}); err == nil {
 		t.Error("Load accepted a malformed config.toml")
 	}
 }

@@ -34,17 +34,30 @@ type fileConfig struct {
 	Concurrency   int    `toml:"concurrency"`
 }
 
+// Flags are the command-line overrides. They are the highest-precedence source, and they
+// are applied here rather than by the caller so that every level of the chain gets the
+// same treatment: a flag assigned after Load returned would skip expandHome, and a
+// `--library '~/lib'` the shell did not expand would mirror into a directory named "~".
+type Flags struct {
+	LibraryPath   string
+	SessionSource string
+	Concurrency   int
+}
+
 // ResolveDir picks the directory holding config.toml: an explicit flag, else
 // $UNITY_SYNC_CONFIG_DIR, else $XDG_CONFIG_HOME/unity-sync, else ~/.config/unity-sync.
+// A path from any of these can be written with a leading "~", which no shell expands when
+// it comes out of an environment variable, so each one is expanded here rather than
+// reaching filepath as a directory literally named "~".
 func ResolveDir(flag string) string {
 	if flag != "" {
-		return flag
+		return expandHome(flag)
 	}
 	if v := os.Getenv("UNITY_SYNC_CONFIG_DIR"); v != "" {
-		return v
+		return expandHome(v)
 	}
 	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
-		return filepath.Join(v, "unity-sync")
+		return filepath.Join(expandHome(v), "unity-sync")
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(home, ".config", "unity-sync")
@@ -56,7 +69,7 @@ func ResolveDir(flag string) string {
 // data rather than ~/.cache, so an OS cache cleaner cannot wipe a 75 GB mirror.
 func defaultLibraryPath() string {
 	if v := os.Getenv("XDG_DATA_HOME"); v != "" {
-		return filepath.Join(v, "unity-sync")
+		return filepath.Join(expandHome(v), "unity-sync")
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(home, ".local", "share", "unity-sync")
@@ -72,9 +85,12 @@ func defaults() Config {
 }
 
 // Load merges built-in defaults, an optional config.toml in dir, then the environment
-// (UNITY_SYNC_LIBRARY, UNITY_SYNC_SESSION). A missing config.toml is not an error; an
-// unreadable or malformed one is.
-func Load(dir string) (Config, error) {
+// (UNITY_SYNC_LIBRARY, UNITY_SYNC_SESSION), then flags. A missing config.toml is not an
+// error; an unreadable or malformed one is.
+//
+// Every level runs through this one function so that none of them can be normalised
+// differently from the others.
+func Load(dir string, f Flags) (Config, error) {
 	c := defaults()
 	path := filepath.Join(dir, "config.toml")
 	if _, err := os.Stat(path); err == nil {
@@ -89,6 +105,15 @@ func Load(dir string) (Config, error) {
 	}
 	if v := os.Getenv("UNITY_SYNC_SESSION"); v != "" {
 		c.SessionSource = v
+	}
+	if f.SessionSource != "" {
+		c.SessionSource = f.SessionSource
+	}
+	if f.LibraryPath != "" {
+		c.LibraryPath = f.LibraryPath
+	}
+	if f.Concurrency > 0 {
+		c.Concurrency = f.Concurrency
 	}
 	c.LibraryPath = expandHome(c.LibraryPath)
 	c.SessionSource = expandHome(c.SessionSource)

@@ -195,6 +195,54 @@ func TestTheRunningProfileWinsOverTheDefaultFlag(t *testing.T) {
 	}
 }
 
+// Gecko has written the jar both under each window and as a top level array, and the
+// reader accepts either. Only the windowed shape appears in the fixtures, so the fallback
+// that exists for version drift is the half that would rot unnoticed.
+func TestCookiesAtTheTopLevelOfTheSessionStoreAreRead(t *testing.T) {
+	doc, err := json.Marshal(map[string]any{
+		"cookies": []storeCookie{
+			{Host: "assetstore.unity.com", Name: "LS", Value: "top-level"},
+			{Host: "unrelated.example", Name: "leaked", Value: "no"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pairs, err := fromSessionStore(mozlz4Stored(t, doc))
+	if err != nil {
+		t.Fatalf("fromSessionStore: %v", err)
+	}
+	if pairs[CredentialCookie] != "top-level" {
+		t.Errorf("pairs = %v, want the credential from the top-level array", pairs)
+	}
+	if _, ok := pairs["leaked"]; ok {
+		t.Error("a cookie from an unrelated host survived the unity.com filter")
+	}
+}
+
+// Mozilla writes IsRelative=0 with an absolute Path for a profile kept outside the browser
+// root, which is what the Profile Manager produces for "Choose Folder". Joining that under
+// the root anyway names a directory that cannot exist, so the profile is dropped from the
+// scan without a word and a signed-in browser is reported as having no session.
+func TestAnAbsoluteProfilePathIsNotJoinedUnderTheRoot(t *testing.T) {
+	root := t.TempDir()
+	elsewhere := t.TempDir()
+	writeProfile(t, elsewhere, "relocated", []storeCookie{
+		{Host: "assetstore.unity.com", Name: "LS", Value: "relocated-profile"},
+	})
+	os.WriteFile(filepath.Join(root, "profiles.ini"), []byte(
+		"[Profile0]\nName=relocated\nIsRelative=0\nPath="+
+			filepath.ToSlash(filepath.Join(elsewhere, "relocated"))+"\n"), 0o644)
+
+	header, _, err := ResolveFrom(root)
+	if err != nil {
+		t.Fatalf("ResolveFrom: %v", err)
+	}
+	if !strings.Contains(header, "relocated-profile") {
+		t.Errorf("header %q did not come from the profile profiles.ini names", header)
+	}
+}
+
 // A profile whose session has no Asset Store credential is skipped, not fatal: the
 // signed-in one is usually another profile or another browser.
 func TestAProfileWithoutTheCredentialIsSkipped(t *testing.T) {

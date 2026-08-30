@@ -67,8 +67,8 @@ func geckoRoots() []string {
 func profileDirs(root string) []string {
 	preferred := installDefaults(root)
 	var rest []string
-	for _, p := range iniPaths(filepath.Join(root, "profiles.ini")) {
-		full := filepath.Join(root, filepath.FromSlash(p))
+	for _, e := range iniEntries(filepath.Join(root, "profiles.ini"), "Path") {
+		full := e.under(root)
 		if !contains(preferred, full) {
 			rest = append(rest, full)
 		}
@@ -80,34 +80,73 @@ func profileDirs(root string) []string {
 // browser last used.
 func installDefaults(root string) []string {
 	var out []string
-	for _, p := range iniValues(filepath.Join(root, "installs.ini"), "Default") {
-		out = append(out, filepath.Join(root, filepath.FromSlash(p)))
+	for _, e := range iniEntries(filepath.Join(root, "installs.ini"), "Default") {
+		out = append(out, e.under(root))
 	}
 	return out
 }
 
-// iniPaths pulls the Path= entries out of a profiles.ini.
-func iniPaths(path string) []string { return iniValues(path, "Path") }
+// iniEntry is one section's value for the key asked for, along with how that section says
+// to read it.
+type iniEntry struct {
+	value string
 
-// iniValues reads one key from every section of a Mozilla ini. The format is plain enough
-// that a full ini parser would be more code than it saves, and both files this reads are
-// written by the browser rather than by a user.
-func iniValues(path, key string) []string {
+	// relative mirrors the section's IsRelative flag, which Mozilla sets to 0 when Path
+	// names an absolute directory — what the Profile Manager writes for a profile placed
+	// outside the browser root. Joining such a path under the root yields a directory that
+	// does not exist, so the profile is silently skipped and a signed-in browser reports
+	// no session.
+	relative bool
+}
+
+// under resolves an entry against the browser root. An absolute value is honoured whatever
+// the flag says, because installs.ini carries no IsRelative at all.
+func (e iniEntry) under(root string) string {
+	p := filepath.FromSlash(e.value)
+	if !e.relative || filepath.IsAbs(p) {
+		return filepath.Clean(p)
+	}
+	return filepath.Join(root, p)
+}
+
+// iniEntries reads one key from every section of a Mozilla ini, pairing it with that
+// section's IsRelative flag. The format is plain enough that a full ini parser would be
+// more code than it saves, and both files this reads are written by the browser rather
+// than by a user.
+func iniEntries(path, key string) []iniEntry {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return nil
 	}
-	var out []string
+	var out []iniEntry
+	// A section's two keys arrive in either order, so the value is held until the section
+	// ends and the flag is known.
+	pending := iniEntry{relative: true}
+	flush := func() {
+		if pending.value != "" {
+			out = append(out, pending)
+		}
+		pending = iniEntry{relative: true}
+	}
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimSpace(line)
-		k, v, ok := strings.Cut(line, "=")
-		if !ok || !strings.EqualFold(strings.TrimSpace(k), key) {
+		if strings.HasPrefix(line, "[") {
+			flush()
 			continue
 		}
-		if v = strings.TrimSpace(v); v != "" {
-			out = append(out, v)
+		k, v, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		k, v = strings.TrimSpace(k), strings.TrimSpace(v)
+		switch {
+		case strings.EqualFold(k, key):
+			pending.value = v
+		case strings.EqualFold(k, "IsRelative"):
+			pending.relative = v != "0"
 		}
 	}
+	flush()
 	return out
 }
 

@@ -15,7 +15,11 @@ log()  { printf 'INFO: %s\n' "$1"; }
 err()  { printf 'ERROR: %s\n' "$1" >&2; }
 
 TMPDIR_SELF=""
-cleanup() { [[ -z "$TMPDIR_SELF" ]] || rm -rf "$TMPDIR_SELF"; }
+STAGED=""
+cleanup() {
+  [[ -z "$TMPDIR_SELF" ]] || rm -rf "$TMPDIR_SELF"
+  [[ -z "$STAGED" ]] || rm -f "$STAGED"
+}
 trap cleanup EXIT
 
 auth_token() {
@@ -85,8 +89,17 @@ install() {
   command -v unzip >/dev/null 2>&1 || { err "unzip is required"; exit 1; }
   unzip -q "${tmp}/${file}" -d "$tmp"
   mkdir -p "$INSTALL_DIR"
-  mv "${tmp}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
-  chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
+
+  # Staged inside the install dir so the last step is a same-filesystem rename. mktemp -d
+  # lands in /tmp, usually a different filesystem, where mv degrades to copy-then-unlink
+  # and an interrupted upgrade leaves a truncated binary in place of a working one.
+  STAGED=$(mktemp "${INSTALL_DIR}/.${BINARY_NAME}.XXXXXX")
+  cp "${tmp}/${BINARY_NAME}" "$STAGED"
+  # Set, not `chmod +x`: mktemp makes the file 0600, so adding the execute bits alone
+  # would install 0711 and strip read access from group and other.
+  chmod 0755 "$STAGED"
+  mv -f "$STAGED" "${INSTALL_DIR}/${BINARY_NAME}"
+  STAGED=""
   log "installed to ${INSTALL_DIR}/${BINARY_NAME}"
 }
 

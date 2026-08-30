@@ -68,6 +68,40 @@ func TestPopulatedErrorsArrayIsNotAnEmptyLibrary(t *testing.T) {
 	}
 }
 
+// The short-walk check counts raw rows, not deduped assets, because an account can hold
+// the same product through more than one entitlement. Comparing the deduped count instead
+// reads as a harmless simplification and breaks both ways: a genuinely short page whose
+// missing rows were duplicates passes silently, and a complete walk over a duplicated row
+// is rejected as short.
+func TestDuplicateRowsCountTowardTheStoresTotal(t *testing.T) {
+	row := func(id string) string {
+		return `{"product":{"id":"` + id + `","name":"Asset ` + id + `","state":"published",` +
+			`"downloadSize":"100","currentVersion":{"id":"v1","name":"1.0"},` +
+			`"publisher":{"id":"p","name":"Pub"},"mainImage":{"icon75":""}}}`
+	}
+	page := 0
+	c, _ := serve(t, csrfRouter(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		defer func() { page++ }()
+		if page == 0 {
+			// Three rows, two of them the same product: the store reports 3 owned.
+			io.WriteString(w, `[{"data":{"searchMyAssets":{"total":3,"results":[`+
+				row("1")+`,`+row("1")+`,`+row("2")+`]}}}]`)
+			return
+		}
+		io.WriteString(w, `[{"data":{"searchMyAssets":{"total":3,"results":[]}}}]`)
+	}))
+	c.Bootstrap(context.Background())
+
+	assets, err := c.Enumerate(context.Background())
+	if err != nil {
+		t.Fatalf("Enumerate refused a complete walk that carried a duplicate row: %v", err)
+	}
+	if len(assets) != 2 {
+		t.Errorf("Enumerate returned %d assets, want 2 deduped", len(assets))
+	}
+}
+
 func TestNonJSONSuccessIsAnError(t *testing.T) {
 	c, _ := serve(t, csrfRouter(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "<html>sign in</html>")

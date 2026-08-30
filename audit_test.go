@@ -31,6 +31,19 @@ func TestStrayPositionalIsRejectedAndSuggestsOnly(t *testing.T) {
 	}
 }
 
+// These return before flag parsing, so their positionals are checked in their own branch
+// or not at all. `unity-sync version foo` succeeding quietly is how a typo turns into a
+// command that did nothing and said nothing.
+func TestTheCommandsThatTakeNoArgumentsRejectOne(t *testing.T) {
+	isolate(t)
+	for _, cmd := range []string{"version", "-v", "--version", "help", "-h", "--help"} {
+		code, err := run([]string{cmd, "stray"})
+		if code == 0 || err == nil {
+			t.Errorf("%s with a positional = %d, %v; want a failure", cmd, code, err)
+		}
+	}
+}
+
 func TestSessionWithoutTheCredentialIsNamedBeforeAnyRequest(t *testing.T) {
 	wd := isolate(t)
 	if err := os.WriteFile(filepath.Join(wd, manifest.FileName), []byte("\n"), 0o644); err != nil {

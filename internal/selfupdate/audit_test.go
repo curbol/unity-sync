@@ -27,6 +27,13 @@ func TestAFailedReplaceLeavesTheWorkingBinaryAndNoScratch(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(target, "occupied"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Where the running image cannot be replaced in place, Replace falls back to moving
+	// the old binary to <target>.old and taking its name, which would succeed against a
+	// directory. Occupying that slot as well leaves the fallback nowhere to go, so the
+	// failure this pins is reachable on every platform rather than only on POSIX.
+	if err := os.MkdirAll(filepath.Join(target+".old", "occupied"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := selfupdate.Replace(target, []byte("new binary")); err == nil {
 		t.Fatal("Replace reported success against a target it could not take")

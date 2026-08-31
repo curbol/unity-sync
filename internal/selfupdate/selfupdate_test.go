@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -91,7 +92,8 @@ func TestReplaceIsAtomicAndExecutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm()&0o111 == 0 {
+	// Windows carries no mode bits; a binary is executable there by its .exe suffix.
+	if runtime.GOOS != "windows" && fi.Mode().Perm()&0o111 == 0 {
 		t.Errorf("mode = %v, want an executable bit", fi.Mode().Perm())
 	}
 	// The swap must not leave scratch files on PATH.

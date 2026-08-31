@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/curbol/unity-sync/internal/manifest"
@@ -172,6 +173,9 @@ func TestSaveDoesNotReorderTheCallersSlice(t *testing.T) {
 // The manifest is committed and hand-edited, so a save must not quietly strip group and
 // other from it.
 func TestSaveDoesNotMakeTheManifestOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows reports 0666 for every writable file; there are no mode bits to keep")
+	}
 	path := filepath.Join(t.TempDir(), manifest.FileName)
 	m := manifest.Manifest{Assets: []manifest.Entry{{ID: "1", Name: "A", Enabled: true}}}
 

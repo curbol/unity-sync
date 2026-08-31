@@ -3,6 +3,7 @@ package lockfile_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -169,6 +170,9 @@ func TestCorruptLockfileIsAnError(t *testing.T) {
 // The lockfile is meant to be committed and read by other people and tools. Writing
 // through a temp file and renaming would otherwise leave it owner-only.
 func TestSaveDoesNotMakeTheLockfileOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows reports 0666 for every writable file; there are no mode bits to keep")
+	}
 	path := filepath.Join(t.TempDir(), "unity-sync.lock.json")
 	lf := lockfile.New()
 	lf.Assets["a-1"] = lockfile.Entry{AssetID: "1", Name: "A"}

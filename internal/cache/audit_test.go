@@ -191,10 +191,14 @@ func TestPruningSurvivesHoweverTheRootWasSpelled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	spellings := map[string]func(string) string{
-		"absolute":       func(base string) string { return base },
-		"trailing slash": func(base string) string { return base + string(filepath.Separator) },
-		"dot relative": func(base string) string {
+	spellings := map[string]func(*testing.T, string) string{
+		"absolute": func(_ *testing.T, base string) string { return base },
+		"trailing slash": func(_ *testing.T, base string) string {
+			return base + string(filepath.Separator)
+		},
+		// The skip takes the subtest's own t: skipping the parent from inside a subtest
+		// exits the parent goroutine and fails the whole test instead.
+		"dot relative": func(t *testing.T, base string) string {
 			rel, err := filepath.Rel(wd, base)
 			if err != nil {
 				t.Skip("temp dir is not reachable relatively from the working directory")
@@ -205,7 +209,7 @@ func TestPruningSurvivesHoweverTheRootWasSpelled(t *testing.T) {
 	for name, spell := range spellings {
 		t.Run(name, func(t *testing.T) {
 			base := t.TempDir()
-			root := spell(base)
+			root := spell(t, base)
 			storeCommitted(t, root, "pub", "old-slug-1", pkg(t, "1", "9", 400))
 			if err := cache.Relocate(root, cache.RelPath("pub", "old-slug-1"),
 				cache.RelPath("pub", "new-slug-1")); err != nil {

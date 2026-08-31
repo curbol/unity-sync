@@ -9,20 +9,24 @@ import (
 )
 
 // isolate clears every variable the resolver reads, so a developer's own environment
-// cannot make these pass or fail.
-func isolate(t *testing.T) {
+// cannot make these pass or fail. It returns the home directory it pinned.
+func isolate(t *testing.T) string {
 	t.Helper()
 	for _, k := range []string{"UNITY_SYNC_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME",
 		"UNITY_SYNC_LIBRARY", "UNITY_SYNC_SESSION"} {
 		t.Setenv(k, "")
 		os.Unsetenv(k)
 	}
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	// os.UserHomeDir reads USERPROFILE on Windows and HOME everywhere else, so both are
+	// pinned: setting only one leaves the resolver pointed at the real account.
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	return home
 }
 
 func TestResolveDirPrecedence(t *testing.T) {
-	isolate(t)
-	home := os.Getenv("HOME")
+	home := isolate(t)
 
 	if got, want := config.ResolveDir(""), filepath.Join(home, ".config", "unity-sync"); got != want {
 		t.Errorf("bare default = %q, want %q", got, want)
@@ -41,7 +45,7 @@ func TestResolveDirPrecedence(t *testing.T) {
 }
 
 func TestLoadDefaultsWhenNoFileExists(t *testing.T) {
-	isolate(t)
+	home := isolate(t)
 	c, err := config.Load(t.TempDir(), config.Flags{})
 	if err != nil {
 		t.Fatalf("Load with no config.toml: %v", err)
@@ -52,7 +56,7 @@ func TestLoadDefaultsWhenNoFileExists(t *testing.T) {
 	if c.SessionSource != "" {
 		t.Errorf("SessionSource = %q, want empty: there is no browser default", c.SessionSource)
 	}
-	want := filepath.Join(os.Getenv("HOME"), ".local", "share", "unity-sync")
+	want := filepath.Join(home, ".local", "share", "unity-sync")
 	if c.LibraryPath != want {
 		t.Errorf("LibraryPath = %q, want %q", c.LibraryPath, want)
 	}
@@ -96,10 +100,8 @@ func TestFileThenEnvPrecedence(t *testing.T) {
 // script the shell did not expand would mirror a 75 GB library into a directory literally
 // named "~" under the working directory, silently and without an error.
 func TestTildeExpandsFromEverySource(t *testing.T) {
-	home := func() string { return os.Getenv("HOME") }
-
 	t.Run("config.toml", func(t *testing.T) {
-		isolate(t)
+		home := isolate(t)
 		dir := t.TempDir()
 		if err := os.WriteFile(filepath.Join(dir, "config.toml"),
 			[]byte("library_path = \"~/packages\"\n"), 0o600); err != nil {
@@ -109,25 +111,25 @@ func TestTildeExpandsFromEverySource(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
-		if want := filepath.Join(home(), "packages"); c.LibraryPath != want {
+		if want := filepath.Join(home, "packages"); c.LibraryPath != want {
 			t.Errorf("LibraryPath = %q, want %q", c.LibraryPath, want)
 		}
 	})
 
 	t.Run("environment", func(t *testing.T) {
-		isolate(t)
+		home := isolate(t)
 		t.Setenv("UNITY_SYNC_LIBRARY", "~/packages")
 		c, err := config.Load(t.TempDir(), config.Flags{})
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
-		if want := filepath.Join(home(), "packages"); c.LibraryPath != want {
+		if want := filepath.Join(home, "packages"); c.LibraryPath != want {
 			t.Errorf("LibraryPath = %q, want %q", c.LibraryPath, want)
 		}
 	})
 
 	t.Run("flags", func(t *testing.T) {
-		isolate(t)
+		home := isolate(t)
 		c, err := config.Load(t.TempDir(), config.Flags{
 			LibraryPath:   "~/packages",
 			SessionSource: "~/session.curl",
@@ -135,33 +137,33 @@ func TestTildeExpandsFromEverySource(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
-		if want := filepath.Join(home(), "packages"); c.LibraryPath != want {
+		if want := filepath.Join(home, "packages"); c.LibraryPath != want {
 			t.Errorf("LibraryPath = %q, want %q", c.LibraryPath, want)
 		}
-		if want := filepath.Join(home(), "session.curl"); c.SessionSource != want {
+		if want := filepath.Join(home, "session.curl"); c.SessionSource != want {
 			t.Errorf("SessionSource = %q, want %q", c.SessionSource, want)
 		}
 	})
 
 	t.Run("config dir", func(t *testing.T) {
-		isolate(t)
-		if got, want := config.ResolveDir("~/cfg"), filepath.Join(home(), "cfg"); got != want {
+		home := isolate(t)
+		if got, want := config.ResolveDir("~/cfg"), filepath.Join(home, "cfg"); got != want {
 			t.Errorf("ResolveDir(flag) = %q, want %q", got, want)
 		}
 		t.Setenv("UNITY_SYNC_CONFIG_DIR", "~/envcfg")
-		if got, want := config.ResolveDir(""), filepath.Join(home(), "envcfg"); got != want {
+		if got, want := config.ResolveDir(""), filepath.Join(home, "envcfg"); got != want {
 			t.Errorf("ResolveDir($UNITY_SYNC_CONFIG_DIR) = %q, want %q", got, want)
 		}
 	})
 
 	t.Run("library default from XDG_DATA_HOME", func(t *testing.T) {
-		isolate(t)
+		home := isolate(t)
 		t.Setenv("XDG_DATA_HOME", "~/data")
 		c, err := config.Load(t.TempDir(), config.Flags{})
 		if err != nil {
 			t.Fatalf("Load: %v", err)
 		}
-		if want := filepath.Join(home(), "data", "unity-sync"); c.LibraryPath != want {
+		if want := filepath.Join(home, "data", "unity-sync"); c.LibraryPath != want {
 			t.Errorf("LibraryPath = %q, want %q", c.LibraryPath, want)
 		}
 	})

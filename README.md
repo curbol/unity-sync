@@ -191,3 +191,7 @@ Point its `root` at your library path.
   account data reaches them.
 - The tool is polite: bounded concurrent downloads (2 by default), backoff on rate limits,
   and it identifies itself with a User-Agent.
+
+## Support
+
+<a href="https://ko-fi.com/curbol"><img height="42" alt="Buy Me a Coffee at ko-fi.com" src="https://storage.ko-fi.com/cdn/kofi1.png?v=6"></a>

@@ -489,3 +489,56 @@ func TestEveryPlatformKnowsTheSameBrowsers(t *testing.T) {
 		}
 	}
 }
+
+// A real recovery.jsonlz4 is highly repetitive JSON, so its block is a chain of
+// literal-plus-match sequences. Every other block in this file is one sequence — the
+// encoder above emits literals only, and the hand-built cases each stop after a single
+// match — so nothing drives the loop across a sequence boundary, where the next token is
+// read from wherever the previous match left the cursor. The one test that would,
+// TestDecodesARealSessionStore, is opt-in and does not run in CI.
+func TestMozLZ4WalksAChainOfSequences(t *testing.T) {
+	block := []byte{
+		0x40, 'a', 'b', 'c', 'd', 0x04, 0x00, // 4 literals, then 4 bytes from 4 back
+		0x21, 'x', 'y', 0x02, 0x00, // 2 literals, then an overlapping 5 from 2 back
+		0x30, 'E', 'N', 'D', // the last sequence: literals and no offset
+	}
+	const want = "abcdabcdxyxyxyxEND"
+
+	raw := append([]byte(mozlz4Magic), 0, 0, 0, 0)
+	binary.LittleEndian.PutUint32(raw[len(mozlz4Magic):], uint32(len(want)))
+	raw = append(raw, block...)
+
+	got, err := decodeMozLZ4(raw)
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if string(got) != want {
+		t.Errorf("decoded %q, want %q", got, want)
+	}
+}
+
+// A profile whose jar holds no unity.com cookie at all is a different failure from one
+// that holds them without LS: the user pointed at the wrong browser, or at a profile that
+// never visited the store. Saying "no LS cookie" there sends them to re-copy a session
+// from a tab that was never open.
+func TestASessionStoreForAnotherSiteIsNamedAsSuch(t *testing.T) {
+	path := filepath.Join(t.TempDir(), sessionStoreName)
+	raw := mozlz4Stored(t, storeJSON(t, []storeCookie{
+		{Host: "bank.example.com", Name: "session", Value: "SHOULD-NOT-LEAK"},
+		{Host: "notunity.com", Name: "LS", Value: "SHOULD-NOT-LEAK"},
+	}))
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	header, _, err := ResolveFrom(path)
+	if err == nil {
+		t.Fatalf("ResolveFrom returned %q for a store with no unity.com cookie", header)
+	}
+	if !strings.Contains(err.Error(), cookieDomain) {
+		t.Errorf("diagnostic %q does not say the file belongs to another site", err)
+	}
+	if strings.Contains(err.Error(), "SHOULD-NOT-LEAK") {
+		t.Errorf("the diagnostic quoted what it read: %q", err)
+	}
+}

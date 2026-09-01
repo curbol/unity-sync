@@ -54,3 +54,25 @@ func TestMissingCredentialIsNamedBeforeAnyRequest(t *testing.T) {
 		t.Errorf("diagnostic %q does not name the missing cookie", err)
 	}
 }
+
+// A cookies.txt exported from the wrong site parses perfectly and yields nothing. That is
+// not the same failure as a unity.com export missing LS, and reporting it as one sends the
+// user to re-copy a session they already have. The diagnostic has to name the site.
+func TestACookiesTxtForAnotherSiteIsNamedAsSuch(t *testing.T) {
+	body := "#HttpOnly_bank.example.com\tFALSE\t/\tTRUE\t0\tsession\tSHOULD-NOT-LEAK\n" +
+		".notunity.com\tTRUE\t/\tFALSE\t0\tLS\tSHOULD-NOT-LEAK\n"
+	header, _, err := session.ResolveFrom(write(t, "cookies.txt", body))
+	if err == nil {
+		t.Fatalf("ResolveFrom returned %q for a cookies.txt with no unity.com record", header)
+	}
+	var missing *session.ErrNoCredential
+	if errors.As(err, &missing) {
+		t.Errorf("a file for another site was reported as a missing LS cookie: %v", err)
+	}
+	if !strings.Contains(err.Error(), "unity.com") {
+		t.Errorf("diagnostic %q does not say the file belongs to another site", err)
+	}
+	if strings.Contains(err.Error(), "SHOULD-NOT-LEAK") {
+		t.Errorf("the diagnostic quoted what it read: %q", err)
+	}
+}

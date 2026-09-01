@@ -26,10 +26,31 @@ func assets() []model.Asset {
 	}
 }
 
+// bound is the address every handler in this suite believes it is serving on, and
+// newRequest addresses it that way — as a browser on this machine would. A request built
+// any other way is refused, which is what TestTheHostHeaderIsChecked pins.
+var bound = &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8788}
+
+func newHandler(assets []model.Asset, enabled map[string]bool) *web.Handler {
+	return web.NewHandler(assets, enabled, bound)
+}
+
+func newRequest(method, body string) *http.Request {
+	var r *http.Request
+	if body == "" {
+		r = httptest.NewRequest(method, "/", nil)
+	} else {
+		r = httptest.NewRequest(method, "/", strings.NewReader(body))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	}
+	r.Host = bound.String()
+	return r
+}
+
 func render(t *testing.T, h http.Handler) string {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	h.ServeHTTP(rec, newRequest(http.MethodGet, ""))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("GET = %d", rec.Code)
 	}
@@ -59,7 +80,7 @@ func listen(t *testing.T) net.Listener {
 }
 
 func TestPageRendersEveryAssetWithItsState(t *testing.T) {
-	h := web.NewHandler(assets(), map[string]bool{"115488": true})
+	h := newHandler(assets(), map[string]bool{"115488": true})
 	body := render(t, h)
 
 	for _, want := range []string{"Quick Outline", "Chris Nolet", "Fantasy Sounds Bundle", "disabled"} {
@@ -75,7 +96,7 @@ func TestPageRendersEveryAssetWithItsState(t *testing.T) {
 // The store returns protocol-relative image URLs; on a page served over http://localhost
 // they would resolve to http:// and be blocked or broken.
 func TestThumbnailsAreMadeAbsolute(t *testing.T) {
-	body := render(t, web.NewHandler(assets(), nil))
+	body := render(t, newHandler(assets(), nil))
 	if !strings.Contains(body, `src="https://assetstorev1-prd-cdn.unity3d.com/key-image/abc.png"`) {
 		t.Error("thumbnail URL was not normalised to https")
 	}
@@ -85,13 +106,12 @@ func TestThumbnailsAreMadeAbsolute(t *testing.T) {
 }
 
 func TestSaveReturnsTheChosenSet(t *testing.T) {
-	h := web.NewHandler(assets(), map[string]bool{"115488": true})
+	h := newHandler(assets(), map[string]bool{"115488": true})
 	body := render(t, h)
 
 	form := url.Values{"token": {tokenFrom(t, body)}, "asset": {"115488", "193760"}}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req := newRequest(http.MethodPost, form.Encode())
 
 	done := make(chan struct{})
 	go func() { h.ServeHTTP(rec, req); close(done) }()
@@ -107,13 +127,12 @@ func TestSaveReturnsTheChosenSet(t *testing.T) {
 // stopped reading — the user is told their choice was kept while the manifest holds the
 // other tab's.
 func TestOnlyTheFirstSaveIsAccepted(t *testing.T) {
-	h := web.NewHandler(assets(), map[string]bool{"115488": true})
+	h := newHandler(assets(), map[string]bool{"115488": true})
 	token := tokenFrom(t, render(t, h))
 
 	post := func(id string) *httptest.ResponseRecorder {
 		form := url.Values{"token": {token}, "asset": {id}}
-		req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
-		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req := newRequest(http.MethodPost, form.Encode())
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, req)
 		return rec
@@ -142,13 +161,12 @@ func TestOnlyTheFirstSaveIsAccepted(t *testing.T) {
 // A page served by an earlier run still has a Save button. Honouring it would apply a
 // selection made against a different library.
 func TestStaleTabIsRefused(t *testing.T) {
-	h := web.NewHandler(assets(), map[string]bool{"115488": true})
+	h := newHandler(assets(), map[string]bool{"115488": true})
 	render(t, h)
 
 	form := url.Values{"token": {"from-an-older-run"}, "asset": {"115488"}}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req := newRequest(http.MethodPost, form.Encode())
 	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusConflict {
@@ -162,13 +180,12 @@ func TestStaleTabIsRefused(t *testing.T) {
 // select is the only command that writes the manifest, so clearing every selection at
 // once has to be deliberate rather than a mis-click or a reloaded old tab.
 func TestSaveThatWouldDeselectEverythingIsRefused(t *testing.T) {
-	h := web.NewHandler(assets(), map[string]bool{"115488": true})
+	h := newHandler(assets(), map[string]bool{"115488": true})
 	body := render(t, h)
 
 	form := url.Values{"token": {tokenFrom(t, body)}}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req := newRequest(http.MethodPost, form.Encode())
 	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusConflict {
@@ -182,13 +199,12 @@ func TestSaveThatWouldDeselectEverythingIsRefused(t *testing.T) {
 // An empty save is legitimate when nothing was selected to begin with: that is a first
 // run where the user decided not to pick anything yet.
 func TestEmptySaveIsFineWhenNothingWasSelected(t *testing.T) {
-	h := web.NewHandler(assets(), map[string]bool{})
+	h := newHandler(assets(), map[string]bool{})
 	body := render(t, h)
 
 	form := url.Values{"token": {tokenFrom(t, body)}}
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(form.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req := newRequest(http.MethodPost, form.Encode())
 
 	done := make(chan struct{})
 	go func() { h.ServeHTTP(rec, req); close(done) }()
@@ -203,14 +219,12 @@ func TestEmptySaveIsFineWhenNothingWasSelected(t *testing.T) {
 // there when they do. The same property is what stops any page the user has open from
 // ending a selection with one cross-origin POST.
 func TestARefusedSaveLeavesThePageServing(t *testing.T) {
-	h := web.NewHandler(assets(), map[string]bool{"115488": true})
+	h := newHandler(assets(), map[string]bool{"115488": true})
 	body := render(t, h)
 
 	stale := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
+	h.ServeHTTP(stale, newRequest(http.MethodPost,
 		url.Values{"token": {"from-an-older-run"}}.Encode()))
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	h.ServeHTTP(stale, req)
 	if stale.Code != http.StatusConflict {
 		t.Fatalf("stale POST = %d, want %d", stale.Code, http.StatusConflict)
 	}
@@ -220,9 +234,8 @@ func TestARefusedSaveLeavesThePageServing(t *testing.T) {
 		t.Error("the refusal changed the page token")
 	}
 	saved := httptest.NewRecorder()
-	ok := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(
-		url.Values{"token": {tokenFrom(t, body)}, "asset": {"115488"}}.Encode()))
-	ok.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	ok := newRequest(http.MethodPost,
+		url.Values{"token": {tokenFrom(t, body)}, "asset": {"115488"}}.Encode())
 	go h.ServeHTTP(saved, ok)
 
 	select {

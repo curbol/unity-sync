@@ -30,6 +30,7 @@ import (
 const (
 	msgWouldEmptySelection = "refusing a save that would deselect everything"
 	msgStaleTab            = "this page was served by an earlier run; reload and choose again"
+	msgForeignHost         = "this page is only served to a browser on this machine"
 )
 
 // shutdownGrace bounds how long Serve waits for the in-flight save to be written before
@@ -112,6 +113,9 @@ type Handler struct {
 	enabled map[string]bool
 	token   string
 
+	// bound is the address this page is served on, checked against every request's Host.
+	bound net.Addr
+
 	// One save, enforced rather than assumed. Two tabs on this page share the per-run
 	// token, so without this the second POST is answered "Saved ..." and its selection
 	// then sits in a channel Serve has already stopped reading.
@@ -123,19 +127,64 @@ type Handler struct {
 // same channel Serve does.
 func (h *Handler) Selection() <-chan Selection { return h.done }
 
-// NewHandler builds the page handler for one run.
-func NewHandler(assets []model.Asset, enabled map[string]bool) *Handler {
+// NewHandler builds the page handler for one run. bound is the address the page is
+// served on, which every request is checked against.
+func NewHandler(assets []model.Asset, enabled map[string]bool, bound net.Addr) *Handler {
 	buf := make([]byte, 16)
 	rand.Read(buf)
 	return &Handler{
 		assets:  assets,
 		enabled: enabled,
 		token:   hex.EncodeToString(buf),
+		bound:   bound,
 		done:    make(chan Selection, 1),
 	}
 }
 
+// localRequest reports whether a request addressed this page the way a browser on this
+// machine would. The per-run token stops a blind cross-origin POST, but not a page that
+// points its own name at a loopback address: to the browser that is same-origin by name,
+// so its script may read the rendered page — the whole owned-asset list, and the token —
+// and then spend the one save this page accepts, leaving the user's own save refused as
+// a stale tab and their real selection lost.
+func localRequest(r *http.Request, bound net.Addr) bool {
+	if bound == nil {
+		return false
+	}
+	// A browser omits the port when it is the scheme's default, so a page bound to :80
+	// arrives with a bare name rather than a host:port pair.
+	host, port := r.Host, "80"
+	if h, p, err := net.SplitHostPort(r.Host); err == nil {
+		host, port = h, p
+	}
+	host = strings.Trim(host, "[]")
+
+	boundHost, boundPort, err := net.SplitHostPort(bound.String())
+	if err != nil || port != boundPort {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return false
+	}
+	// A wildcard bind has no one address to match, so only loopback is accepted there.
+	if ip.IsLoopback() {
+		return true
+	}
+	boundIP := net.ParseIP(boundHost)
+	return boundIP != nil && !boundIP.IsUnspecified() && boundIP.Equal(ip)
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Before the render as well as before the save: the page itself is the account's
+	// owned-asset list, and it carries the token that makes a save possible.
+	if !localRequest(r, h.bound) {
+		http.Error(w, msgForeignHost, http.StatusMisdirectedRequest)
+		return
+	}
 	if r.Method == http.MethodPost {
 		h.save(w, r)
 		return
@@ -201,7 +250,7 @@ func (h *Handler) save(w http.ResponseWriter, r *http.Request) {
 // It opens a browser at the address ln is bound to, so a test driving it must stub
 // OpenBrowser first.
 func Serve(ctx context.Context, ln net.Listener, assets []model.Asset, enabled map[string]bool) (Selection, error) {
-	h := NewHandler(assets, enabled)
+	h := NewHandler(assets, enabled, ln.Addr())
 	srv := &http.Server{Handler: h}
 	go srv.Serve(ln)
 	// Shutdown, not Close. The accepted save is delivered on a buffered channel, so this

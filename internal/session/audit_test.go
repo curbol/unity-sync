@@ -14,7 +14,7 @@ import (
 // The credential is HttpOnly. A parser that treats every '#' line as a comment drops
 // exactly the cookie that authenticates and then reports "no cookies found".
 func TestCookiesTxtKeepsHttpOnlyRecords(t *testing.T) {
-	got, err := session.Resolve(write(t, "cookies.txt", cookiesTxt))
+	got, _, err := session.ResolveFrom(write(t, "cookies.txt", cookiesTxt))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestCookiesTxtAcceptsTheWholeUnityFamilyAndNothingElse(t *testing.T) {
 	body := "#HttpOnly_assetstore.unity.com\tFALSE\t/\tTRUE\t0\tLS\thost-only\n" +
 		".unity.com\tTRUE\t/\tFALSE\t0\twide\tyes\n" +
 		"evil.com\tFALSE\t/\tFALSE\t0\tleaked\tno\n"
-	got, err := session.Resolve(write(t, "cookies.txt", body))
+	got, _, err := session.ResolveFrom(write(t, "cookies.txt", body))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestCookiesTxtAcceptsTheWholeUnityFamilyAndNothingElse(t *testing.T) {
 
 func TestMissingCredentialIsNamedBeforeAnyRequest(t *testing.T) {
 	body := "assetstore.unity.com\tFALSE\t/\tTRUE\t0\tDS\tabc\n"
-	_, err := session.Resolve(write(t, "cookies.txt", body))
+	_, _, err := session.ResolveFrom(write(t, "cookies.txt", body))
 	var missing *session.ErrNoCredential
 	if !errors.As(err, &missing) {
 		t.Fatalf("Resolve = %v, want ErrNoCredential", err)

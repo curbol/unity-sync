@@ -212,7 +212,7 @@ func TestCookiesAtTheTopLevelOfTheSessionStoreAreRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fromSessionStore: %v", err)
 	}
-	if pairs[CredentialCookie] != "top-level" {
+	if pairs[credentialCookie] != "top-level" {
 		t.Errorf("pairs = %v, want the credential from the top-level array", pairs)
 	}
 	if _, ok := pairs["leaked"]; ok {
@@ -369,4 +369,123 @@ func TestDecodesARealSessionStore(t *testing.T) {
 		t.Fatalf("decoded %d bytes that are not JSON: %v", len(decoded), err)
 	}
 	t.Logf("decoded %d compressed bytes into %d bytes of valid JSON", len(raw), len(decoded))
+}
+
+// offset 0 is a different failure from an offset past the start, and the guard that
+// catches it is the only thing between a corrupt block and a panic: with that clause gone,
+// offset > len(dst) is false, start lands on len(dst), and the first copied byte indexes
+// one past the slice. Go bounds-checks against len, not cap, so a malformed
+// recovery.jsonlz4 in the user's own profile would take the CLI down instead of being
+// skipped as an unreadable profile — and the sibling test would stay green.
+func TestMozLZ4RefusesAZeroMatchOffset(t *testing.T) {
+	block := []byte{0x35, 'a', 'b', 'c', 0x00, 0x00} // literals "abc", then offset 0
+	if _, err := lz4Decompress(block, 12); err == nil {
+		t.Error("decode accepted a match offset of 0")
+	}
+}
+
+// The browser keyword is the documented workflow and the only source that sweeps the
+// geckoRoots table, and no test reached it: every other browser test enters through a
+// temp directory, which takes the named-source branch instead. That left the root list
+// itself unexercised, including whether a platform's branch names paths that can exist.
+func TestTheBrowserKeywordFindsAProfileUnderAKnownRoot(t *testing.T) {
+	home := t.TempDir()
+	// os.UserHomeDir reads a different variable per platform, so both are set.
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	roots := geckoRoots()
+	if len(roots) == 0 {
+		t.Fatal("geckoRoots is empty on this platform, so the browser keyword can never work")
+	}
+	for _, r := range roots {
+		if !strings.HasPrefix(r, home) {
+			t.Errorf("root %q is not under the home directory", r)
+		}
+	}
+	// Planted under the last root, so finding it also proves the sweep does not stop at
+	// the first root that happens to exist.
+	last := roots[len(roots)-1]
+	planted := writeProfile(t, last, "p1", []storeCookie{
+		{Host: "assetstore.unity.com", Name: credentialCookie, Value: "cred"},
+	})
+	os.WriteFile(filepath.Join(last, "profiles.ini"),
+		[]byte("[Profile0]\nName=default\nIsRelative=1\nPath=p1\n"), 0o644)
+
+	header, from, err := ResolveFrom(BrowserKeyword)
+	if err != nil {
+		t.Fatalf("ResolveFrom(%q): %v", BrowserKeyword, err)
+	}
+	if from != planted {
+		t.Errorf("read from %q, want %q", from, planted)
+	}
+	if !strings.Contains(header, credentialCookie+"=cred") {
+		t.Errorf("header %q does not carry the credential", header)
+	}
+}
+
+// A source the caller named is tried alone. Falling through to the root sweep would run
+// against whichever browser happened to be signed in rather than the one asked for, and
+// the run would report a profile the user never pointed at.
+func TestANamedSourceNeverFallsThroughToAnotherBrowser(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	// A perfectly good profile under a known root, which must not be reached.
+	roots := geckoRoots()
+	if len(roots) == 0 {
+		t.Skip("no gecko roots on this platform")
+	}
+	decoy := writeProfile(t, roots[0], "signed-in", []storeCookie{
+		{Host: "assetstore.unity.com", Name: credentialCookie, Value: "decoy"},
+	})
+	os.WriteFile(filepath.Join(roots[0], "profiles.ini"),
+		[]byte("[Profile0]\nName=default\nIsRelative=1\nPath=signed-in\n"), 0o644)
+	// The decoy has to be reachable, or the test proves nothing about not reaching it.
+	if _, from, err := ResolveFrom(BrowserKeyword); err != nil || from != decoy {
+		t.Fatalf("the decoy profile is not discoverable: from=%q err=%v", from, err)
+	}
+
+	named := t.TempDir() // an empty profile directory, named explicitly
+	_, _, err := ResolveFrom(named)
+	if err == nil {
+		t.Fatal("a named empty directory resolved a session from somewhere else")
+	}
+	if strings.Contains(err.Error(), decoy) {
+		t.Errorf("the error names a profile under a browser root: %v", err)
+	}
+	// The diagnostic has to say where it looked, or "no session store found" reads as
+	// "you have no session" rather than "not in the place you named".
+	if !strings.Contains(err.Error(), named) {
+		t.Errorf("error %q does not name the directory it was given", err)
+	}
+}
+
+// The README names five browsers unconditionally and the release ships a Windows binary,
+// so a platform branch that is short one is a user on that platform being told they have
+// no session when they plainly do. Only the branch this test runs on is otherwise
+// exercised, and it is never the Windows one.
+func TestEveryPlatformKnowsTheSameBrowsers(t *testing.T) {
+	browsers := []string{"zen", "firefox", "librewolf", "waterfox", "floorp"}
+	for _, goos := range []string{"linux", "darwin", "windows"} {
+		roots := geckoRootsFor(goos, filepath.Join("home", "someone"))
+		if len(roots) == 0 {
+			t.Errorf("%s has no gecko roots, so the browser keyword can never work there", goos)
+			continue
+		}
+		joined := strings.ToLower(strings.Join(roots, "\n"))
+		for _, b := range browsers {
+			if !strings.Contains(joined, b) {
+				t.Errorf("%s has no root for %s, which README.md promises by name", goos, b)
+			}
+		}
+		for _, r := range roots {
+			// Written with forward slashes and joined through FromSlash, so a Windows run
+			// gets a path Windows can open rather than a literal "AppData/Roaming/zen".
+			if strings.Contains(r, "/") && filepath.Separator != '/' {
+				t.Errorf("%s root %q kept a forward slash", goos, r)
+			}
+		}
+	}
 }

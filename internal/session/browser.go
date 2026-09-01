@@ -28,8 +28,15 @@ func geckoRoots() []string {
 	if err != nil {
 		return nil
 	}
+	return geckoRootsFor(runtime.GOOS, home)
+}
+
+// geckoRootsFor takes the platform explicitly so a test can check every branch. The list
+// is a promise the README makes by name, and a branch that is short a browser is
+// invisible to a run on any other platform.
+func geckoRootsFor(goos, home string) []string {
 	var rel []string
-	switch runtime.GOOS {
+	switch goos {
 	case "darwin":
 		rel = []string{
 			"Library/Application Support/zen",
@@ -39,7 +46,13 @@ func geckoRoots() []string {
 			"Library/Application Support/Floorp",
 		}
 	case "windows":
-		rel = []string{"AppData/Roaming/zen", "AppData/Roaming/Mozilla/Firefox"}
+		rel = []string{
+			"AppData/Roaming/zen",
+			"AppData/Roaming/Mozilla/Firefox",
+			"AppData/Roaming/LibreWolf",
+			"AppData/Roaming/Waterfox",
+			"AppData/Roaming/Floorp",
+		}
 	default:
 		rel = []string{
 			".config/zen", ".zen",
@@ -219,6 +232,14 @@ func isMozLZ4(raw []byte) bool {
 	return len(raw) >= len(mozlz4Magic) && string(raw[:len(mozlz4Magic)]) == mozlz4Magic
 }
 
+// searchedRoots is what storeCandidates swept, for a diagnostic when it found nothing.
+func searchedRoots(source string) []string {
+	if source == BrowserKeyword {
+		return geckoRoots()
+	}
+	return []string{source}
+}
+
 // storeCandidates lists the session-store files worth trying for a source, in the order
 // they should be tried.
 //
@@ -264,7 +285,11 @@ func storesUnder(dir string) []string {
 func resolveBrowser(source string) (header, from string, err error) {
 	candidates := storeCandidates(source)
 	if len(candidates) == 0 {
-		return "", "", fmt.Errorf("no Firefox-family session store found for %q", source)
+		// Named, the way ErrNoBrowserCredential names what it read. This is the message a
+		// user gets when their browser is not one of the roots swept, and without the list
+		// it reads as "you have no session" rather than "look somewhere else".
+		return "", "", fmt.Errorf("no Firefox-family session store found for %q (looked under: %s)",
+			source, strings.Join(searchedRoots(source), ", "))
 	}
 	var skipped []string
 	for _, path := range candidates {
@@ -278,8 +303,8 @@ func resolveBrowser(source string) (header, from string, err error) {
 			skipped = append(skipped, fmt.Sprintf("%s (%v)", path, parseErr))
 			continue
 		}
-		if _, ok := pairs[CredentialCookie]; !ok {
-			skipped = append(skipped, fmt.Sprintf("%s (no %s cookie)", path, CredentialCookie))
+		if _, ok := pairs[credentialCookie]; !ok {
+			skipped = append(skipped, fmt.Sprintf("%s (no %s cookie)", path, credentialCookie))
 			continue
 		}
 		return join(pairs), path, nil
@@ -298,5 +323,5 @@ type ErrNoBrowserCredential struct {
 func (e *ErrNoBrowserCredential) Error() string {
 	return fmt.Sprintf("no %s cookie in any Firefox-family session store for %q: the browser keeps it "+
 		"for the life of a browsing session, so sign in to the Asset Store in that browser and "+
-		"try again (looked at: %s)", CredentialCookie, e.Source, strings.Join(e.Skipped, "; "))
+		"try again (looked at: %s)", credentialCookie, e.Source, strings.Join(e.Skipped, "; "))
 }

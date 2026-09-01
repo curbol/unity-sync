@@ -18,8 +18,8 @@ import (
 	"strings"
 )
 
-// CredentialCookie is the one cookie the store actually checks.
-const CredentialCookie = "LS"
+// credentialCookie is the one cookie the store actually checks.
+const credentialCookie = "LS"
 
 // cookieDomain is the family whose cookies a browser would send to the storefront. The
 // storefront mixes scopes — the same response sets some cookies host-only on
@@ -41,24 +41,18 @@ func (e *ErrNoCredential) Error() string {
 	return fmt.Sprintf("session %s has no %s cookie: Unity keeps it in memory only, so cookies.sqlite "+
 		"never has it — re-copy the session from DevTools (Network > any assetstore.unity.com "+
 		"request > Copy as cURL) while signed in, or set session_source = %q to read it from a "+
-		"signed-in Firefox-family tab", e.Source, CredentialCookie, BrowserKeyword)
+		"signed-in Firefox-family tab", e.Source, credentialCookie, BrowserKeyword)
 }
 
-// Resolve turns a session source into the Cookie header for the store. It also asserts
-// the credential is present, whatever the source, so the diagnostic names the real problem
-// instead of leaving it to a 500.
+// ResolveFrom turns a session source into the Cookie header for the store, and reports
+// which file the credential came from. It asserts the credential is present, whatever the
+// source, so the diagnostic names the real problem instead of leaving it to a 500. The
+// browser keyword can search several profiles, and a run that picked one of them should be
+// able to say so rather than leaving the user to guess which tab it read.
 //
 // A source is the browser keyword, a directory (a Gecko profile or the root holding
 // several), or a file. A file is identified by its contents: a compressed session store, a
 // pasted curl command, or a cookies.txt.
-func Resolve(source string) (string, error) {
-	header, _, err := ResolveFrom(source)
-	return header, err
-}
-
-// ResolveFrom is Resolve, also reporting which file the credential came from. The browser
-// keyword can search several profiles, and a run that picked one of them should be able to
-// say so rather than leaving the user to guess which tab it read.
 func ResolveFrom(source string) (header, from string, err error) {
 	if source == BrowserKeyword {
 		return resolveBrowser(source)
@@ -84,7 +78,7 @@ func ResolveFrom(source string) (header, from string, err error) {
 	if err != nil {
 		return "", "", fmt.Errorf("%s: %w", source, err)
 	}
-	if _, ok := pairs[CredentialCookie]; !ok {
+	if _, ok := pairs[credentialCookie]; !ok {
 		return "", "", &ErrNoCredential{Source: source}
 	}
 	return join(pairs), source, nil

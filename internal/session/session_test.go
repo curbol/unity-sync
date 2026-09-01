@@ -34,7 +34,7 @@ func write(t *testing.T, name, body string) string {
 }
 
 func TestResolveReadsAPastedCurlCommand(t *testing.T) {
-	got, err := session.Resolve(write(t, "session.curl", curlPaste))
+	got, _, err := session.ResolveFrom(write(t, "session.curl", curlPaste))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -50,19 +50,19 @@ func TestResolveReadsAPastedCurlCommand(t *testing.T) {
 func TestCurlDetectionUsesStructureNotTheWord(t *testing.T) {
 	body := "# Generated for use with curl\n" +
 		"#HttpOnly_.unity.com\tTRUE\t/\tTRUE\t0\tLS\tthe-credential\n"
-	if _, err := session.Resolve(write(t, "cookies.txt", body)); err != nil {
+	if _, _, err := session.ResolveFrom(write(t, "cookies.txt", body)); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 }
 
 func TestHeaderIsDeterministic(t *testing.T) {
 	p := write(t, "session.curl", curlPaste)
-	first, err := session.Resolve(p)
+	first, _, err := session.ResolveFrom(p)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for range 5 {
-		again, err := session.Resolve(p)
+		again, _, err := session.ResolveFrom(p)
 		if err != nil {
 			t.Fatal(err)
 		}

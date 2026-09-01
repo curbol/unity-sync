@@ -241,9 +241,16 @@ func TestReplaceAsideRecoversTheBinaryWhenTheSwapFails(t *testing.T) {
 		if err != nil || string(got) != "new binary" {
 			t.Fatalf("target holds %q, %v; want the new binary", got, err)
 		}
-		fi, err := os.Stat(target)
-		if err != nil || fi.Mode().Perm()&0o111 == 0 {
-			t.Errorf("the installed binary is not executable: mode %v, %v", fi.Mode().Perm(), err)
+		// The bytes land on every platform; the mode only means something where there
+		// are mode bits. Windows reports 0666 for every writable file.
+		if runtime.GOOS != "windows" {
+			fi, err := os.Stat(target)
+			if err != nil {
+				t.Fatalf("stat %s: %v", target, err)
+			}
+			if fi.Mode().Perm()&0o111 == 0 {
+				t.Errorf("the installed binary is not executable: mode %v", fi.Mode().Perm())
+			}
 		}
 	})
 }

@@ -218,7 +218,11 @@ func TestAnExpiredSessionLeavesTheCommittedFilesAlone(t *testing.T) {
 			}
 			serveStore(t, expired)
 
-			code, err := run([]string{cmd, "--session", sessionFile(t)})
+			// select binds the address for real, so this asks for an ephemeral port.
+			// The default is a fixed one, and a machine already serving on it fails the
+			// bind before the store is ever reached — the failure this test wants, for a
+			// reason that has nothing to do with the session.
+			code, err := run([]string{cmd, "--session", sessionFile(t), "--addr", "127.0.0.1:0"})
 			if code == 0 || err == nil {
 				t.Fatalf("%s against an expired session = %d, %v; want a failure", cmd, code, err)
 			}

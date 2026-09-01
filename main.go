@@ -117,7 +117,10 @@ func run(args []string) (int, error) {
 		if fs.NArg() > 1 {
 			return 1, fmt.Errorf("update takes at most one version, got %d arguments", fs.NArg())
 		}
-		return 0, selfupdate.Run(ctx, version, fs.Arg(0))
+		if err := selfupdate.Run(ctx, version, fs.Arg(0)); err != nil {
+			return 1, err
+		}
+		return 0, nil
 	}
 	if fs.NArg() > 0 {
 		return 1, fmt.Errorf("%s takes no positional arguments (got %q); to limit assets use --only %s",
@@ -141,7 +144,10 @@ func run(args []string) (int, error) {
 	lockPath := manifest.LockPath(manifestPath)
 
 	if cmd == "list" {
-		return 0, list(stdout, lockPath)
+		if err := list(stdout, lockPath); err != nil {
+			return 1, err
+		}
+		return 0, nil
 	}
 
 	cookie, err := resolveSession(cfg, configDir)
@@ -165,7 +171,10 @@ func run(args []string) (int, error) {
 		if err != nil {
 			return 1, err
 		}
-		return 0, selectAssets(ctx, client, manifestPath, ln)
+		if err := selectAssets(ctx, client, manifestPath, ln); err != nil {
+			return 1, err
+		}
+		return 0, nil
 	}
 	return syncOrStatus(ctx, client, cfg, manifestPath, lockPath, *only, *verify, cmd == "status" || *dryRun)
 }

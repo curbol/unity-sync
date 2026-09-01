@@ -120,7 +120,7 @@ func TestAnUpdateWorksWithNoGitHubCredential(t *testing.T) {
 			})
 			return
 		}
-		w.Write(zipWithBinary(t, "fresh binary"))
+		w.Write(zipWithBinary(t, nativeBinary(t, "fresh binary")))
 	}))
 	defer srv.Close()
 
@@ -136,7 +136,7 @@ func TestAnUpdateWorksWithNoGitHubCredential(t *testing.T) {
 		t.Fatalf("update with no GitHub credential: %v", err)
 	}
 	got, err := os.ReadFile(target)
-	if err != nil || string(got) != "fresh binary" {
+	if err != nil || string(got) != nativeBinary(t, "fresh binary") {
 		t.Fatalf("target holds %q, %v; want the downloaded binary", got, err)
 	}
 	for _, seen := range sawAuth {
@@ -246,4 +246,57 @@ func TestReplaceAsideRecoversTheBinaryWhenTheSwapFails(t *testing.T) {
 			t.Errorf("the installed binary is not executable: mode %v, %v", fi.Mode().Perm(), err)
 		}
 	})
+}
+
+// The zip reader verifies each entry's CRC, so a corrupted asset is already caught. This
+// is the other way an update goes wrong: a release that shipped something which is not a
+// binary at all, under the right filename. Replace would rename it into place, chmod it
+// executable and print "updated", leaving nothing runnable on PATH — the one outcome an
+// updater must never produce. The check therefore runs before Replace, not after.
+func TestAnAssetThatIsNotAnExecutableIsRefusedBeforeTheSwap(t *testing.T) {
+	if _, known := selfupdate.ExecutableMagicFor(runtime.GOOS); !known {
+		t.Skipf("no executable signature is checked on %s", runtime.GOOS)
+	}
+	for _, body := range []string{
+		"<!doctype html><title>Not Found</title>", // an error page saved under the asset name
+		"#!/bin/sh\necho wrong artifact\n",        // a script rather than a build
+		"",                                        // an empty file the build step never wrote
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if strings.HasSuffix(r.URL.Path, "/releases/latest") {
+				asset, err := selfupdate.PlatformAssetFor(runtime.GOOS, runtime.GOARCH, "9.9.9")
+				if err != nil {
+					t.Errorf("PlatformAsset: %v", err)
+				}
+				json.NewEncoder(w).Encode(map[string]any{
+					"tag_name": "v9.9.9",
+					"assets":   []any{map[string]any{"name": asset, "url": "http://" + r.Host + "/asset"}},
+				})
+				return
+			}
+			w.Write(zipWithBinary(t, body))
+		}))
+
+		target := filepath.Join(t.TempDir(), "unity-sync")
+		if err := os.WriteFile(target, []byte(nativeBinary(t, "the working one")), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		err := selfupdate.Update(context.Background(), selfupdate.New(srv.URL, ""), "0.1.0", "", target)
+		srv.Close()
+
+		if err == nil {
+			t.Errorf("an asset holding %q installed successfully", body)
+			continue
+		}
+		if !strings.Contains(err.Error(), "executable") && !strings.Contains(err.Error(), "empty") {
+			t.Errorf("asset %q was refused for some other reason than not being a binary: %v", body, err)
+		}
+		got, readErr := os.ReadFile(target)
+		if readErr != nil {
+			t.Fatalf("the working binary is gone after a refused update: %v", readErr)
+		}
+		if string(got) != nativeBinary(t, "the working one") {
+			t.Errorf("the working binary was replaced by %q", got)
+		}
+	}
 }

@@ -23,3 +23,10 @@ func ForceImageLocked(t *testing.T) {
 	runningImageIsLocked = func() bool { return true }
 	t.Cleanup(func() { runningImageIsLocked = prev })
 }
+
+// ExecutableMagicFor reports whether this platform has a signature update checks for, so
+// a test can skip rather than assert nothing on a platform where the check is a no-op.
+func ExecutableMagicFor(goos string) ([][]byte, bool) {
+	m, ok := executableMagic[goos]
+	return m, ok
+}

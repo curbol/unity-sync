@@ -16,6 +16,22 @@ import (
 	"github.com/curbol/unity-sync/internal/selfupdate"
 )
 
+// nativeBinary prefixes body with the signature update() checks for on this platform, so
+// a test driving a successful install ships something that looks like the artifact a
+// release really publishes.
+func nativeBinary(t *testing.T, body string) string {
+	t.Helper()
+	switch runtime.GOOS {
+	case "linux":
+		return "\x7fELF" + body
+	case "darwin":
+		return "\xcf\xfa\xed\xfe" + body
+	case "windows":
+		return "MZ" + body
+	}
+	return body
+}
+
 func zipWithBinary(t *testing.T, body string) []byte {
 	t.Helper()
 	var buf bytes.Buffer

@@ -210,6 +210,36 @@ func binaryFromZip(archive []byte) ([]byte, error) {
 	return nil, fmt.Errorf("release asset contains no unity-sync binary")
 }
 
+// executableMagic is the leading signature of a native binary per platform. The zip
+// reader has already verified the entry's CRC, so this catches the other way an update
+// goes wrong: a release that shipped something which is not a binary at all — an error
+// page, a script, the wrong artifact — landing on top of a working install and reporting
+// success.
+var executableMagic = map[string][][]byte{
+	"linux":   {[]byte("\x7fELF")},
+	"darwin":  {{0xcf, 0xfa, 0xed, 0xfe}, {0xce, 0xfa, 0xed, 0xfe}, {0xca, 0xfe, 0xba, 0xbe}},
+	"windows": {[]byte("MZ")},
+}
+
+// checkExecutable refuses bytes that are not a native binary for this platform. An
+// unknown GOOS has no signature to check and is let through rather than made
+// un-updatable.
+func checkExecutable(binary []byte) error {
+	if len(binary) == 0 {
+		return fmt.Errorf("the release asset is empty")
+	}
+	magics, known := executableMagic[runtime.GOOS]
+	if !known {
+		return nil
+	}
+	for _, m := range magics {
+		if bytes.HasPrefix(binary, m) {
+			return nil
+		}
+	}
+	return fmt.Errorf("the release asset is not a %s executable", runtime.GOOS)
+}
+
 // Replace swaps the running executable for the given bytes, writing beside the target so
 // the rename is atomic and cannot leave a half-written binary on PATH.
 func Replace(targetPath string, binary []byte) error {
@@ -324,6 +354,11 @@ func update(ctx context.Context, c *Client, current, version, target string) err
 	binary, err := c.DownloadBinary(ctx, rel)
 	if err != nil {
 		return err
+	}
+	// Before Replace, not after: past that rename the working binary is already gone,
+	// and leaving nothing usable on PATH is the one outcome an updater must never produce.
+	if err := checkExecutable(binary); err != nil {
+		return fmt.Errorf("refusing to install %s: %w", latest, err)
 	}
 	if err := Replace(target, binary); err != nil {
 		return err

@@ -35,6 +35,14 @@ func Permanent(err error) error {
 	if err == nil {
 		return nil
 	}
+	// Marking an already-marked error again would leave Do returning the inner wrapper
+	// rather than the sentinel underneath it, so a caller comparing with == or reading
+	// Error() on the concrete type sees an unexported wrapper it cannot name. Layers
+	// both classify: the store marks what a status settles, and the syncer marks what the
+	// body settles, so the same error reaches Permanent twice by design.
+	if _, already := err.(permanent); already {
+		return err
+	}
 	return permanent{err}
 }
 

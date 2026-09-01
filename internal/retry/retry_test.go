@@ -129,3 +129,28 @@ func TestCancellationCutsTheBackoffShort(t *testing.T) {
 		t.Errorf("Do waited %v before noticing the cancellation", elapsed)
 	}
 }
+
+// Two layers classify the same error on purpose: the store marks what a status settles,
+// and the syncer marks what the body settles, so an error reaches Permanent twice. Marking
+// an already-marked one again leaves Do returning the inner wrapper rather than the
+// sentinel under it, and a caller reading Error() on the concrete type gets an unexported
+// wrapper it cannot name.
+func TestPermanentDoesNotWrapWhatIsAlreadyPermanent(t *testing.T) {
+	sentinel := errors.New("the asset is gone")
+	once := retry.Permanent(sentinel)
+	if retry.Permanent(once) != once {
+		t.Error("Permanent re-wrapped an error it had already marked")
+	}
+	var calls int
+	err := retry.Do(context.Background(), retry.Policy{Attempts: 3, Sleep: func(time.Duration) {}},
+		func(int) error {
+			calls++
+			return retry.Permanent(retry.Permanent(sentinel))
+		})
+	if calls != 1 {
+		t.Errorf("a doubly-marked permanent error was attempted %d times, want 1", calls)
+	}
+	if err != sentinel {
+		t.Errorf("Do returned %#v, want the sentinel itself so a caller can compare it", err)
+	}
+}

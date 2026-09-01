@@ -377,38 +377,175 @@ func TestTheClientIsSafeToShareAcrossTheDownloadPool(t *testing.T) {
 	wg.Wait()
 }
 
-// A 403 says the same thing on the second attempt, and the download policy's backoff is
-// measured in seconds per asset, so the status has to reach the caller as permanent. Run
-// through retry.Do, which is the only public way to observe that.
-func TestANonRetryableDownloadStatusIsNotRetried(t *testing.T) {
-	var calls int
-	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		w.WriteHeader(http.StatusForbidden)
-	})
-	policy := retry.Policy{Attempts: 3, Base: time.Millisecond, Sleep: func(time.Duration) {}}
-	err := retry.Do(context.Background(), policy, func(int) error {
-		_, err := c.Fetch(context.Background(), "1")
-		return err
-	})
-	if err == nil {
-		t.Fatal("Fetch on a 403 = nil, want an error")
-	}
-	if calls != 1 {
-		t.Errorf("the store was called %d times for a 403, want 1", calls)
+// Every status Fetch judges as permanent has to reach the caller marked, not just the
+// generic ones. A pulled asset is the case that actually happens, and an unmarked 404 is
+// three requests and a full backoff for bytes the store will never have again; an unmarked
+// 302 retries the one error that is supposed to stop the run at once. Run through retry.Do,
+// which is the only public way to observe permanence.
+func TestPermanentDownloadStatusesAreNotRetried(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		want   error
+	}{
+		{"forbidden", http.StatusForbidden, nil},
+		{"pulled asset", http.StatusNotFound, store.ErrNotDownloadable},
+		{"expired session", http.StatusFound, store.ErrExpiredSession},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int
+			c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				if tc.status == http.StatusFound {
+					w.Header().Set("Location", "https://id.unity.com/oauth2/authorize")
+				}
+				w.WriteHeader(tc.status)
+			})
+			policy := retry.Policy{Attempts: 3, Base: time.Millisecond, Sleep: func(time.Duration) {}}
+			err := retry.Do(context.Background(), policy, func(int) error {
+				_, err := c.Fetch(context.Background(), "1")
+				return err
+			})
+			if err == nil {
+				t.Fatalf("Fetch on a %d = nil, want an error", tc.status)
+			}
+			if tc.want != nil && !errors.Is(err, tc.want) {
+				t.Errorf("error = %v, want it to unwrap to %v", err, tc.want)
+			}
+			if calls != 1 {
+				t.Errorf("the store was called %d times for a %d, want 1", calls, tc.status)
+			}
+		})
 	}
 
 	// A 503 is the opposite case, and proves the test can tell the difference.
-	calls = 0
+	var calls int
 	busy, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		w.WriteHeader(http.StatusServiceUnavailable)
 	})
+	policy := retry.Policy{Attempts: 3, Base: time.Millisecond, Sleep: func(time.Duration) {}}
 	retry.Do(context.Background(), policy, func(int) error {
 		_, err := busy.Fetch(context.Background(), "1")
 		return err
 	})
 	if calls != 3 {
 		t.Errorf("a 503 was attempted %d times, want all 3", calls)
+	}
+}
+
+// Lookup is the discriminator that decides whether a short body was a republish (asset
+// skipped, run stays green) or a truncation (asset fails). If the ids filter stopped
+// reaching the wire, or the row were taken positionally instead of matched on product id,
+// Lookup would answer with the first row of the whole owned list, every truncated download
+// would be reported as "republished mid-download; nothing stored", and the run would exit
+// 0 forever.
+func TestLookupFiltersByIdAndMatchesTheRowItGetsBack(t *testing.T) {
+	const wanted = "115488"
+	var sent string
+	page := func(rows string) http.HandlerFunc {
+		return csrfRouter(func(w http.ResponseWriter, r *http.Request) {
+			body, _ := io.ReadAll(r.Body)
+			sent = string(body)
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `[{"data":{"searchMyAssets":{"total":1,"results":[`+rows+`]}}}]`)
+		})
+	}
+	const match = `{"product":{"id":"115488","name":"Quick Outline","state":"published",
+		"downloadSize":"4096","currentVersion":{"id":"905463","name":"3.5"},
+		"publisher":{"id":"7","name":"Chris Nolet"}}}`
+
+	c, _ := serve(t, page(match))
+	if err := c.Bootstrap(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	a, ok, err := c.Lookup(context.Background(), wanted)
+	if err != nil || !ok {
+		t.Fatalf("Lookup = %v, %v, %v; want the product", a, ok, err)
+	}
+	if !strings.Contains(sent, `"ids":["115488"]`) {
+		t.Errorf("request did not carry the ids filter, so the store answered with the whole "+
+			"owned list: %s", sent)
+	}
+	if !strings.Contains(sent, `"pageSize":1`) {
+		t.Errorf("request did not ask for a single row: %s", sent)
+	}
+	if a.ID != wanted || a.Version.ID != "905463" || a.AdvertisedSize != 4096 {
+		t.Errorf("asset = %+v, want id %s at version 905463 sized 4096", a, wanted)
+	}
+
+	// A response carrying somebody else's product is a miss, not that product. Reported as
+	// not-found rather than as an error, because republished() reads an error and a miss
+	// the same way: keep the size floor on.
+	other, _ := serve(t, page(strings.Replace(match, `"id":"115488"`, `"id":"999999"`, 1)))
+	if err := other.Bootstrap(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := other.Lookup(context.Background(), wanted)
+	if ok || err != nil {
+		t.Errorf("Lookup on a foreign row = %v, %v, %v; want a clean miss", got, ok, err)
+	}
+}
+
+// The walk ends on an empty page and nothing else bounds it, so a store that clamped an
+// over-range page to the last valid one would loop here forever: flat memory because of
+// the dedup, no output, no error, no timeout. Overshooting the reported total is the same
+// broken-pagination symptom a short walk is, and has to be as loud.
+func TestEnumerateRefusesAWalkLongerThanTheStoresOwnTotal(t *testing.T) {
+	c, _ := serve(t, csrfRouter(func(w http.ResponseWriter, r *http.Request) {
+		// Every page answers with the same full page, as a clamping store would.
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `[{"data":{"searchMyAssets":{"total":2,"results":[
+			{"product":{"id":"1","currentVersion":{"id":"v1"},"downloadSize":"10"}},
+			{"product":{"id":"2","currentVersion":{"id":"v1"},"downloadSize":"10"}}
+		]}}}]`)
+	}))
+	if err := c.Bootstrap(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Enumerate(context.Background())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Enumerate accepted a walk that never ends")
+		}
+		if !strings.Contains(err.Error(), "paginating") {
+			t.Errorf("error %q does not name the pagination problem", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Enumerate never returned: the walk has no upper bound")
+	}
+}
+
+// The total anchors to the first page, not to whichever page happens to end the walk. The
+// page that ends it carries no rows, so its own total is the least load-bearing number in
+// the response and the worst one to hold the guard to.
+func TestEnumerateAnchorsTheTotalToTheFirstPage(t *testing.T) {
+	c, _ := serve(t, csrfRouter(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(string(body), `"page":0`) {
+			io.WriteString(w, `[{"data":{"searchMyAssets":{"total":1,"results":[
+				{"product":{"id":"1","currentVersion":{"id":"v1"},"downloadSize":"10"}}
+			]}}}]`)
+			return
+		}
+		// The overflow page reports the total for its own empty result set.
+		io.WriteString(w, `[{"data":{"searchMyAssets":{"total":0,"results":[]}}}]`)
+	}))
+	if err := c.Bootstrap(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	assets, err := c.Enumerate(context.Background())
+	if err != nil {
+		t.Fatalf("Enumerate: %v; a complete walk was refused because the empty page reported "+
+			"its own row count as the total", err)
+	}
+	if len(assets) != 1 {
+		t.Errorf("got %d assets, want 1", len(assets))
 	}
 }

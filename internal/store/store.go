@@ -186,11 +186,24 @@ func (c *Client) Enumerate(ctx context.Context) ([]model.Asset, error) {
 		if err != nil {
 			return nil, err
 		}
-		total = res.Total
+		// Taken from the first page, not refreshed from the last. The page that ends the
+		// walk carries no rows, so its own total is the least load-bearing number in the
+		// response and the worst one to hold the guard to.
+		if total < 0 {
+			total = res.Total
+		}
 		if len(res.Results) == 0 {
 			break
 		}
 		rawRows += len(res.Results)
+		// The walk ends on an empty page, so a store that clamped an over-range page to
+		// the last valid one would loop here forever: flat memory, no output, no error.
+		// Overshooting the reported total is the same broken-pagination symptom the short
+		// walk is, and gets the same loud refusal.
+		if total >= 0 && rawRows > total {
+			return nil, fmt.Errorf("enumeration collected %d rows against a reported total of %d; "+
+				"the store is not paginating as expected", rawRows, total)
+		}
 		for _, row := range res.Results {
 			a, err := row.Product.asset()
 			if err != nil {
@@ -301,7 +314,10 @@ func (c *Client) search(ctx context.Context, vars map[string]any) (searchResult,
 		if errors.Is(err, ErrCSRF) && !csrfRetried {
 			csrfRetried = true
 			if boot := c.Bootstrap(ctx); boot != nil {
-				return retry.Permanent(err)
+				// Wrapped, not swallowed: "csrf token mismatch" sends the user looking at
+				// the token, when what actually happened is that the bootstrap route
+				// stopped issuing one.
+				return retry.Permanent(fmt.Errorf("%w (re-bootstrap failed: %v)", err, boot))
 			}
 			res, err = c.searchOnce(ctx, vars)
 			if err == nil {
@@ -367,7 +383,7 @@ func (c *Client) searchOnce(ctx context.Context, vars map[string]any) (searchRes
 	}
 	if err := json.Unmarshal(payload, &batch); err != nil {
 		if retry.Retryable(resp.StatusCode) {
-			return searchResult{}, fmt.Errorf("status %d with a non-JSON body", resp.StatusCode)
+			return searchResult{}, fmt.Errorf("status %d with a non-JSON body: %w", resp.StatusCode, err)
 		}
 		return searchResult{}, retry.Permanent(fmt.Errorf("status %d with a non-JSON body: %w", resp.StatusCode, err))
 	}
@@ -429,13 +445,17 @@ func (c *Client) Fetch(ctx context.Context, id string) (*Download, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Both are marked here rather than left for the caller to re-decide: this function
+	// already classifies every other status it returns, and an unmarked sentinel is one a
+	// second caller retries — three requests for an asset the store has pulled, and a full
+	// backoff schedule for the one error that is supposed to stop the run at once.
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
 		drain(resp)
-		return nil, ErrExpiredSession
+		return nil, retry.Permanent(ErrExpiredSession)
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		drain(resp)
-		return nil, ErrNotDownloadable
+		return nil, retry.Permanent(ErrNotDownloadable)
 	}
 	if resp.StatusCode != http.StatusOK {
 		drain(resp)

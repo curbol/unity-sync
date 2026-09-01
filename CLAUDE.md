@@ -74,9 +74,19 @@ each with a package doc comment stating its contract:
 - **Downloads ask for `Accept-Encoding: identity`.** The endpoint honours gzip by
   gzipping the already-gzipped package, and Go will not decode an encoding the caller
   requested.
+- **A download body carries a stall guard, not a deadline.** A 23 GB package legitimately
+  takes hours, so there is no whole-request timeout. A body that goes silent after its
+  headers arrive would otherwise block the read forever: the attempt never returns, so the
+  retry that would open a fresh connection never runs and the pool slot is never given up.
+  The API calls carry small JSON and are bounded end to end instead.
 - **`resolvedVersionId` is the diff key**, not the advertised `version.id`. The advertised
   value refreshes every run; pairing a refreshed id with an unresolved entry's file would
   mark it current forever.
+- **A derived slug is always a usable directory name.** `PublisherSlug` carries no id
+  suffix, so it is the one segment that can come out a bare word: a publisher whose name
+  folds to a Windows device name (`con`, `aux`, `com1`…) falls back to the id, and
+  `cache.safeSegment` refuses one that arrives any other way. `MkdirAll` fails on those
+  names, so without this the asset fails on Windows and nowhere else.
 - **A recorded `cachePath` is compared with `cache.SamePath`, never `==`.** That file is
   committed and hand-editable, so two spellings name one file; comparing them raw makes a
   run delete the package it just downloaded as a superseded copy.
@@ -84,10 +94,21 @@ each with a package doc comment stating its contract:
   `Commit` does, after the syncer's guards pass.
 - **A failed download fails its asset, not the run**, and a pulled asset does not make the
   run exit non-zero.
+- **The select page is served only to a browser on this machine.** Every request's `Host`
+  is checked against the bound address, before the render as well as before a save. The
+  per-run token stops a blind cross-origin POST but not DNS rebinding, which the browser
+  treats as same-origin *by name*: without the check, a page the user is already on could
+  read the whole owned-asset list and spend the one save this page accepts, leaving the
+  user's own save refused as a stale tab.
 - **Only `select` writes the manifest.** `status` and `sync` read it. `manifest.Reconcile`
   refuses an owned set that is empty, and one that shares no id with what was enabled: both
   are what a wrong-org session looks like, and the select page's own would-empty guard is
   compared against a set `Reconcile` has already rewritten.
+- **An update installs nothing that is not a native binary.** The zip reader verifies each
+  entry's CRC; a magic-byte check catches the other failure, a release that shipped an
+  error page or the wrong artifact under the right name. It runs *before* the rename, in
+  `selfupdate` and in `install.sh` alike, because past that point the working binary is
+  gone and leaving nothing usable on PATH is the one outcome an updater must never produce.
 - **No account data in the repo.** Sessions and raw captures stay out; the
   `internal/fixtures` guard test fails the build if any reaches *any* `testdata/`, package
   local ones included. The scrub is an allowlist projected from `store.SearchDocument`, so

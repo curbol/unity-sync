@@ -62,7 +62,7 @@ The suite is fully offline and needs no session: every test runs against `httpte
 and the committed, scrubbed fixtures in `testdata/store/`. It takes a few seconds. A green
 run therefore says nothing about live store behaviour; `docs/design.md` is the only record
 of that, and it is measured, not tested. There is no coverage gate. The one test that reads
-a real artefact, `TestDecodesARealSessionStore` (`internal/session/browser_test.go:354`),
+a real artefact, `TestDecodesARealSessionStore` (`internal/session/browser_test.go`),
 skips unless `UNITY_SYNC_REAL_SESSIONSTORE` names a `recovery.jsonlz4`, so the mozlz4
 decoder is otherwise proved only against blocks the test file wrote itself. Each package
 with pinned failure models keeps them in its own `audit_test.go`, apart
@@ -108,13 +108,18 @@ agents run in parallel:
   and therefore ignored, an exit code that hides a failure, a select page that clobbers a
   curated manifest, an example file that no longer matches the struct that parses it. The
   page is an `html/template` literal with inline CSS and JavaScript at
-  `internal/web/web.go:49`; it is in scope, and so is the store-controlled data rendered
+  `internal/web/web.go`; it is in scope, and so is the store-controlled data rendered
   into it.
 - **Distribution and fixtures** — `internal/selfupdate/`, `internal/fixtures/`,
-  `cmd/scrubfixtures/`, `install.sh`, `.github/workflows/`. Replaces the running binary and
-  regenerates the test fixtures. What goes wrong here: an update that leaves no working
-  binary behind, a credential passed somewhere a process list can read it, a scrub that
-  misses a field the store started returning, a release that ships without its gate.
+  `cmd/scrubfixtures/`, `install.sh`, `install_test.go`, `.github/workflows/`. Replaces the
+  running binary and regenerates the test fixtures. What goes wrong here: an update that
+  leaves no working binary behind, a credential passed somewhere a process list can read
+  it, a scrub that misses a field the store started returning, a release that ships without
+  its gate. Neither the updater nor the installer may install bytes it has not recognised
+  as a native binary, and that check runs *before* the rename in both — past it the working
+  binary is gone. `install.sh` composes the asset label from `uname` in its own language,
+  and `install_test.go` is what holds that composition to the labels `release.yml` actually
+  publishes; the two are otherwise a contract nothing compiles together.
 
 For each sub-agent, provide:
 - The full list of files in its area, not a diff.
@@ -171,11 +176,11 @@ anything about enumeration, the lockfile, the cache layout, or the download guar
    authenticating cookie; a host filter that accepts cookies from outside the `unity.com`
    family or rejects the host-only spelling; a browser scan that returns the first profile
    it could parse rather than the first that carries `LS`.
-   *Check:* `session.CredentialCookie` (`internal/session/session.go:22`), `ResolveFrom`
-   (`:62`), and `resolveBrowser` (`internal/session/browser.go:264`), which is the second
+   *Check:* `credentialCookie` and `ResolveFrom` (`internal/session/session.go`), and
+   `resolveBrowser` (`internal/session/browser.go`), which is the second
    place the assertion has to hold; trace every construction of `store.Client` back to
    them. Guard tests: `internal/session/audit_test.go`,
-   `internal/session/browser_test.go:248`, `audit_test.go:47`.
+   `internal/session/browser_test.go`, `audit_test.go`.
 
 2. **No client that talks to the Asset Store follows a redirect.** An unauthenticated
    download 302s to Unity's OAuth page, and a client that follows it writes a sign-in page
@@ -184,24 +189,51 @@ anything about enumeration, the lockfile, the cache layout, or the download guar
    *Violation shape:* an `http.Client` or `http.Transport` constructed in `internal/store`
    (or anywhere that reaches `assetstore.unity.com`) without
    `CheckRedirect: http.ErrUseLastResponse`; a 3xx from a store endpoint treated as
-   anything but an expired session. `Bootstrap` (`internal/store/store.go:150`) is the one
+   anything but an expired session. `Bootstrap` (`internal/store/store.go`) is the one
    documented exception to that second half: its route answers 404 by design, so a non-2xx
    there is normal and a 3xx is not the expired-session signal it is everywhere else. It
    still must not follow the redirect, and a response that issues no `_csrf` is still a
    hard failure.
-   *Check:* `internal/store/store.go:133` is currently the only `CheckRedirect` in the tree;
+   *Check:* `internal/store/store.go` is currently the only `CheckRedirect` in the tree;
    `grep -rn CheckRedirect --include='*.go' .` should still find exactly one. The exception
-   is pinned by `internal/selfupdate/audit_test.go:45`, which redirects for real.
+   is pinned by `internal/selfupdate/audit_test.go`, which redirects for real.
 
 3. **Downloads ask for `Accept-Encoding: identity` and reject any `Content-Encoding` on the
    response.** The endpoint honours gzip by gzipping the already-gzipped package, and Go
    will not decode an encoding the caller requested.
    *Violation shape:* a request built without the header; a response path that keeps bytes
    before the `Content-Encoding` check runs.
-   *Check:* `internal/store/store.go:340`, `:426`, `:450`. Guard tests:
-   `internal/store/store_test.go:157`, `internal/store/audit_test.go:156`.
+   *Check:* `internal/store/store.go`. Guard tests:
+   `internal/store/store_test.go`, `internal/store/audit_test.go`.
 
-4. **`resolvedVersionId` is the diff key, not the advertised `version.id`.** The advertised
+4. **A download body carries a stall guard, and the API calls carry a deadline.** A 23 GB
+   package legitimately takes hours, so no whole-request timeout may be imposed on a
+   download. What is bounded is *silence*: `stallGuard` resets on every read returning
+   bytes and cancels the request when the window expires, reporting `ErrStalled` rather
+   than the context cancellation underneath it. Without it a body that stops mid-transfer
+   blocks the read forever, the attempt never returns, `retry.Do` never gets to open a
+   fresh connection, and the pool slot is never given up — two such transfers stop a run
+   at the default concurrency with no error and no exit.
+   *Violation shape:* a `Fetch` that returns `resp.Body` unwrapped; a `Client.Timeout` or
+   whole-request context on the download path; the guard made advisory by treating its
+   error as an interrupt; a per-call deadline removed from `searchOnce` or `Bootstrap`.
+   *Check:* `stallGuard`, `newStallGuard` and `Fetch` (`internal/store/store.go`). Guard
+   tests: `internal/store/audit_test.go` — one that a silent body fails, and one that a
+   slow-but-live body is *not* cut off, which is the half that keeps the guard honest.
+
+5. **The select page is served only to a browser on this machine.** Each request's `Host`
+   is checked against the bound address, before the render as well as before the save. The
+   per-run token stops a blind cross-origin POST but not DNS rebinding, which the browser
+   treats as same-origin by name.
+   *Violation shape:* the check moved to the POST branch alone, so the owned-asset list and
+   the token are still readable; a bind address the check cannot express, making the page
+   unreachable; the refusal leaking asset names in its body.
+   *Check:* `localRequest` and `ServeHTTP` (`internal/web/web.go`). Guard tests:
+   `internal/web/audit_test.go` — one that a foreign Host is refused without disclosing
+   anything and without spending the one save, and one that every way a browser really
+   addresses the page is accepted.
+
+6. **`resolvedVersionId` is the diff key, not the advertised `version.id`.** The advertised
    value refreshes every run; pairing a refreshed id with an unresolved entry's file would
    mark it current forever. The delivered id is recorded but never diffed on, because for
    some products advertised and delivered differ as a steady state.
@@ -209,10 +241,10 @@ anything about enumeration, the lockfile, the cache layout, or the download guar
    `prior.ResolvedVersionID` against the advertised id; a write that sets
    `ResolvedVersionID` from a value the file was not fetched against; a carried-forward
    entry whose resolution half gets refreshed alongside its advertised half.
-   *Check:* `classify` (`internal/syncer/syncer.go:96`), `build` and `fromEntry` (`:590`,
-   `:658`), and the two halves of `lockfile.Entry` (`internal/lockfile/lockfile.go:32`).
+   *Check:* `classify`, `build` and `fromEntry` (`internal/syncer/syncer.go`), and the
+   two halves of `lockfile.Entry` (`internal/lockfile/lockfile.go`).
 
-5. **Nothing unverified reaches a real cache path.** `cache.Store` streams to a temp file
+7. **Nothing unverified reaches a real cache path.** `cache.Store` streams to a temp file
    beside the destination and does not rename; `Commit` renames, after the syncer's
    semantic guards pass; `Discard` removes. An interrupt in that window would otherwise
    strand a rejected body where the next run's adopt scan takes it for genuine.
@@ -220,10 +252,10 @@ anything about enumeration, the lockfile, the cache layout, or the download guar
    `Relocate`; a guard in `syncer.download` that runs after `Commit`; an early return
    between `Store` and `Commit` that neither commits nor discards; a `Relocate` onto an
    occupied destination.
-   *Check:* `internal/cache/cache.go:83`, `:125`, `:135`, `:313`. Guard tests:
-   `internal/cache/audit_test.go:20`, `:44`; `internal/syncer/audit_test.go:27`.
+   *Check:* `internal/cache/cache.go`. Guard tests:
+   `internal/cache/audit_test.go`; `internal/syncer/audit_test.go`.
 
-6. **Adoption clears three gates, and never reaches the file that just failed
+8. **Adoption clears three gates, and never reaches the file that just failed
    verification.** The descriptor's product id must match, its version id must match what
    the store currently advertises, and the file must clear the same size floor a download
    must clear — adoption is the one route into the cache that skips the download guards
@@ -232,14 +264,14 @@ anything about enumeration, the lockfile, the cache layout, or the download guar
    not set on some path where a recorded file exists and failed its check; an exclusion
    compared as a raw string against a cleaned path, so a differently-spelled entry fails to
    exclude the file it names.
-   *Check:* the `adoptable` closure and `adopt` (`internal/syncer/syncer.go:270`, `:446`),
-   `cache.Index.Find` (`internal/cache/cache.go:262`). The candidates come from one
-   `cache.Scan` (`:225`) per run, memoized lazily in `Run` (`internal/syncer/syncer.go:233`)
+   *Check:* the `adoptable` closure and `adopt` (`internal/syncer/syncer.go`),
+   `cache.Index.Find` (`internal/cache/cache.go`). The candidates come from one
+   `cache.Scan` per run, memoized lazily in `Run` (`internal/syncer/syncer.go`)
    and taken after the temp sweep — a scan built before the sweep would offer an abandoned
    partial as something to adopt. Guard tests:
-   `internal/syncer/audit_test.go:323`, `:447`; `internal/cache/audit_test.go:171`, `:189`.
+   `internal/syncer/audit_test.go`; `internal/cache/audit_test.go`.
 
-7. **The size floor's republish discriminator is a re-read of the product, never the
+9. **The size floor's republish discriminator is a re-read of the product, never the
    delivered-vs-advertised id difference.** A received count below
    `advertised - min(4096, advertised/8)` fails that asset; the one legitimate cause is a
    republish mid-download, and the only sound test for that is asking the store again.
@@ -249,51 +281,51 @@ anything about enumeration, the lockfile, the cache layout, or the download guar
    enumeration; a republish check that compares ids from the same response instead of
    re-querying; a `Lookup` error treated as "republished" and so silently disabling the
    floor.
-   *Check:* `belowFloor` and `republished` (`internal/syncer/syncer.go:565`, `:580`), and
-   `store.Lookup` (`internal/store/store.go:216`).
+   *Check:* `belowFloor` and `republished` (`internal/syncer/syncer.go`), and
+   `store.Lookup` (`internal/store/store.go`).
 
-8. **A failed download fails its asset, not the run, and a pulled asset does not make the
+10. **A failed download fails its asset, not the run, and a pulled asset does not make the
    run exit non-zero.** One delisted or corrupt package must not stop a 75 GB mirror. The
    pool cancels early only for a run-fatal error.
    *Violation shape:* a `return` out of the download pool on a per-asset error; a
    `cancelPool()` for anything but `store.ErrExpiredSession`; `store.ErrNotDownloadable`
    counted as retryable, or a retryable failure that leaves the exit code at 0.
-   *Check:* the pool at `internal/syncer/syncer.go:348`-`:424`, `Report.Failed()` (`:166`),
-   and `main.go:262`. Guard tests: `internal/syncer/audit_test.go:103`, `:654`.
+   *Check:* the pool at `internal/syncer/syncer.go`, `Report.Failed()`,
+   and `main.go`. Guard tests: `internal/syncer/audit_test.go`.
 
-9. **Enumeration never silently short-walks, and a 200 with errors is never "you own
+11. **Enumeration never silently short-walks, and a 200 with errors is never "you own
    nothing".** Rows collected must equal the `total` the store reports, counting raw rows
    rather than deduped assets. An empty enumeration against a non-empty lockfile is refused
    outright.
    *Violation shape:* dropping or weakening the `rawRows != total` comparison; counting
    after dedup; a populated `errors` array on a 200 read as an empty result; the empty-list
    refusal removed or made conditional.
-   *Check:* `store.Enumerate` (`internal/store/store.go:177`, comparison at `:206`),
-   `syncer.ErrEmptyLibrary` (`internal/syncer/syncer.go:29`). Guard tests:
-   `internal/store/audit_test.go:56`; `internal/syncer/audit_test.go:289`.
+   *Check:* `store.Enumerate` and its raw-row comparison (`internal/store/store.go`),
+   `syncer.ErrEmptyLibrary` (`internal/syncer/syncer.go`). Guard tests:
+   `internal/store/audit_test.go`; `internal/syncer/audit_test.go`.
 
-10. **`status`, and `sync --dry-run`, mutate nothing.** Not the temp sweep, not a
+12. **`status`, and `sync --dry-run`, mutate nothing.** Not the temp sweep, not a
     relocation, not the lockfile.
     *Violation shape:* any call to `cache.SweepTemps`, `Pending.Commit`, `cache.Relocate`,
     `cache.RemoveStale`, `lockfile.Save`, or `manifest.Save` on a path reachable with
     `opts.DryRun` set.
-    *Check:* the gates at `internal/syncer/syncer.go:214`, `:299`, `:321`, and the early
-    return at `:338` that precedes every download and every save. Guard test:
-    `internal/syncer/audit_test.go:272`.
+    *Check:* the `opts.DryRun` gates in `syncer.Run` (`internal/syncer/syncer.go`), and
+    the early return that precedes every download and every save. Guard test:
+    `internal/syncer/audit_test.go`.
 
-11. **Only `select` writes the manifest, and it accepts exactly one save.** `status`, `sync`, and `list` read it. A selection
+13. **Only `select` writes the manifest, and it accepts exactly one save.** `status`, `sync`, and `list` read it. A selection
     that would empty a curated file is refused rather than saved.
     *Violation shape:* a `manifest.Save` call reachable from any subcommand but `select`; a
     save path that bypasses the would-empty guard.
     *Check:* `grep -rn 'manifest\.Save' --include='*.go' .` should find exactly one
-    non-test caller, `main.go:219`, inside `selectAssets`. The guard is
-    `manifest.ErrWouldEmpty` (`internal/manifest/manifest.go:131`). Two tabs share the
+    non-test caller, `main.go`, inside `selectAssets`. The guard is
+    `manifest.ErrWouldEmpty` (`internal/manifest/manifest.go`). Two tabs share the
    per-run token, so the token alone does not make "one save" true: `Handler.save` sends
-   through a `sync.Once` (`internal/web/web.go:176`) and refuses every later POST. A second
+   through a `sync.Once` (`internal/web/web.go`) and refuses every later POST. A second
    save that is answered but never read tells the user their selection was kept when the
-   manifest holds another tab's. Guard test: `internal/web/web_test.go:95`.
+   manifest holds another tab's. Guard test: `internal/web/web_test.go`.
 
-12. **The cache layout is three segments deep and its filename is derived, never taken from
+14. **The cache layout is three segments deep and its filename is derived, never taken from
     `Content-Disposition`.** quarry derives its vendor facet from the first path segment and
     its pack facet from the second, filling the latter only when a path has at least three
     parts. The store sends `Content-Disposition` inconsistently, so trusting it would land
@@ -304,22 +336,34 @@ anything about enumeration, the lockfile, the cache layout, or the download guar
     `model.Asset.PublisherSlug()` and `Slug()`; `Download.Filename` used for a path rather
     than for the recorded `storeFilename`; a slug fallback removed so an unfoldable name
     yields an empty segment.
-    *Check:* `cache.RelPath` (`internal/cache/cache.go:35`), `model.Slug` and
-    `PublisherSlug` (`internal/model/model.go:68`, `:81`), and the single use of
-    `dispositionFilename` (`internal/store/store.go:475`).
+    *Check:* `cache.RelPath` (`internal/cache/cache.go`), `model.Slug` and
+    `PublisherSlug` (`internal/model/model.go`), and the single use of
+    `dispositionFilename` (`internal/store/store.go`).
 
-13. **No account data reaches the repo.** Sessions and raw captures stay out; committed
+    A slug must also be a name the filesystem accepts. `PublisherSlug` carries no id
+    suffix, so it is the one derived segment that can come out a bare word, and a
+    publisher whose name folds to a Windows device name (`con`, `aux`, `com1`…) derives a
+    directory `MkdirAll` refuses on that platform alone — which reads as a run that
+    quietly never completes, since a failed download fails only its asset.
+    *Violation shape:* the reserved-name fallback removed from `PublisherSlug`, or the
+    matching refusal removed from `cache.safeSegment`; a check that misses Windows'
+    name-before-the-dot rule.
+    *Check:* `ReservedSegment` and `PublisherSlug` (`internal/model/model.go`),
+    `safeSegment` (`internal/cache/cache.go`). Guard tests:
+    `internal/model/audit_test.go`, `internal/cache/audit_test.go`.
+
+15. **No account data reaches the repo.** Sessions and raw captures stay out; committed
     fixtures are scrubbed output, and the scrub deletes the entitlement field outright
     rather than substituting a value.
     *Violation shape:* a fixture added to `testdata/` by hand or from an unscrubbed
     capture; a scrub that substitutes rather than deletes; the pinned query growing a field
     that returns account data; a session path logged, printed in an error, or written into
     the lockfile or manifest.
-    *Check:* `internal/fixtures/guard_test.go:37` walks the whole of `testdata/` and fails
-    the build; `internal/fixtures/scrub.go:17`. The pinned document is
-    `store.SearchDocument` (`internal/store/store.go:56`).
+    *Check:* `internal/fixtures/guard_test.go` walks the whole of `testdata/` and fails
+    the build; `internal/fixtures/scrub.go`. The pinned document is
+    `store.SearchDocument` (`internal/store/store.go`).
 
-14. **A session store is narrowed to the `unity.com` family inside `internal/session`, and
+16. **A session store is narrowed to the `unity.com` family inside `internal/session`, and
     no cookie value leaves the package except as the Cookie header.** Gecko's
     `recovery.jsonlz4` records the cookies of every host the browsing session touched: on
     the profile this was measured against, 156 of 169 cookie hosts had no tab open
@@ -331,101 +375,101 @@ anything about enumeration, the lockfile, the cache layout, or the download guar
     string, the report, the lockfile, or the manifest. `ErrNoBrowserCredential` listing the
     paths it tried is deliberate and is not a violation; naming what it found in them
     would be.
-    *Check:* `fromSessionStore` and `hostMatches` (`internal/session/browser.go:186`,
-    `internal/session/session.go:185`), and the two error types that are the only things
-    the package says about a session it could not use (`internal/session/session.go:38`,
-    `internal/session/browser.go:293`). Guard test:
-    `internal/session/browser_test.go:142`.
+    *Check:* `fromSessionStore` and `hostMatches` (`internal/session/browser.go`,
+    `internal/session/session.go`), and the two error types that are the only things
+    the package says about a session it could not use (`internal/session/session.go`,
+    `internal/session/browser.go`). Guard test:
+    `internal/session/browser_test.go`.
 
 **Correctness**
 
 Name the branch and the input, not the category. The logic below is what is actually easy
 to get wrong here:
 
-- `classify` (`internal/syncer/syncer.go:76`). Check each of the seven classes against its
+- `classify` (`internal/syncer/syncer.go`). Check each of the seven classes against its
   condition: the delisted branch that returns `Unchanged` for a copy already mirrored, the
   `!resolved` branch where `hasPrior` is what separates `DownloadNow` from `New`, and the
   order of the `ResolvedVersionID` test against the `cacheOK` test. Tier 1 for any branch
   that resolves against the wrong entry.
-- `belowFloor` (`:565`). The allowance is `min(4096, advertised/8)`, the comparison is
+- `belowFloor`. The allowance is `min(4096, advertised/8)`, the comparison is
   strict, and `advertised <= 0` disables the floor. Confirm no caller applies it to a size
   that did not come from enumeration, and that the adopt path applies the same floor the
   download path does.
-- `republished` (`:580`). Returns false on a lookup error or a miss, which keeps the floor
+- `republished`. Returns false on a lookup error or a miss, which keeps the floor
   on. Confirm that is what each caller wants and that a false here cannot be read as "not
   truncated".
-- `memoize` (`:723`). Under `--verify` each probe is a full re-hash, so a second call is not
+- `memoize`. Under `--verify` each probe is a full re-hash, so a second call is not
   a repeat but a doubling of the cost of verifying the whole library. Confirm every probe
   that can run twice goes through it. Tier 2.
-- `cache.resolve` and `safeSegment` (`internal/cache/cache.go:56`, `:41`). Every path that
+- `cache.resolve` and `safeSegment` (`internal/cache/cache.go`). Every path that
   reaches the filesystem must pass through root confinement, including the ones built from
   a lockfile entry, which is hand-editable and travels between machines. Tier 1 for any
   that does not.
-- `cache.Index.Find` (`:262`) and `pruneEmptyParents` (`:342`). Exclusions and the root arrive
+- `cache.Index.Find` and `pruneEmptyParents`. Exclusions and the root arrive
   however the user spelled them, so both must be canonicalised before comparison; pruning
   must stop at the root for every spelling of it.
-- `model.slugify` (`internal/model/model.go:98`). Folding, separator collapsing, and the
+- `model.slugify` (`internal/model/model.go`). Folding, separator collapsing, and the
   empty result. Both callers have a fallback; verify the fallback is reachable for every
   input that folds away.
-- `unitypackage.fromExtra` (`internal/unitypackage/unitypackage.go:63`). The subfield walk
+- `unitypackage.fromExtra` (`internal/unitypackage/unitypackage.go`). The subfield walk
   is driven by each subfield's own length and XLEN is a uint16, so a prefix-limited reader
   would report "no metadata" for a package that has some — downgrading the hard wrong-asset
   check into a tolerated warning. Check the bounds arithmetic on a truncated and a
   maximally long header. Tier 1.
-- `store.Enumerate` (`internal/store/store.go:177`). Termination on the empty page, that
+- `store.Enumerate` (`internal/store/store.go`). Termination on the empty page, that
   `rawRows` counts raw rows rather than deduped assets, and which page's `total` the
   comparison ends up using.
-- `store.searchOnce` (`:317`) and the error mapping. The batch is a JSON array answered
+- `store.searchOnce` and the error mapping. The batch is a JSON array answered
   positionally; check the indexing, the CSRF re-bootstrap and its single retry, and that
   each mapped error still matches the failure model table in `docs/design.md`.
-- `retry.Retryable` (`internal/retry/retry.go:44`), `retry.Permanent` (`:34`), `Do` (`:58`), and `backoff` (`:92`). Which statuses retry, that a wrapped permanent error still unwraps for
+- `retry.Retryable` (`internal/retry/retry.go`), `retry.Permanent`, `Do`, and `backoff`. Which statuses retry, that a wrapped permanent error still unwraps for
   `errors.Is`, and that the backoff respects context cancellation.
-- `build` and `fromEntry` (`internal/syncer/syncer.go:590`, `:658`). Every owned asset gets
+- `build` and `fromEntry` (`internal/syncer/syncer.go`). Every owned asset gets
   an entry whether or not it is selected; the advertised half refreshes; the resolution half
   and the entry's key carry forward together so key and path cannot drift apart.
-- `manifest.Reconcile` (`internal/manifest/manifest.go:144`), `UnknownIDs` (`:189`), and
-  `SetEnabled` (`:180`). Selection keys on id, so verify no path matches on name.
+- `manifest.Reconcile` (`internal/manifest/manifest.go`), `UnknownIDs`, and
+  `SetEnabled`. Selection keys on id, so verify no path matches on name.
 - `session.parse`, `isCurlPaste`, `fromCookiesTxt`, `hostMatches`
-  (`internal/session/session.go:105`, `:123`, `:161`, `:185`). Both pasted formats, the
+  (`internal/session/session.go`). Both pasted formats, the
   `#HttpOnly_` prefix, and both cookie scopes.
-- `lz4Decompress` (`internal/session/mozlz4.go:48`). The tool's only hand-written binary
+- `lz4Decompress` (`internal/session/mozlz4.go`). The tool's only hand-written binary
   parser, run over a file another program wrote. Check every bound: the token nibbles and
   the 255-continuation in `readLength`, the literal run against `len(src)`, the match
   offset against `len(dst)`, the byte-at-a-time copy that the overlapping-match case
   depends on, and both places the output length is compared against the header's declared
-  `want`. `decodeMozLZ4` (`:23`) caps that declared size before anything is allocated
+  `want`. `decodeMozLZ4` caps that declared size before anything is allocated
   against it. Tier 1 for any index that can run past its slice. Guard tests:
-  `internal/session/browser_test.go:43`, `:62`, `:131`, `:331`.
-- `storeCandidates`, `storesUnder`, `profileDirs` (`internal/session/browser.go:229`,
-  `:244`, `:67`). Order is the contract: a path the caller named is tried alone, and
+  `internal/session/browser_test.go`.
+- `storeCandidates`, `storesUnder`, `profileDirs` (`internal/session/browser.go`).
+  Order is the contract: a path the caller named is tried alone, and
   `installs.ini` beats the `Default=1` flag in `profiles.ini`, because the flagged profile
   can be the one with no session at all. Confirm a named source can never fall through to
-  a different browser's profile. Guard test: `internal/session/browser_test.go:175`.
-- `iniEntries` and `iniEntry.under` (`internal/session/browser.go:116`, `:104`). A section's
+  a different browser's profile. Guard test: `internal/session/browser_test.go`.
+- `iniEntries` and `iniEntry.under` (`internal/session/browser.go`). A section's
   `Path` means nothing without its `IsRelative`: Mozilla writes `IsRelative=0` with an
   absolute path for a profile kept outside the browser root, and joining that under the root
   names a directory that cannot exist, so the profile is dropped without a word. An absolute
   value is honoured whatever the flag says, because `installs.ini` carries no flag at all.
-  Guard test: `internal/session/browser_test.go:227`.
-- `isMozLZ4` (`internal/session/browser.go:218`) and the branch it drives in `ResolveFrom`
-  (`internal/session/session.go:79`). Format is decided by content, never by extension or
+  Guard test: `internal/session/browser_test.go`.
+- `isMozLZ4` (`internal/session/browser.go`) and the branch it drives in `ResolveFrom`
+  (`internal/session/session.go`). Format is decided by content, never by extension or
   by configuration; confirm a file shorter than the magic cannot index past its own
   length.
 - The config precedence chain: `defaults` → `overlay` → environment → flags, all inside one
-  `Load` (`internal/config/config.go:90`, with `defaults` at `:77` and `overlay` at `:120`)
-  plus `ResolveDir` (`:49`) and `expandHome` (`:132`). Flags arrive as `config.Flags`
-  (`:41`) rather than being assigned by `main.go` after the chain ran, so that no source
+  `Load`, with `defaults` and `overlay` beneath it, plus `ResolveDir` and `expandHome`
+  (all in `internal/config/config.go`). Flags arrive as `config.Flags`
+  rather than being assigned by `main.go` after the chain ran, so that no source
   can skip `expandHome`. An unset field at one level must not erase a value set at a lower-precedence
   one. Confirm `config.example.toml` and `unity-sync.example.toml` still name keys the
   structs parse, and that their prose still describes the session sources
   `internal/session` actually accepts.
-- Flag parsing in `run` (`main.go:49`). `flag.Parse` stops at the first positional, so an
+- Flag parsing in `run` (`main.go`). `flag.Parse` stops at the first positional, so an
   unchecked positional swallows every flag after it — `sync foo --dry-run` would download.
-  Every subcommand must reject stray positionals. Guard test: `audit_test.go:20`.
+  Every subcommand must reject stray positionals. Guard test: `audit_test.go`.
 
 **Concurrency and shared state**
 
-- The download pool (`internal/syncer/syncer.go:348`-`:424`): the semaphore, the shared
+- The download pool (`internal/syncer/syncer.go`): the semaphore, the shared
   `resolutions` map and `lockPath` write under `mu`, and `done[i]` indexed writes. The
   lockfile save is inside the lock deliberately — released first, two goroutines can reach
   the rename in the order opposite to how they built their snapshots. Any change that moves
@@ -434,12 +478,12 @@ to get wrong here:
   confirm every one is written only before the pool starts.
 - The `store.Client` is shared across the pool and re-bootstraps CSRF from inside a request,
   so the credential pair is written while other goroutines read it
-  (`internal/store/store.go:88`, `:95`). Guard test:
-  `internal/store/audit_test.go:343`.
+  (`internal/store/store.go`). Guard test:
+  `internal/store/audit_test.go`.
 - `cancelPool` and the `poolCtx.Err()` check at goroutine entry: a cancellation must not
   turn an already-resolved asset into a failure, and must not leave a goroutine blocked on
   the semaphore.
-- `web.Handler` and its `done` channel (`internal/web/web.go:103`, `:117`, `:188`): a second
+- `web.Handler` and its `done` channel (`internal/web/web.go`): a second
   POST, a client disconnect, or a context cancellation must not send on a closed channel or
   leave `Serve` blocked forever.
 
@@ -451,10 +495,10 @@ to get wrong here:
   reached the disk — the lockfile is rewritten after every download precisely so a run that
   dies at asset 90 of 100 keeps the 89, and that is the record an unsynced rename loses. A
   write path here that renames without syncing first is Tier 2. Check `lockfile.Save`
-  (`internal/lockfile/lockfile.go:105`), `manifest.Save`
-  (`internal/manifest/manifest.go:87`), `cache.Store`/`Commit`
-  (`internal/cache/cache.go:83`, `:125`), and `selfupdate.Replace`
-  (`internal/selfupdate/selfupdate.go:196`).
+  (`internal/lockfile/lockfile.go`), `manifest.Save`
+  (`internal/manifest/manifest.go`), `cache.Store`/`Commit`
+  (`internal/cache/cache.go`), and `selfupdate.Replace`
+  (`internal/selfupdate/selfupdate.go`).
 - Both committed files are also byte-stable for unchanged state: `encoding/json` sorts the
   lockfile's map keys and `manifest.Save` sorts entries by id. A serialization that varies
   run to run produces a spurious diff and is Tier 1 for the same reason a timestamp is.
@@ -474,13 +518,13 @@ Packages here reach 23 GB and a library reaches 75 GB, so this is not hypothetic
 - Hashing and verification: `cache.Verify` is the cheap path (existence, exact size,
   version stamp) and `VerifyDeep` re-hashes; confirm the expensive one runs only under
   `--verify` and only once per file per run.
-- `cache.Scan` (`:225`) walks the library once per run and the syncer memoizes it lazily, so a
+- `cache.Scan` walks the library once per run and the syncer memoizes it lazily, so a
   run where nothing needs adopting never walks at all. Check that nothing reintroduces a
   per-asset walk, and that the scan is still taken after the temp sweep — a partial in the
   index is a candidate the guards never saw. A full read where a header parse would do is
   Tier 2.
 - Response header timeout versus body timeout: a slow body is legitimate here, a server
-  that never answers is not. Guard test: `internal/store/audit_test.go:201`.
+  that never answers is not. Guard test: `internal/store/audit_test.go`.
 
 **Paths and portability**
 
@@ -492,7 +536,7 @@ Packages here reach 23 GB and a library reaches 75 GB, so this is not hypothetic
   README and `config.example.toml`; a change to either without a docs change is Tier 2.
 - The release builds Windows binaries (`.github/workflows/release.yml`), so a path
   assumption that only holds on Unix is a real defect, not a hypothetical one.
-- `geckoRoots` (`internal/session/browser.go:26`) is a `runtime.GOOS` switch over
+- `geckoRoots` (`internal/session/browser.go`) is a `runtime.GOOS` switch over
   home-relative paths, and only the Zen layout was verified against a real install. Check
   that every branch joins through `filepath.FromSlash`, and that a browser missing from the
   list stays reachable by pointing `--session` at a profile directory.
@@ -504,40 +548,40 @@ Packages here reach 23 GB and a library reaches 75 GB, so this is not hypothetic
 - A Gecko session store is a wider credential store than the header it yields: it holds
   every host the browsing session touched. Anything that widens what leaves
   `fromSessionStore`, or that folds decoded bytes into an error, is Tier 1. Which file a
-  profile search settled on is printed on purpose (`main.go:188`), because a run against
+  profile search settled on is printed on purpose (`main.go`), because a run against
   the wrong signed-in account is otherwise silent; what that file contained is not.
 - `install.sh` passes the GitHub token through a curl config on stdin rather than as an
   argument, because arguments are visible in a process list. Any change that puts a
   credential on a command line is Tier 1.
-- `selfupdate.Token(ctx)` (`internal/selfupdate/selfupdate.go:49`) reads credentials from
+- `selfupdate.Token(ctx)` (`internal/selfupdate/selfupdate.go`) reads credentials from
   the environment, falling back to `gh auth token`; check what it does when they are absent
   and that it never echoes them. Every call in the package takes a `context.Context`, and
   `main.go` builds the signal context before it dispatches `update`, so a Ctrl-C during a
   10-minute download is a cancellation rather than a kill.
-- `Replace` (`:196`) renames a temp beside the target over the target. Windows will not let
-  a running image be replaced, so a failed rename there falls back to `replaceAside`
-  (`:243`), which renames the running binary out of the way and takes its name, restoring it
+- `Replace` renames a temp beside the target over the target. Windows will not let
+  a running image be replaced, so a failed rename there falls back to `replaceAside`,
+  which renames the running binary out of the way and takes its name, restoring it
   if the second rename fails. Leaving nothing on PATH is the one outcome an updater must
-  never produce. Guard test: `internal/selfupdate/audit_test.go:23`.
+  never produce. Guard test: `internal/selfupdate/audit_test.go`.
 
 **The select page**
 
-`internal/web/web.go:49` is an `html/template` literal carrying the whole page: markup,
+`internal/web/web.go` is an `html/template` literal carrying the whole page: markup,
 inline CSS, and three inline functions. Every row rendered into it is store-controlled
 text.
 
 - Contextual escaping is the only thing making that safe, so any value that reaches the
   page outside `html/template`'s knowledge is Tier 1: concatenation into the template
   source, or a field typed `template.HTML`, `template.URL`, or `template.JS`. `absoluteURL`
-  (`:212`) repairs a protocol-relative URL and is not a scheme allowlist.
-- `page.Execute` (`:155`) runs after the status line is committed, so its error cannot
+  repairs a protocol-relative URL and is not a scheme allowlist.
+- `page.Execute` runs after the status line is committed, so its error cannot
   become an HTTP error. Check what a partial render leaves on screen and whether the
   dropped error hides anything the user needs.
-- The three save guards — the per-run token against a stale tab (`:163`), the `sync.Once`
-  that makes "accepts one save" true rather than assumed (`:176`), and the would-empty
-  refusal (`:171`) — are what stop an old tab, a second tab, or an empty POST from
+- The three save guards — the per-run token against a stale tab, the `sync.Once`
+  that makes "accepts one save" true rather than assumed, and the would-empty
+  refusal — are what stop an old tab, a second tab, or an empty POST from
   rewriting a curated manifest. None may become advisory.
-- `openBrowser` (`:228`) starts a process with a URL this program built. Confirm nothing
+- `openBrowser` starts a process with a URL this program built. Confirm nothing
   caller-supplied reaches it unvalidated and that a failure to launch is never fatal.
 
 **Duplication and extraction**
@@ -599,7 +643,7 @@ would have caught, and do not report style.
 - `context.Context` threaded through every call that can block on the network. No
   `context.Background()` or `context.TODO()` below `main`, and no ignored `ctx.Err()`.
 - Response bodies closed on every path including error paths; `store.drain`
-  (`internal/store/store.go:498`) exists so a connection can be reused, so check it is
+  (`internal/store/store.go`) exists so a connection can be reused, so check it is
   called where that matters and not where the body is handed to a caller.
 - `defer` inside a loop body that runs once per asset.
 - Goroutines with a bounded lifetime: every `go` has a `WaitGroup` or a channel that
@@ -621,53 +665,53 @@ for the cross-cutting analysis, which no single area agent can do.
 After the area agents report, trace each core invariant end to end across boundaries, which
 no single agent could do:
 
-1. **Session to request.** `session.ResolveFrom` (`internal/session/session.go:62`) →
-   `resolveSession` (`main.go:169`) → `store.New` and `credentials`/`withCSRF`
-   (`internal/store/store.go:124`, `:88`, `:486`). Both arms of `ResolveFrom` are in scope:
-   the file arm at `internal/session/session.go:74` and `resolveBrowser`
-   (`internal/session/browser.go:264`). Confirm no path reaches a request with a cookie
+1. **Session to request.** `session.ResolveFrom` (`internal/session/session.go`) →
+   `resolveSession` (`main.go`) → `store.New` and `credentials`/`withCSRF`
+   (`internal/store/store.go`). Both arms of `ResolveFrom` are in scope:
+   the file arm at `internal/session/session.go` and `resolveBrowser`
+   (`internal/session/browser.go`). Confirm no path reaches a request with a cookie
    header that was never checked for `LS`, and that the header appears in no log line,
    error string, report, lockfile, or manifest.
 2. **The redirect ban.** Grep every `http.Client` and `http.Transport` construction in the
    tree. Confirm the only one that follows redirects is `selfupdate.New`
-   (`internal/selfupdate/selfupdate.go:35`), and that nothing in `internal/store` has
+   (`internal/selfupdate/selfupdate.go`), and that nothing in `internal/store` has
    acquired a second client or reached for `http.DefaultClient`.
-3. **The download stream.** `store.Fetch` (`internal/store/store.go:411`) → `cache.Store`
-   (`internal/cache/cache.go:83`) → the semantic guards in `syncer.download`
-   (`internal/syncer/syncer.go:479`) → `Pending.Commit`. Confirm every early return between
+3. **The download stream.** `store.Fetch` (`internal/store/store.go`) → `cache.Store`
+   (`internal/cache/cache.go`) → the semantic guards in `syncer.download`
+   (`internal/syncer/syncer.go`) → `Pending.Commit`. Confirm every early return between
    `Store` and `Commit` both closes the body and calls `Discard`, that gzip magic, product
    id, and the size floor are all checked before the rename, and that a retry opens a fresh
    temp file and hasher rather than appending.
-4. **The diff key.** `product.asset()` (`internal/store/store.go:258`) →
+4. **The diff key.** `product.asset()` (`internal/store/store.go`) →
    `model.Asset.Version.ID` → `classify` → `build`/`fromEntry` → `lockfile.Entry`
-   (`internal/lockfile/lockfile.go:32`) → the next run's `classify`. Confirm the advertised
+   (`internal/lockfile/lockfile.go`) → the next run's `classify`. Confirm the advertised
    id lands in `ResolvedVersionID` only when this run actually resolved that asset, that a
    carried-forward entry keeps its key alongside its resolution half, and that
    `DeliveredVersionID` is never the value compared.
-5. **The adoption gates.** The `adoptable` closure (`internal/syncer/syncer.go:270`) →
-   `cache.Index.Find` → `belowFloor` → the metadata version compare → `adopt` (`:446`) →
+5. **The adoption gates.** The `adoptable` closure (`internal/syncer/syncer.go`) →
+   `cache.Index.Find` → `belowFloor` → the metadata version compare → `adopt` →
    `cache.Relocate`/`RemoveStale`. Confirm `excludeRel` is set on every path where a
    recorded file exists and failed verification, and that the file removed is always the
    entry's own superseded copy and never a file the tool did not write.
 6. **Blast radius and exit code.** `syncer.download` error → the `retry.Do` classification
-   (`internal/syncer/syncer.go:377`) → `cancelPool` → `Report.Retryable`/`Permanent` →
-   `Report.Failed()` (`:166`) → `main.go:262` → `main` (`:38`). Confirm only
+   (`internal/syncer/syncer.go`) → `cancelPool` → `Report.Retryable`/`Permanent` →
+   `Report.Failed()` → `main.go` → `main`. Confirm only
    `ErrExpiredSession` cancels the pool, that a delisted asset exits 0 while a corrupt body
-   exits 1, and that `printReport` (`main.go:268`) names every delisted and dropped asset
+   exits 1, and that `printReport` (`main.go`) names every delisted and dropped asset
    rather than only tallying them.
-7. **Manifest writes.** `run` dispatch (`main.go:49`) → `selectAssets` (`:203`) →
-   `web.Serve` (`internal/web/web.go:188`) → `Handler.save` (`:158`) → `manifest.Reconcile`
+7. **Manifest writes.** `run` dispatch (`main.go`) → `selectAssets` →
+   `web.Serve` (`internal/web/web.go`) → `Handler.save` → `manifest.Reconcile`
    and `Save`. Confirm `status`, `sync`, and `list` cannot reach `Save`, and that
    `ErrWouldEmpty` cannot be bypassed by a selection posted with nothing checked.
 8. **Dry run.** Follow every mutating call in `syncer.Run` and confirm each sits behind an
-   `opts.DryRun` gate or after the early return at `internal/syncer/syncer.go:338`, then
+   `opts.DryRun` gate or after the early return at `internal/syncer/syncer.go`, then
    confirm `main.go` passes `DryRun` for both `status` and `sync --dry-run`.
 9. **Fixture provenance.** `cmd/scrubfixtures/main.go` → `fixtures.Scrub`
-   (`internal/fixtures/scrub.go:28`) → `testdata/store/` →
-   `internal/fixtures/guard_test.go:37`. Confirm the forbidden field and pattern lists still
+   (`internal/fixtures/scrub.go`) → `testdata/store/` →
+   `internal/fixtures/guard_test.go`. Confirm the forbidden field and pattern lists still
    cover everything `store.SearchDocument` could return, and that
    `internal/store/testdata/search_query.graphql` still matches the document in
-   `internal/store/store.go:56`.
+   `internal/store/store.go`.
 10. **Docs against code.** `docs/design.md` and the invariant list in `CLAUDE.md` are the
     only record of measured store behaviour and the reason each guard exists, and they are
     where the next session's invariants come from. Read the run flow, failure model,
@@ -675,9 +719,9 @@ no single agent could do:
     A document that no longer describes the code is Tier 2: it silently retires an
     invariant, and no test will ever catch it.
 11. **The session store's blast radius.** `storeCandidates`
-    (`internal/session/browser.go:229`) → `os.ReadFile` → `decodeMozLZ4`
-    (`internal/session/mozlz4.go:23`) → `fromSessionStore`
-    (`internal/session/browser.go:186`) → `join` (`internal/session/session.go:192`) → the
+    (`internal/session/browser.go`) → `os.ReadFile` → `decodeMozLZ4`
+    (`internal/session/mozlz4.go`) → `fromSessionStore`
+    (`internal/session/browser.go`) → `join` (`internal/session/session.go`) → the
     Cookie header. Confirm `hostMatches` is the only thing standing between that file and
     the rest of the program and that nothing downstream ever sees the unfiltered jar, that
     a decode or parse failure on one candidate skips it rather than failing the scan, and
@@ -727,7 +771,7 @@ Each finding gets:
 
 **Test quality findings** are a cohesive assessment per area, not a list of
 files. "The syncer tests cover classify and dedup well but nothing exercises
-the expired-session abort" beats "internal/syncer/syncer_test.go:43: missing test".
+the expired-session abort" beats "internal/syncer/syncer_test.go: missing test".
 
 **Refactor findings** include a sketch of the target structure, or at minimum
 name the functions and types that would result.

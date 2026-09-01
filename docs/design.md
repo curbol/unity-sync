@@ -149,7 +149,8 @@ whoever writes the signature first:
 
 - `store` owns the response-level guards, before any bytes are kept: no redirect followed,
   no `Content-Encoding` accepted, content type must be an octet-stream. It returns an open
-  body plus the filename it parsed.
+  body plus the filename it parsed. The body it returns is wrapped in a stall guard, for
+  the reason below.
 - `cache` owns the write, in two phases. `Store` streams to a temp file beside the
   destination and hashes as it goes; `Commit` renames; `Discard` removes. Nothing
   unverified ever occupies a real cache path, because an interrupt in that window would
@@ -160,6 +161,30 @@ whoever writes the signature first:
 Retry wraps store+cache together, so every attempt necessarily opens a fresh temp file and
 a fresh hasher. Appending a retried response to a partial one would survive every other
 check and then be hashed and recorded as its own truth.
+
+## Stalls
+
+A download carries no whole-request deadline, because a 23 GB package over a domestic link
+legitimately takes hours and a deadline that kills it makes the mirror impossible on
+exactly the connections that most need it. The response-header timeout bounds a server
+that never answers. Neither bounds the case in between: headers arrive, then the body
+stops without the connection closing, and `Read` blocks forever.
+
+That one is the worst of the three. The read never returns, so the attempt never returns,
+so `retry.Do` — which only inspects what its function returns — never gets to open a fresh
+connection, and the pool slot is never given up. At the default concurrency of two, two
+such transfers stop the whole run: no error, no progress line, no exit, and nothing to do
+but interrupt it.
+
+So the body is wrapped in a guard that resets a timer on every read returning bytes and
+cancels the request when the timer expires. The window is generous (two minutes) because a
+slow-but-live transfer must survive indefinitely; what it bounds is silence, not slowness.
+The failure is named `ErrStalled` rather than left as the context cancellation underneath
+it, which would read as an interrupt the user caused. It is retryable, because a fresh
+connection is exactly what fixes it.
+
+The API calls are bounded end to end instead. They carry a few kilobytes of JSON, so a
+body that stops arriving there is a server that will not finish rather than a slow link.
 
 ## The size floor
 
@@ -239,11 +264,34 @@ touched: every path removed here came out of the lockfile.
 | rows collected != `total` | loud error, never a silent short walk |
 | rows collected > `total` | loud error; the walk ends on an empty page, and a store that clamped an over-range page would otherwise loop forever |
 | 200 with a non-empty `errors` array | loud error, never "you own nothing" |
+| a body that stops mid-transfer | `ErrStalled` after the silence window; retried, because a fresh connection is the fix |
 
 A failed download fails its asset, not the run: one delisted or corrupt package must not
 stop a 75 GB mirror. The pool cancels early only for a run-fatal error. The exit status
 separates actionable from permanent — a corrupt body exits non-zero, a pulled asset does
 not.
+
+## The select page
+
+`select` serves the owned-asset list on loopback and takes one save back. Three things
+stand between that page and a curated manifest, and none of them is advisory.
+
+The page is served only to a browser on this machine, decided by checking each request's
+`Host` against the address it bound. The per-run token in the form stops a blind
+cross-origin POST, since a page on another origin cannot read it out of this one — but it
+does nothing against DNS rebinding, where a page the user is already on re-resolves its own
+name to a loopback address and the browser then treats it as same-origin *by name*. Its
+script could read the rendered list, which is the account's purchase history, and the token
+with it. So the check runs before the render, not only before the save.
+
+The save is accepted exactly once, through a `sync.Once` rather than by assumption: two
+tabs carry the same per-run token, so without it the second POST is answered "Saved …" for
+a selection nothing is still reading, telling that user their choice was kept while the
+manifest holds the other tab's.
+
+A save that would deselect everything is refused rather than written, unless nothing was
+selected to begin with. The comparison is against the set `Reconcile` has already
+rewritten, so a de-owned asset dropping out is not mistaken for the user clearing the list.
 
 ## Lockfile
 
@@ -278,10 +326,20 @@ Both slugs fall back when a name folds to nothing under ASCII folding: the publi
 segment becomes `publisher-<id>` and the asset segment the bare product id. An empty
 segment would collapse the layout and empty quarry's facets.
 
+The publisher segment falls back for a second reason. It carries no id suffix, so unlike
+the asset segment it can come out as a bare word — and a publisher whose name folds to one
+of the names Windows reserves for a device (`con`, `aux`, `com1` and the rest) would derive
+a directory `MkdirAll` cannot create there and nowhere else. Since a failed download fails
+only its asset, that reads as a run which quietly never completes. `cache.safeSegment`
+refuses such a segment arriving by any other route.
+
 ## Testing
 
 The default suite is fully offline: `httptest` servers plus committed fixtures scrubbed
-from real captures. The fixtures carry no account data, and a guard test fails the build if
+from real captures. `install.sh` is covered too, by running the real script against a stub
+release: it composes the asset label from `uname` in its own language, and the guard holds
+that composition to the labels `release.yml` actually publishes, which is otherwise the one
+contract nothing compiles together. The fixtures carry no account data, and a guard test fails the build if
 any appears. Raw captures are never committed, and the scrubber lands before anything that
 consumes fixtures, because git keeps what a later commit deletes.
 
@@ -302,6 +360,13 @@ unattended and TLS to GitHub was otherwise the only thing vouching for the bytes
 attestation is a signed statement that the release workflow built that artifact from that
 commit, verifiable with `gh attestation verify <file> --repo curbol/unity-sync`. Publishing
 a checksum the updater did not check would have been worse than publishing nothing.
+
+Neither the installer nor the updater installs bytes it has not recognised as a native
+binary. The zip reader already verifies each entry's CRC, so what the magic-byte check
+catches is the other way this goes wrong: a release that shipped an error page, a script,
+or an empty file under the right asset name. It runs before the rename in both, because
+after it the working binary is gone — the installer's closing smoke test notices a broken
+install, but only once there is nothing left to fall back to.
 
 Replacing a running binary is a rename on every platform but Windows, which refuses to
 replace a running image but does allow it to be renamed. So the update moves the old binary

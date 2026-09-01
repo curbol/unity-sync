@@ -549,3 +549,100 @@ func TestEnumerateAnchorsTheTotalToTheFirstPage(t *testing.T) {
 		t.Errorf("got %d assets, want 1", len(assets))
 	}
 }
+
+// A body that goes quiet after its headers arrive is the failure the response-header
+// timeout above cannot see, and the one with the worst blast radius: the read blocks
+// forever, so download never returns, so the retry that would open a fresh connection
+// never runs and the pool slot is never given up. At the default concurrency of two,
+// two such transfers stop a 75 GB mirror with no error, no progress line, and no exit.
+func TestAStalledBodyFailsRatherThanBlockingForever(t *testing.T) {
+	release := make(chan struct{})
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "the first chunk")
+		w.(http.Flusher).Flush()
+		<-release // and then nothing, without ending the response
+	}, store.WithStallTimeout(100*time.Millisecond))
+	defer close(release)
+
+	dl, err := c.Fetch(context.Background(), "1")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	defer dl.Body.Close()
+
+	done := make(chan error, 1)
+	go func() { _, err := io.ReadAll(dl.Body); done <- err }()
+	select {
+	case err := <-done:
+		if !errors.Is(err, store.ErrStalled) {
+			t.Errorf("err = %v, want ErrStalled so the failure names the stall rather than "+
+				"reading as an interrupt the user caused", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the read never returned; a stalled body still hangs the run")
+	}
+}
+
+// The other half, and the one that makes the guard safe to have: a transfer that is slow
+// but alive must not be cut off. The window resets on every read that returns bytes, so a
+// package trickling in over a poor link survives indefinitely — which is the case the
+// absence of a whole-request deadline exists to protect.
+func TestASlowButLiveBodyIsNotCutOff(t *testing.T) {
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		// Eight gaps, each most of the stall window: far longer in total than the window,
+		// but never silent for the whole of it.
+		for range 8 {
+			time.Sleep(30 * time.Millisecond)
+			io.WriteString(w, "chunk")
+			w.(http.Flusher).Flush()
+		}
+	}, store.WithStallTimeout(100*time.Millisecond))
+
+	dl, err := c.Fetch(context.Background(), "1")
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	body, err := io.ReadAll(dl.Body)
+	dl.Body.Close()
+	if err != nil {
+		t.Fatalf("a slow but live body was cut off: %v", err)
+	}
+	if len(body) != 40 {
+		t.Errorf("read %d bytes, want 40", len(body))
+	}
+}
+
+// The API calls are bounded end to end, unlike a download: they carry small JSON, so a
+// body that stops arriving there is a server that will not finish. Without the deadline
+// the enumeration blocks inside its own retry loop, which cannot time it out.
+func TestAStalledApiResponseFailsTheCall(t *testing.T) {
+	release := make(chan struct{})
+	c, _ := serve(t, csrfRouter(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, `[{"data":{"searchMyAssets":{"total":1,`)
+		w.(http.Flusher).Flush()
+		<-release
+	}), store.WithRequestTimeout(150*time.Millisecond),
+		store.WithRetryPolicy(retry.Policy{Attempts: 1}))
+	defer close(release)
+
+	if err := c.Bootstrap(context.Background()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() { _, err := c.Enumerate(context.Background()); done <- err }()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("Enumerate succeeded against a response that never finished")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Enumerate never returned; a stalled API body still hangs the run")
+	}
+}

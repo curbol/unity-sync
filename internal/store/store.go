@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/curbol/unity-sync/internal/model"
@@ -48,6 +49,10 @@ var (
 	// ErrNotDownloadable means the store has no bytes for this product any more. It is
 	// permanent: no re-run changes it.
 	ErrNotDownloadable = errors.New("asset is not downloadable")
+
+	// ErrStalled means a transfer stopped delivering bytes without ending. It is
+	// retryable: a fresh connection is exactly what fixes it.
+	ErrStalled = errors.New("the transfer stalled")
 )
 
 // SearchDocument is pinned. Its field set is the tool's contract with the store: it asks
@@ -82,6 +87,12 @@ type Client struct {
 	mu     sync.RWMutex
 	cookie string
 	csrf   string
+
+	// stallTimeout bounds the silence inside a download body, and requestTimeout bounds
+	// one whole API call. A package body gets no whole-request deadline; a 2 KB query
+	// that has not finished in a minute is not going to.
+	stallTimeout   time.Duration
+	requestTimeout time.Duration
 }
 
 // credentials reads the pair that every request carries.
@@ -99,13 +110,34 @@ func (c *Client) adoptCSRF(token string) {
 	c.cookie = withCSRF(c.cookie, token)
 }
 
+const (
+	// defaultStallTimeout is how long a download body may deliver nothing before it is
+	// given up on. Generous, because a legitimate transfer over a poor link does go
+	// quiet: the failure this bounds is a body that never resumes at all.
+	defaultStallTimeout = 2 * time.Minute
+
+	// defaultRequestTimeout bounds one API call end to end. Downloads are excluded by
+	// construction — they are the only path that hands a body back.
+	defaultRequestTimeout = 60 * time.Second
+)
+
 // Option adjusts a Client for tests.
 type Option func(*Client)
+
+// WithStallTimeout shortens the download body's silence budget so a test need not wait
+// out the real one.
+func WithStallTimeout(d time.Duration) Option { return func(c *Client) { c.stallTimeout = d } }
+
+// WithRequestTimeout shortens the per-call deadline the API requests carry.
+func WithRequestTimeout(d time.Duration) Option { return func(c *Client) { c.requestTimeout = d } }
 
 // WithBaseURL points the client at a test server.
 func WithBaseURL(u string) Option { return func(c *Client) { c.base = strings.TrimSuffix(u, "/") } }
 
-// WithRetryPolicy replaces the backoff policy, so tests need not sleep.
+// WithRetryPolicy replaces the backoff policy for the API calls, so tests need not
+// sleep. It does not govern downloads: Fetch makes one attempt and the syncer owns the
+// retry, because a retried download has to reopen the cache's temp file and hasher with
+// it rather than resume into a partial one.
 func WithRetryPolicy(p retry.Policy) Option { return func(c *Client) { c.retries = p } }
 
 // WithResponseHeaderTimeout shortens the header deadline so a test can prove the
@@ -132,10 +164,12 @@ func New(cookieHeader, version string, opts ...Option) *Client {
 			// the cache under a .unitypackage name.
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
-		base:    defaultBase,
-		cookie:  cookieHeader,
-		agent:   "unity-sync/" + version,
-		retries: retry.DefaultPolicy(),
+		base:           defaultBase,
+		cookie:         cookieHeader,
+		agent:          "unity-sync/" + version,
+		retries:        retry.DefaultPolicy(),
+		stallTimeout:   defaultStallTimeout,
+		requestTimeout: defaultRequestTimeout,
 	}
 	for _, o := range opts {
 		o(c)
@@ -148,6 +182,10 @@ func New(cookieHeader, version string, opts ...Option) *Client {
 // 3xx is not the expired-session signal it is everywhere else — but a response that
 // issues no token is a hard failure, since proceeding guarantees ErrCSRF.
 func (c *Client) Bootstrap(ctx context.Context) error {
+	// Bounded end to end, unlike a download: this route answers with a short page, so a
+	// body that goes quiet here is a server that will not finish rather than a slow link.
+	ctx, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+csrfRoute, nil)
 	if err != nil {
 		return err
@@ -339,6 +377,10 @@ func (c *Client) searchOnce(ctx context.Context, vars map[string]any) (searchRes
 	if err != nil {
 		return searchResult{}, retry.Permanent(err)
 	}
+	// One attempt, bounded end to end. The retry loop above owns the second try, and a
+	// query whose body stops arriving would otherwise hold that loop open forever.
+	ctx, cancel := context.WithTimeout(ctx, c.requestTimeout)
+	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.base+graphQLPath, strings.NewReader(string(body)))
 	if err != nil {
 		return searchResult{}, retry.Permanent(err)
@@ -425,8 +467,13 @@ type Download struct {
 // Fetch opens the package stream for one product, applying the response-level guards.
 // The caller owns Body and must close it.
 func (c *Client) Fetch(ctx context.Context, id string) (*Download, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+downloadPath+id, nil)
+	// The body carries no deadline of its own — a 23 GB package legitimately takes
+	// hours — so cancelling this context is the only way to break a read that has gone
+	// quiet. It belongs to the returned body and is released by Close.
+	reqCtx, cancel := context.WithCancel(ctx)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, c.base+downloadPath+id, nil)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	req.Header.Set("User-Agent", c.agent)
@@ -443,6 +490,14 @@ func (c *Client) Fetch(ctx context.Context, id string) (*Download, error) {
 
 	resp, err := c.http.Do(req)
 	if err != nil {
+		cancel()
+		return nil, err
+	}
+	// Every rejection below both drains the body and releases the context: only the one
+	// path that hands the body back passes cancel on to whoever closes it.
+	reject := func(err error) (*Download, error) {
+		drain(resp)
+		cancel()
 		return nil, err
 	}
 	// Both are marked here rather than left for the caller to re-decide: this function
@@ -450,32 +505,73 @@ func (c *Client) Fetch(ctx context.Context, id string) (*Download, error) {
 	// second caller retries — three requests for an asset the store has pulled, and a full
 	// backoff schedule for the one error that is supposed to stop the run at once.
 	if resp.StatusCode >= 300 && resp.StatusCode < 400 {
-		drain(resp)
-		return nil, retry.Permanent(ErrExpiredSession)
+		return reject(retry.Permanent(ErrExpiredSession))
 	}
 	if resp.StatusCode == http.StatusNotFound {
-		drain(resp)
-		return nil, retry.Permanent(ErrNotDownloadable)
+		return reject(retry.Permanent(ErrNotDownloadable))
 	}
 	if resp.StatusCode != http.StatusOK {
-		drain(resp)
 		err := fmt.Errorf("download %s: status %d", id, resp.StatusCode)
 		// A 403 or a 400 will say the same thing on the second attempt, and the download
 		// policy's backoff is measured in seconds per asset.
 		if !retry.Retryable(resp.StatusCode) {
-			return nil, retry.Permanent(err)
+			return reject(retry.Permanent(err))
 		}
-		return nil, err
+		return reject(err)
 	}
 	if enc := resp.Header.Get("Content-Encoding"); enc != "" {
-		drain(resp)
-		return nil, fmt.Errorf("download %s: server re-encoded the body as %q despite identity", id, enc)
+		return reject(fmt.Errorf("download %s: server re-encoded the body as %q despite identity", id, enc))
 	}
 	if err := checkOctetStream(resp.Header.Get("Content-Type")); err != nil {
-		drain(resp)
-		return nil, fmt.Errorf("download %s: %w", id, err)
+		return reject(fmt.Errorf("download %s: %w", id, err))
 	}
-	return &Download{Body: resp.Body, Filename: dispositionFilename(resp.Header.Get("Content-Disposition"))}, nil
+	return &Download{
+		Body:     newStallGuard(resp.Body, c.stallTimeout, cancel),
+		Filename: dispositionFilename(resp.Header.Get("Content-Disposition")),
+	}, nil
+}
+
+// stallGuard fails a body that goes quiet. By the time it is installed the response
+// headers have already satisfied ResponseHeaderTimeout, and a download deliberately
+// carries no whole-request deadline, so without it a server that stops mid-body blocks
+// the read forever: the attempt never returns, so the retry that would open a fresh
+// connection never runs, the pool slot is never given up, and the run stops making
+// progress without failing.
+type stallGuard struct {
+	body    io.ReadCloser
+	window  time.Duration
+	timer   *time.Timer
+	cancel  context.CancelFunc
+	stalled atomic.Bool
+}
+
+func newStallGuard(body io.ReadCloser, window time.Duration, cancel context.CancelFunc) *stallGuard {
+	g := &stallGuard{body: body, window: window, cancel: cancel}
+	g.timer = time.AfterFunc(window, func() {
+		g.stalled.Store(true)
+		cancel()
+	})
+	return g
+}
+
+func (g *stallGuard) Read(p []byte) (int, error) {
+	n, err := g.body.Read(p)
+	if n > 0 {
+		g.timer.Reset(g.window)
+	}
+	// Cancelling the request is how the read is broken out of, but "context canceled"
+	// reads as an interrupt the user caused. Name the real cause instead.
+	if err != nil && err != io.EOF && g.stalled.Load() {
+		return n, fmt.Errorf("%w: no bytes for %s", ErrStalled, g.window)
+	}
+	return n, err
+}
+
+func (g *stallGuard) Close() error {
+	g.timer.Stop()
+	err := g.body.Close()
+	g.cancel()
+	return err
 }
 
 func checkOctetStream(header string) error {

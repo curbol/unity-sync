@@ -47,10 +47,12 @@ each with a package doc comment stating its contract:
 - `unitypackage` — reads the store descriptor from a package's gzip FEXTRA field.
 - `store` — the Asset Store client and the response-level download guards.
 - `cache` — the local mirror. Two-phase writes (`Store` → `Commit`/`Discard`), adopt by
-  scan, relocate on rename, temp sweep, root confinement.
+  scan, relocate on rename, temp sweep, root confinement. `Canonical`/`SamePath` are the
+  only correct way to compare a lockfile-recorded path against a derived one.
 - `lockfile` — `unity-sync.lock.json`, advertised fields kept apart from resolution fields.
 - `manifest` — `unity-sync.toml`, the committed allowlist keyed by asset id.
 - `syncer` — orchestration, the pure `classify`, and the semantic download guards.
+- `humanize` — byte sizes for people, clamped: the count comes from the store.
 - `web` — the `select` page.
 - `selfupdate` — the `update` subcommand.
 - `fixtures` + `cmd/scrubfixtures` — regenerate PII-free `testdata/` from raw captures.
@@ -67,19 +69,29 @@ each with a package doc comment stating its contract:
 - **No store client follows a redirect.** An unauthenticated download 302s to Unity's
   OAuth page. `selfupdate` is the deliberate exception: it talks to GitHub, whose asset
   API 302s to a signed CDN URL by design.
+- **`store.Fetch` marks its own sentinels permanent.** A pulled asset and an expired
+  session must not be retried by a caller that did not think to convert them.
 - **Downloads ask for `Accept-Encoding: identity`.** The endpoint honours gzip by
   gzipping the already-gzipped package, and Go will not decode an encoding the caller
   requested.
 - **`resolvedVersionId` is the diff key**, not the advertised `version.id`. The advertised
   value refreshes every run; pairing a refreshed id with an unresolved entry's file would
   mark it current forever.
+- **A recorded `cachePath` is compared with `cache.SamePath`, never `==`.** That file is
+  committed and hand-editable, so two spellings name one file; comparing them raw makes a
+  run delete the package it just downloaded as a superseded copy.
 - **Nothing unverified reaches a real cache path.** `cache.Store` does not rename;
   `Commit` does, after the syncer's guards pass.
 - **A failed download fails its asset, not the run**, and a pulled asset does not make the
   run exit non-zero.
-- **Only `select` writes the manifest.** `status` and `sync` read it.
+- **Only `select` writes the manifest.** `status` and `sync` read it. `manifest.Reconcile`
+  refuses an owned set that is empty, and one that shares no id with what was enabled: both
+  are what a wrong-org session looks like, and the select page's own would-empty guard is
+  compared against a set `Reconcile` has already rewritten.
 - **No account data in the repo.** Sessions and raw captures stay out; the
-  `internal/fixtures` guard test fails the build if any reaches `testdata/`.
+  `internal/fixtures` guard test fails the build if any reaches *any* `testdata/`, package
+  local ones included. The scrub is an allowlist projected from `store.SearchDocument`, so
+  a field the query never asked for cannot reach a fixture.
 
 ## Editing testdata
 

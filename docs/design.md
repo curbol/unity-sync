@@ -129,9 +129,11 @@ tolerated warning.
 1. Resolve config          user config dir, library path, session source
 2. Load session            Cookie header; assert LS is present
 3. Bootstrap CSRF          GET /packages (404, but sets _csrf)
-4. Enumerate               page 0..n at pageSize 100; compare raw rows to `total`; dedup
+4. Enumerate               page 0..n at pageSize 100; compare raw rows to page 0's `total`; dedup
 5. Apply the allowlist     manifest entries with enabled = true, then --only
 6. Sweep stale temps       walk the tree; before classification, so a partial is never adopted
+                           cutoff is backdated a minute: the run start is captured before
+                           enumeration, and a concurrent run's stalled transfer is not junk
 7. Classify                Unchanged | New | Changed | DownloadNow | CacheMissing | Adopted | Undownloadable
 8. Download the delta      bounded; guard against the temp file; commit; persist per asset
 9. Finish                  final lockfile write and summary
@@ -199,6 +201,19 @@ stale build cannot be recorded as current. And the file must clear the same size
 download must clear, because that is the one route into the cache that skips the download
 guards entirely.
 
+The second gate compares a *delivered* id against an *advertised* one, so for the products
+where those differ as a steady state it can never pass: a perfectly good file for 262163 or
+262495 is re-downloaded rather than adopted whenever the lockfile is missing. That is
+accepted rather than overlooked. The alternative is trusting a delivered id no record
+vouches for, and the case it would cover — no lockfile, no prior entry — is exactly the one
+with no evidence to check it against.
+
+A path the lockfile records is compared canonically, never as a string. That file is
+committed, hand-editable and read on other machines, so `./pub/a/a.unitypackage` has to be
+recognised as the file `pub/a/a.unitypackage` names. Treating two spellings as two files
+makes a run delete the copy it just downloaded as though it were a superseded one, and
+leaves adoption unable to clear a damaged file off the destination it needs.
+
 A file that just failed verification is excluded from the scan. A truncation or a mid-file
 flip leaves the descriptor intact and a small truncation clears the floor, so without that
 exclusion the damaged bytes would be re-hashed and their digest recorded as the asset's
@@ -222,6 +237,7 @@ touched: every path removed here came out of the lockfile.
 | 404 on a download | the asset was pulled; permanent, so it does not fail the run |
 | 429 / 408 / 5xx elsewhere | retried with backoff |
 | rows collected != `total` | loud error, never a silent short walk |
+| rows collected > `total` | loud error; the walk ends on an empty page, and a store that clamped an over-range page would otherwise loop forever |
 | 200 with a non-empty `errors` array | loud error, never "you own nothing" |
 
 A failed download fails its asset, not the run: one delisted or corrupt package must not
@@ -273,6 +289,25 @@ consumes fixtures, because git keeps what a later commit deletes.
 raw `SearchMyAssets` responses, one JSON per page. That directory is git-ignored and is not
 in the repo: the captures need a signed-in session, so regenerating the fixtures means
 capturing again rather than re-running the scrubber over something checked in.
+
+## Distribution
+
+`install.sh` and `unity-sync update` both read the public release API, so neither needs a
+GitHub credential; one is used when the environment or `gh` supplies it, and buys only the
+authenticated rate limit. The installer passes it through a curl config on stdin rather
+than as an argument, which every local user can read out of `ps`.
+
+The release attests build provenance, because `update` replaces the binary on PATH
+unattended and TLS to GitHub was otherwise the only thing vouching for the bytes. The
+attestation is a signed statement that the release workflow built that artifact from that
+commit, verifiable with `gh attestation verify <file> --repo curbol/unity-sync`. Publishing
+a checksum the updater did not check would have been worse than publishing nothing.
+
+Replacing a running binary is a rename on every platform but Windows, which refuses to
+replace a running image but does allow it to be renamed. So the update moves the old binary
+to `<target>.old`, takes its name, and puts it back if that second rename fails. Leaving
+nothing on PATH is the one outcome an updater must never produce, and when even the restore
+fails the error names where the working binary went.
 
 ## Open questions
 

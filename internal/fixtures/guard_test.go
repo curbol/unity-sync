@@ -32,16 +32,24 @@ var forbiddenPatterns = []struct {
 }
 
 // TestCommittedFixturesCarryNoAccountData fails the build rather than the review when
-// account data reaches testdata. It walks whatever is committed, so it also covers
-// fixtures added later by someone who never read the scrubber.
+// account data reaches testdata. It walks every testdata directory in the repo, not just
+// the one at the root: a package-local testdata/ is where Go puts fixtures by default, so
+// it is where a session store or a raw capture would land, and one already exists at
+// internal/store/testdata. Anything the walk misses is committed, public and permanent.
 func TestCommittedFixturesCarryNoAccountData(t *testing.T) {
-	root := filepath.Join("..", "..", "testdata")
+	root := filepath.Join("..", "..")
 	seen := 0
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
+			if d.Name() == ".git" {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.Contains(filepath.ToSlash(path), "/testdata/") {
 			return nil
 		}
 		seen++
@@ -67,5 +75,10 @@ func TestCommittedFixturesCarryNoAccountData(t *testing.T) {
 	}
 	if seen == 0 {
 		t.Fatal("no fixtures found; the guard would pass vacuously")
+	}
+	// The walk is over the whole repo, so a mistake in the testdata filter would silently
+	// narrow it to nothing much. Both known testdata directories have to be in the count.
+	if seen < 5 {
+		t.Errorf("walked only %d file(s); both testdata directories should be covered", seen)
 	}
 }

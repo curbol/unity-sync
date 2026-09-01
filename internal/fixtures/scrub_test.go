@@ -93,3 +93,41 @@ func TestScrubRefusesPayloadsItDoesNotUnderstand(t *testing.T) {
 		})
 	}
 }
+
+// The scrub is an allowlist, so a field the pinned query never asked for cannot reach a
+// fixture whether or not anybody thought to name it. That matters because the only
+// supported way to regenerate is to capture again from a signed-in session, and the
+// natural capture is the storefront's own query, which asks for far more per row.
+func TestScrubKeepsOnlyWhatThePinnedQueryAsksFor(t *testing.T) {
+	capture := `[{"data":{"searchMyAssets":{"total":1,"results":[
+	  {"id":"20066949412942","entitlementId":"999","product":{"id":"115488","name":"Quick Outline",
+	   "orderId":"abc","productId":"123456789012","currentVersion":{"id":"905463","seatId":"s1"},
+	   "publisher":{"id":"7","name":"Chris Nolet","email":"someone@example.com"}}}
+	]}}}]`
+	out, err := fixtures.Scrub([]byte(capture))
+	if err != nil {
+		t.Fatalf("Scrub: %v", err)
+	}
+	for _, unwanted := range []string{
+		"entitlementId", "orderId", "seatId", "email", "someone@example.com",
+		"20066949412942", "productId", "123456789012",
+	} {
+		if strings.Contains(string(out), unwanted) {
+			t.Errorf("a field the pinned query never asked for survived the scrub: %q", unwanted)
+		}
+	}
+	for _, wanted := range []string{"115488", "Quick Outline", "905463", "Chris Nolet"} {
+		if !strings.Contains(string(out), wanted) {
+			t.Errorf("the scrub dropped %q, which the pinned query does ask for", wanted)
+		}
+	}
+}
+
+// A row the projection does not recognise is the one row whose fields nobody has looked
+// at, so it fails rather than passing through untouched.
+func TestScrubRefusesAResultRowThatIsNotAnObject(t *testing.T) {
+	bad := `[{"data":{"searchMyAssets":{"total":1,"results":["not an object"]}}}]`
+	if _, err := fixtures.Scrub([]byte(bad)); err == nil {
+		t.Error("Scrub accepted a result row that is not an object")
+	}
+}

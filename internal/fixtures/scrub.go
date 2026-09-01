@@ -1,31 +1,53 @@
 // Package fixtures turns raw Asset Store captures into the PII-free JSON that the
-// offline test suite runs against. Captures are never committed; the scrubbed output
-// is. The account-identifying field the store returns is the per-row entitlement id,
-// which nothing in unity-sync reads, so the scrub deletes the field outright rather
-// than substituting a value — that also keeps a fixture shaped exactly like what the
-// pinned query asks for.
+// offline test suite runs against. Captures are never committed; the scrubbed output is.
+//
+// The scrub is an allowlist, not a list of known-bad fields. It projects every captured
+// row onto the field set store.SearchDocument asks for and drops everything else, so a
+// capture taken with the storefront's own wider query carries nothing extra into
+// testdata. A denylist would have to name each account-identifying field in advance, and
+// the only supported way to regenerate is to capture again from a signed-in session
+// against whatever the store returns that day.
 package fixtures
 
 import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"sync"
+	"unicode"
+
+	"github.com/curbol/unity-sync/internal/store"
 )
 
-// entitlementField is the per-row id the store returns alongside each product. It
-// identifies the grant, not the asset, and no code path in this tool uses it.
-const entitlementField = "id"
+// fieldTree is a GraphQL selection set: each field mapped to its own selection set, empty
+// for a leaf. A leaf's value is kept whole, because that is what the query asked for.
+type fieldTree map[string]fieldTree
 
-// unusedImageFields are image sizes the captures carry but the pinned query does not
-// request. Dropping them keeps a fixture shaped exactly like a real response to the
-// query the client actually sends.
-var unusedImageFields = []string{"icon", "big", "small", "facebook"}
+// searchFields is the selection set under searchMyAssets, read out of the pinned document
+// itself. Deriving it rather than restating it is the point: there is no second list to
+// keep in step, so a field added to or removed from the query changes the scrub with it.
+var searchFields = sync.OnceValues(func() (fieldTree, error) {
+	root, err := parseSelectionSets(store.SearchDocument)
+	if err != nil {
+		return nil, fmt.Errorf("parsing the pinned query: %w", err)
+	}
+	sel, ok := root["searchMyAssets"]
+	if !ok || len(sel) == 0 {
+		return nil, fmt.Errorf("the pinned query has no searchMyAssets selection set")
+	}
+	return sel, nil
+})
 
 // Scrub rewrites one captured `searchMyAssets` batch response into fixture form,
 // preserving key order-independent structure and stable indentation so the committed
 // file diffs cleanly. It fails rather than guessing when the payload is not the batch
 // shape the client actually parses.
 func Scrub(raw []byte) ([]byte, error) {
+	allowed, err := searchFields()
+	if err != nil {
+		return nil, err
+	}
 	var batch []map[string]any
 	if err := json.Unmarshal(raw, &batch); err != nil {
 		return nil, fmt.Errorf("capture is not a GraphQL batch array: %w", err)
@@ -34,24 +56,11 @@ func Scrub(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("capture holds no operations")
 	}
 	for _, op := range batch {
-		results, err := resultRows(op)
+		search, err := searchObject(op)
 		if err != nil {
 			return nil, err
 		}
-		for _, row := range results {
-			m, ok := row.(map[string]any)
-			if !ok {
-				return nil, fmt.Errorf("result row is %T, want object", row)
-			}
-			delete(m, entitlementField)
-			if product, ok := m["product"].(map[string]any); ok {
-				if img, ok := product["mainImage"].(map[string]any); ok {
-					for _, f := range unusedImageFields {
-						delete(img, f)
-					}
-				}
-			}
-		}
+		prune(search, allowed)
 	}
 	var out bytes.Buffer
 	enc := json.NewEncoder(&out)
@@ -62,9 +71,32 @@ func Scrub(raw []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// resultRows walks to searchMyAssets.results, tolerating the terminator page whose
-// results list is empty but not a payload missing the path entirely.
-func resultRows(op map[string]any) ([]any, error) {
+// prune deletes everything the selection set did not ask for, in place. An empty set is a
+// leaf, whose value the query wanted whole.
+func prune(v any, allowed fieldTree) {
+	if len(allowed) == 0 {
+		return
+	}
+	switch x := v.(type) {
+	case []any:
+		for _, e := range x {
+			prune(e, allowed)
+		}
+	case map[string]any:
+		for k := range x {
+			sub, ok := allowed[k]
+			if !ok {
+				delete(x, k)
+				continue
+			}
+			prune(x[k], sub)
+		}
+	}
+}
+
+// searchObject walks to searchMyAssets, tolerating the terminator page whose results list
+// is empty but not a payload missing the path entirely.
+func searchObject(op map[string]any) (map[string]any, error) {
 	data, ok := op["data"].(map[string]any)
 	if !ok {
 		return nil, fmt.Errorf("operation has no data object")
@@ -77,12 +109,90 @@ func resultRows(op map[string]any) ([]any, error) {
 	if !present {
 		return nil, fmt.Errorf("searchMyAssets has no results field")
 	}
-	if raw == nil {
-		return nil, nil
-	}
 	rows, ok := raw.([]any)
-	if !ok {
+	if !ok && raw != nil {
 		return nil, fmt.Errorf("searchMyAssets.results is %T, want array", raw)
 	}
-	return rows, nil
+	// Checked rather than skipped: the projection would quietly leave a row it does not
+	// recognise untouched, and an unrecognised row is exactly the one whose fields nobody
+	// has looked at.
+	for _, row := range rows {
+		if _, ok := row.(map[string]any); !ok {
+			return nil, fmt.Errorf("result row is %T, want object", row)
+		}
+	}
+	return search, nil
+}
+
+// parseSelectionSets reads the field tree out of a GraphQL query. It handles exactly what
+// the pinned document uses — named fields, nested selection sets, and argument lists that
+// carry no field names — because that document is the only input it will ever see.
+func parseSelectionSets(doc string) (fieldTree, error) {
+	toks := tokenize(doc)
+	i := 0
+	for i < len(toks) && toks[i] != "{" {
+		i++
+	}
+	if i == len(toks) {
+		return nil, fmt.Errorf("no selection set")
+	}
+	set, _, err := parseSet(toks, i+1)
+	return set, err
+}
+
+func parseSet(toks []string, i int) (fieldTree, int, error) {
+	set := fieldTree{}
+	for i < len(toks) {
+		switch toks[i] {
+		case "}":
+			return set, i + 1, nil
+		case "{":
+			return nil, 0, fmt.Errorf("selection set with no field before it")
+		}
+		name := toks[i]
+		i++
+		if i < len(toks) && toks[i] == "{" {
+			sub, next, err := parseSet(toks, i+1)
+			if err != nil {
+				return nil, 0, err
+			}
+			set[name], i = sub, next
+			continue
+		}
+		set[name] = fieldTree{}
+	}
+	return nil, 0, fmt.Errorf("unterminated selection set")
+}
+
+// tokenize emits field names and braces, dropping argument lists whole: everything inside
+// parentheses is variables and types, never a field the response carries.
+func tokenize(doc string) []string {
+	var out []string
+	var word strings.Builder
+	depth := 0
+	flush := func() {
+		if word.Len() > 0 {
+			out = append(out, word.String())
+			word.Reset()
+		}
+	}
+	for _, r := range doc {
+		switch {
+		case r == '(':
+			flush()
+			depth++
+		case r == ')':
+			depth--
+		case depth > 0:
+		case r == '{' || r == '}':
+			flush()
+			out = append(out, string(r))
+		case unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_':
+			word.WriteRune(r)
+		default:
+			flush()
+		}
+	}
+	flush()
+	return out
 }

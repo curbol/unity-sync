@@ -1,9 +1,9 @@
 // Package selfupdate replaces the running binary with a release build from GitHub.
 //
 // Its HTTP client follows redirects, unlike every client that talks to the Asset Store.
-// That is deliberate: the repository is private, so the binary comes from the release
-// *asset* API, which answers with a 302 to a signed CDN URL. Inheriting the store's
-// redirect ban here would break updates entirely.
+// That is deliberate: the binary comes from the release *asset* API, which answers with a
+// 302 to a signed CDN URL. Inheriting the store's redirect ban here would break updates
+// entirely.
 package selfupdate
 
 import (
@@ -36,16 +36,25 @@ func New(apiBase, token string) *Client {
 	if apiBase == "" {
 		apiBase = "https://api.github.com"
 	}
+	// Bounded on headers rather than on the whole request, for the same reason the store
+	// client is: a release archive over a slow link legitimately takes a long time, and a
+	// deadline that kills it mid-body makes the update impossible on exactly the
+	// connections that most need it. The caller's context supplies cancellation.
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.ResponseHeaderTimeout = 60 * time.Second
 	return &Client{
 		// This client follows redirects: the asset endpoint 302s to a signed CDN URL.
-		http:    &http.Client{Timeout: 10 * time.Minute},
+		http:    &http.Client{Transport: transport},
 		apiBase: strings.TrimSuffix(apiBase, "/"),
 		token:   token,
 	}
 }
 
 // Token resolves a GitHub credential from the environment, falling back to the gh CLI.
-// The repository is private, so an unauthenticated update cannot even list releases.
+//
+// It is opportunistic: the releases this reads are public, and an empty token means the
+// requests go out unauthenticated, which works. What a token buys is GitHub's authenticated
+// rate limit, 5000 requests an hour against 60 for an anonymous address.
 func Token(ctx context.Context) string {
 	for _, k := range []string{"GITHUB_TOKEN", "GH_TOKEN"} {
 		if v := os.Getenv(k); v != "" {
@@ -69,8 +78,16 @@ type release struct {
 
 // PlatformAsset is the release archive name for the running platform.
 func PlatformAsset(version string) (string, error) {
+	return platformAsset(runtime.GOOS, runtime.GOARCH, version)
+}
+
+// platformAsset maps a platform onto the archive name .github/workflows/release.yml
+// publishes for it. The two are a contract across files that no compiler checks, so the
+// parameters are explicit: a test can drive every platform the workflow builds rather
+// than only the one it happens to run on.
+func platformAsset(goos, goarch, version string) (string, error) {
 	var os_, arch string
-	switch runtime.GOOS {
+	switch goos {
 	case "darwin":
 		os_ = "mac"
 	case "linux":
@@ -78,9 +95,9 @@ func PlatformAsset(version string) (string, error) {
 	case "windows":
 		os_ = "win"
 	default:
-		return "", fmt.Errorf("unsupported OS %s", runtime.GOOS)
+		return "", fmt.Errorf("unsupported OS %s", goos)
 	}
-	switch runtime.GOARCH {
+	switch goarch {
 	case "amd64":
 		arch = "intel"
 	case "arm64":
@@ -90,8 +107,10 @@ func PlatformAsset(version string) (string, error) {
 			arch = "arm64"
 		}
 	default:
-		return "", fmt.Errorf("unsupported architecture %s", runtime.GOARCH)
+		return "", fmt.Errorf("unsupported architecture %s", goarch)
 	}
+	// The workflow builds one Windows target and labels it without an architecture, so
+	// every Windows arch resolves to it. Windows on arm64 runs the amd64 image.
 	if os_ == "win" {
 		return fmt.Sprintf("unity-sync-%s-win.zip", version), nil
 	}
@@ -234,7 +253,12 @@ func Replace(targetPath string, binary []byte) error {
 // runningImageIsLocked reports whether this platform refuses to replace the executable
 // image of a running process. Windows does; every platform this ships to otherwise
 // renames over it happily, so the aside dance below never runs there.
-func runningImageIsLocked() bool { return runtime.GOOS == "windows" }
+//
+// A variable rather than a function so a test can reach replaceAside on a machine that
+// would never take that branch. It is the one path where a mistake leaves nothing on
+// PATH, and the CI job that runs the platform it exists for cannot exercise a rename
+// failure on demand.
+var runningImageIsLocked = func() bool { return runtime.GOOS == "windows" }
 
 // replaceAside is the Windows path. Windows will not let a running image be replaced or
 // deleted, but it does allow that image to be renamed, so the update moves the old binary
@@ -248,7 +272,14 @@ func replaceAside(newPath, targetPath string, direct error) error {
 		return fmt.Errorf("%w (and could not move the running binary aside: %v)", direct, err)
 	}
 	if err := os.Rename(newPath, targetPath); err != nil {
-		os.Rename(aside, targetPath)
+		if restore := os.Rename(aside, targetPath); restore != nil {
+			// Nothing is on PATH now. The one thing the user can do about that is rename
+			// the aside file back, so the message has to name it; returning only the
+			// rename error leaves them with a missing command and no clue where it went.
+			os.Remove(newPath)
+			return fmt.Errorf("%w; the previous binary could not be put back (%v) and is at %s",
+				err, restore, aside)
+		}
 		os.Remove(newPath)
 		return err
 	}
@@ -259,28 +290,11 @@ func replaceAside(newPath, targetPath string, direct error) error {
 }
 
 // Run performs an update of the running binary.
+//
+// The token is opportunistic: get omits the Authorization header when it is empty, and
+// GitHub serves a public repository's releases and assets anonymously. Requiring one here
+// failed the update for every user who installed a release binary and never set one.
 func Run(ctx context.Context, current, version string) error {
-	if current == "dev" {
-		return fmt.Errorf("this is a dev build; install a release first")
-	}
-	token := Token(ctx)
-	if token == "" {
-		return fmt.Errorf("no GitHub credential: set GITHUB_TOKEN or run `gh auth login` (the repo is private)")
-	}
-	c := New("", token)
-	rel, err := c.Resolve(ctx, version)
-	if err != nil {
-		return err
-	}
-	target := strings.TrimPrefix(rel.TagName, "v")
-	if target == current {
-		fmt.Printf("already on %s\n", current)
-		return nil
-	}
-	binary, err := c.DownloadBinary(ctx, rel)
-	if err != nil {
-		return err
-	}
 	self, err := os.Executable()
 	if err != nil {
 		return err
@@ -288,9 +302,32 @@ func Run(ctx context.Context, current, version string) error {
 	if self, err = filepath.EvalSymlinks(self); err != nil {
 		return err
 	}
-	if err := Replace(self, binary); err != nil {
+	return update(ctx, New("", Token(ctx)), current, version, self)
+}
+
+// update is Run with the client and the binary it replaces supplied, which is the only
+// seam a test can drive: Run replaces whatever is running, and under `go test` that is the
+// test binary.
+func update(ctx context.Context, c *Client, current, version, target string) error {
+	if current == "dev" {
+		return fmt.Errorf("this is a dev build; install a release first")
+	}
+	rel, err := c.Resolve(ctx, version)
+	if err != nil {
 		return err
 	}
-	fmt.Printf("updated %s -> %s\n", current, target)
+	latest := strings.TrimPrefix(rel.TagName, "v")
+	if latest == current {
+		fmt.Printf("already on %s\n", current)
+		return nil
+	}
+	binary, err := c.DownloadBinary(ctx, rel)
+	if err != nil {
+		return err
+	}
+	if err := Replace(target, binary); err != nil {
+		return err
+	}
+	fmt.Printf("updated %s -> %s\n", current, latest)
 	return nil
 }

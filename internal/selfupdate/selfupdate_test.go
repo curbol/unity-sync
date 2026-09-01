@@ -45,7 +45,8 @@ func TestResolveSendsTheTokenAndCanPinAVersion(t *testing.T) {
 		t.Fatalf("Resolve: %v", err)
 	}
 	if seenAuth != "Bearer secret-token" {
-		t.Errorf("Authorization = %q; the repo is private and an unauthenticated call cannot even list releases", seenAuth)
+		t.Errorf("Authorization = %q; a token that was supplied has to reach the request, or "+
+			"every update spends the anonymous rate limit", seenAuth)
 	}
 	if !strings.HasSuffix(seenPath, "/releases/tags/v1.2.3") {
 		t.Errorf("path = %q, want the pinned tag", seenPath)

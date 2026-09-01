@@ -6,12 +6,14 @@ Store does not give you outside the Editor. Design: `docs/design.md`.
 
 ## Install
 
-Grab the latest release into `~/.local/bin` (private repo, so it uses your `gh` login or
-`GITHUB_TOKEN`):
+Grab the latest release into `~/.local/bin`:
 
 ```bash
-gh api repos/curbol/unity-sync/contents/install.sh --jq .content | base64 -d | bash
+curl -fsSL https://raw.githubusercontent.com/curbol/unity-sync/main/install.sh | bash
 ```
+
+No GitHub credential is needed. A `GITHUB_TOKEN`, `GH_TOKEN` or `gh` login is used when
+present, only to get the authenticated API rate limit.
 
 Then update in place:
 

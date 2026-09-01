@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"os"
+	"path"
 	"path/filepath"
 	"testing"
 	"time"
@@ -403,5 +404,44 @@ func TestFindPrefersTheCopyAlreadyInPlaceWhateverItIsCalled(t *testing.T) {
 			t.Errorf("Find(%q) chose %q, want the copy already in place at %q",
 				spelling, got.RelPath, inPlace)
 		}
+	}
+}
+
+// safeSegment is the gate both slugs pass through, and model keeps the derived ones clear
+// of device names. This is the backstop for a segment that arrives another way: on Windows
+// MkdirAll would fail with an errno rather than anything naming the cause, and on Linux it
+// would happily create a directory the same lockfile cannot be used from on Windows.
+func TestStoreRefusesAWindowsReservedSegment(t *testing.T) {
+	root := t.TempDir()
+	for _, tc := range []struct{ publisher, asset string }{
+		{"con", "quick-outline-115488"},
+		{"CON", "quick-outline-115488"},
+		{"chris-nolet", "aux"},
+		{"lpt9", "quick-outline-115488"},
+	} {
+		p, err := cache.Store(root, tc.publisher, tc.asset, bytes.NewReader(pkg(t, "115488", "683375", 500)))
+		if err == nil {
+			p.Discard()
+			t.Errorf("Store(%q, %q) was accepted; Windows reserves that name for a device",
+				tc.publisher, tc.asset)
+		}
+	}
+}
+
+// A cachePath is committed and hand-editable, so one missing its filename segment names
+// the asset's own directory — which always exists once a run has written there. Without
+// the IsDir check a directory whose reported size matched would verify with nothing read.
+func TestVerifyRefusesADirectory(t *testing.T) {
+	root := t.TempDir()
+	rel := cache.RelPath("chris-nolet", "quick-outline-115488")
+	storeCommitted(t, root, "chris-nolet", "quick-outline-115488", pkg(t, "115488", "683375", 500))
+
+	dir := path.Dir(rel)
+	fi, err := os.Stat(filepath.Join(root, filepath.FromSlash(dir)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cache.Verify(root, dir, fi.Size(), "") {
+		t.Errorf("Verify(%q) accepted a directory whose size happened to match", dir)
 	}
 }

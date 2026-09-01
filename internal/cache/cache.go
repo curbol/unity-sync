@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/curbol/unity-sync/internal/model"
 	"github.com/curbol/unity-sync/internal/unitypackage"
 )
 
@@ -41,6 +42,13 @@ func RelPath(publisherSlug, assetSlug string) string {
 func safeSegment(kind, s string) error {
 	if s == "" || s == "." || s == ".." || strings.ContainsAny(s, `/\`) || strings.HasPrefix(s, ".") {
 		return fmt.Errorf("unsafe %s %q", kind, s)
+	}
+	// Windows refuses to create a file or directory named for a device, so a segment
+	// that reaches here as one would fail the asset on that platform alone. model keeps
+	// the derived slugs clear of these; this is the gate for anything that does not
+	// come from there.
+	if model.ReservedSegment(s) {
+		return fmt.Errorf("unsafe %s %q: Windows reserves this name for a device", kind, s)
 	}
 	for _, r := range s {
 		if r < 0x20 || r == 0x7f {
@@ -195,7 +203,9 @@ func Verify(root, rel string, wantSize int64, wantDeliveredID string) bool {
 		return false
 	}
 	fi, err := os.Stat(full)
-	if err != nil || fi.Size() != wantSize {
+	// IsDir as well as size: a hand-edited cachePath missing its filename segment names
+	// the asset's own directory, which always exists once a run has written there.
+	if err != nil || fi.IsDir() || fi.Size() != wantSize {
 		return false
 	}
 	if wantDeliveredID == "" {

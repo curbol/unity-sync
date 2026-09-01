@@ -74,18 +74,44 @@ func (a Asset) Slug() string {
 }
 
 // PublisherSlug is the cache's vendor directory. It carries no id suffix, so the
-// directory reads as a name and quarry's vendor facet stays legible. A name written
-// entirely in a non-Latin script folds to nothing, and an empty path segment would
-// collapse the layout to two components and empty quarry's pack facet, so it falls back
-// to the id.
+// directory reads as a name and quarry's vendor facet stays legible. Two names cannot be
+// used as they stand, and both fall back to the id: one written entirely in a non-Latin
+// script folds to nothing, and an empty path segment would collapse the layout to two
+// components and empty quarry's pack facet; one that folds to a name Windows reserves
+// cannot be created there at all.
+//
+// Slug needs neither fallback for the reserved case, because its id suffix means it can
+// never be a bare reserved word.
 func (a Asset) PublisherSlug() string {
-	if s := slugify(a.Publisher.Name); s != "" {
+	if s := slugify(a.Publisher.Name); s != "" && !ReservedSegment(s) {
 		return s
 	}
 	if a.Publisher.ID != "" {
 		return "publisher-" + a.Publisher.ID
 	}
 	return "publisher-unknown"
+}
+
+// reservedSegments are the names Windows refuses as a path component, in any case and
+// with any extension. A publisher called "Con", or anything that folds to it, would
+// otherwise derive a directory MkdirAll cannot create, failing that asset on every
+// Windows run and on no other platform.
+var reservedSegments = map[string]bool{
+	"con": true, "prn": true, "aux": true, "nul": true,
+	"com1": true, "com2": true, "com3": true, "com4": true, "com5": true,
+	"com6": true, "com7": true, "com8": true, "com9": true,
+	"lpt1": true, "lpt2": true, "lpt3": true, "lpt4": true, "lpt5": true,
+	"lpt6": true, "lpt7": true, "lpt8": true, "lpt9": true,
+}
+
+// ReservedSegment reports whether s names a Windows device rather than a file. Windows
+// matches these before the first dot, so "con.unitypackage" is reserved too.
+//
+// It is exported because a slug has to be a usable directory name, and cache enforces
+// that same rule at the filesystem boundary for anything that reaches it another way.
+func ReservedSegment(s string) bool {
+	base, _, _ := strings.Cut(s, ".")
+	return reservedSegments[strings.ToLower(base)]
 }
 
 var nonSlug = regexp.MustCompile(`[^a-z0-9]+`)

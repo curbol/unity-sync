@@ -145,8 +145,11 @@ func TestAnExpiredSessionStopsThePool(t *testing.T) {
 		owned = append(owned, asset(id, "Asset "+id, "v1", 500))
 		bodies[id] = pkg(t, id, "v1", 500)
 	}
-	// The first asset the pool reaches kills the session; every fetch after that is waste.
-	fs := &fakeStore{owned: owned, bodies: bodies, fetchEr: map[string]error{"0": store.ErrExpiredSession}}
+	// Whichever asset the pool reaches first kills the session; every fetch after that is
+	// waste. Keyed to the first fetch served rather than to asset "0", because with one
+	// worker the goroutine that wins the semaphore is not the one spawned first, and
+	// pinning it to an id made this test fail roughly one run in forty.
+	fs := &fakeStore{owned: owned, bodies: bodies, firstErr: store.ErrExpiredSession}
 
 	o := opts(root, allSelected(owned...))
 	o.Concurrency = 1
@@ -909,5 +912,179 @@ func TestARealRunSweepsAbandonedTemps(t *testing.T) {
 	}
 	if _, err := os.Stat(live); err != nil {
 		t.Errorf("the run swept a temp newer than its own start: %v", err)
+	}
+}
+
+// A lockfile is committed, hand-editable and read on other machines, so a recorded
+// cachePath can spell the derived one differently and still name the same file. Compared
+// as raw strings, "./pub/a/a.unitypackage" reads as a second file: the run deletes it as a
+// superseded copy moments after committing the download to it, then records a digest and
+// size for a path with nothing on it. The next run calls that CacheMissing and re-fetches
+// up to 23 GB.
+func TestARecordedPathSpelledDifferentlyIsNotTreatedAsASecondFile(t *testing.T) {
+	root, lockPath := newRun(t)
+	a := asset("1", "Quick Outline", "v2", 500)
+	derived := cache.RelPath(a.PublisherSlug(), a.Slug())
+
+	old := pkg(t, "1", "v1", 500)
+	p, err := cache.Store(root, a.PublisherSlug(), a.Slug(), bytes.NewReader(old))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	prior := lockfile.New()
+	prior.Assets[a.Slug()] = lockfile.Entry{
+		AssetID: "1", Name: a.Name, Tracked: true,
+		ResolvedVersionID: "v1", DeliveredVersionID: "v1",
+		SizeBytes: p.Size, SHA256: p.SHA256,
+		CachePath: "./" + derived, // the same file, spelled the way a hand-edit might
+		Version:   lockfile.Version{ID: "v1"},
+	}
+
+	fs := &fakeStore{owned: []model.Asset{a}, bodies: map[string][]byte{"1": pkg(t, "1", "v2", 500)}}
+	rep, err := Run(context.Background(), fs, prior, lockPath, opts(root, allSelected(a)))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, derived)); err != nil {
+		t.Fatalf("the run deleted the package it had just downloaded: %v", err)
+	}
+	e := rep.Lockfile.Assets[a.Slug()]
+	if !e.Tracked || e.CachePath != derived {
+		t.Fatalf("entry = tracked %v at %q, want tracked at %q", e.Tracked, e.CachePath, derived)
+	}
+	// The recorded digest has to describe what is actually on disk, which is the only
+	// reason deleting the file matters rather than merely being wasteful.
+	sha, size, err := cache.Hash(root, e.CachePath)
+	if err != nil {
+		t.Fatalf("hashing the recorded path: %v", err)
+	}
+	if sha != e.SHA256 || size != e.SizeBytes {
+		t.Errorf("lockfile records %s/%d, disk holds %s/%d", e.SHA256, e.SizeBytes, sha, size)
+	}
+}
+
+// The other half of the same comparison, and the half that never recovers. When the
+// recorded copy is damaged and a good one sits elsewhere, adoption has to remove the
+// damaged file before relocating onto it. Compared raw, a differently-spelled entry skips
+// that removal, Relocate refuses the occupied destination, nothing resolves, and every
+// later run repeats the refusal identically.
+func TestAdoptionClearsADamagedCopyWhateverTheEntryCallsIt(t *testing.T) {
+	root, lockPath := newRun(t)
+	a := asset("1", "Quick Outline", "v1", 4000)
+	derived := cache.RelPath(a.PublisherSlug(), a.Slug())
+
+	// A damaged file at the recorded path: right product, wrong bytes, wrong size.
+	damaged, err := cache.Store(root, a.PublisherSlug(), a.Slug(), bytes.NewReader(pkg(t, "1", "v1", 3000)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := damaged.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	// A good copy somewhere else in the library, as a rename would leave one.
+	stray, err := cache.Store(root, "elsewhere", "stray-1", bytes.NewReader(pkg(t, "1", "v1", 4000)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := stray.Commit(); err != nil {
+		t.Fatal(err)
+	}
+
+	prior := lockfile.New()
+	prior.Assets[a.Slug()] = lockfile.Entry{
+		AssetID: "1", Name: a.Name, Tracked: true,
+		ResolvedVersionID: "v1", DeliveredVersionID: "v1",
+		SizeBytes: 4000, // does not match the damaged file, so verification fails
+		SHA256:    damaged.SHA256,
+		CachePath: "./" + derived,
+		Version:   lockfile.Version{ID: "v1"},
+	}
+
+	fs := &fakeStore{owned: []model.Asset{a}}
+	rep, err := Run(context.Background(), fs, prior, lockPath, opts(root, allSelected(a)))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep.Results[0].Class != Adopted || rep.Results[0].Err != nil {
+		t.Fatalf("class = %v, err = %v; want Adopted with no error",
+			rep.Results[0].Class, rep.Results[0].Err)
+	}
+	if len(fs.fetched) != 0 {
+		t.Errorf("adoption fell through to a download of %v", fs.fetched)
+	}
+	e := rep.Lockfile.Assets[a.Slug()]
+	if e.CachePath != derived || e.SizeBytes != 4000 {
+		t.Errorf("entry = %q/%d, want %q/4000", e.CachePath, e.SizeBytes, derived)
+	}
+}
+
+// The lockfile is rewritten after every download, not only at the end, so a run that dies
+// at asset 90 of 100 keeps the 89 it already fetched. Both tests that look like they cover
+// this read the file after Run returns, and Run always reaches its final save, so deleting
+// the per-download write left the whole suite green.
+func TestEachDownloadIsPersistedBeforeTheNextOneStarts(t *testing.T) {
+	root, lockPath := newRun(t)
+	var owned []model.Asset
+	bodies := map[string][]byte{}
+	for i := range 3 {
+		id := fmt.Sprint(i)
+		owned = append(owned, asset(id, "Asset "+id, "v1", 500))
+		bodies[id] = pkg(t, id, "v1", 500)
+	}
+
+	// Read from inside the fetch of each later asset: whatever came before it must already
+	// be on disk, which is only true if the pool persists as it goes.
+	var seenBefore []int
+	fs := &fakeStore{owned: owned, bodies: bodies}
+	fs.beforeFetch = func(n int) {
+		lf, err := lockfile.Load(lockPath)
+		if err != nil {
+			t.Errorf("loading the lockfile mid-run: %v", err)
+			return
+		}
+		tracked := 0
+		for _, e := range lf.Assets {
+			if e.Tracked {
+				tracked++
+			}
+		}
+		seenBefore = append(seenBefore, tracked)
+	}
+
+	o := opts(root, allSelected(owned...))
+	o.Concurrency = 1
+	if _, err := Run(context.Background(), fs, lockfile.New(), lockPath, o); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	want := []int{0, 1, 2}
+	if !slices.Equal(seenBefore, want) {
+		t.Errorf("assets already persisted at each fetch = %v, want %v: progress is not being "+
+			"written until the run ends, so a crash discards everything fetched so far",
+			seenBefore, want)
+	}
+}
+
+// classify tests the recorded version before it probes the disk, and the order is load
+// bearing rather than incidental: an asset that is about to be replaced by a download must
+// not be re-hashed first, and under --verify that probe reads the whole file. Swapping the
+// two blocks leaves every other test green, because they all supply a cacheOK that agrees
+// with the answer.
+func TestAChangedAssetIsDecidedWithoutTouchingTheDisk(t *testing.T) {
+	a := asset("1", "A", "v2", 500)
+	prior := lockfile.Entry{Tracked: true, ResolvedVersionID: "v1", CachePath: "p"}
+	probed := false
+	cacheOK := func() bool {
+		probed = true
+		return false
+	}
+	if got := classify(a, prior, true, cacheOK, func() bool { return false }); got != Changed {
+		t.Errorf("classify = %v, want Changed", got)
+	}
+	if probed {
+		t.Error("classify probed the cache for an asset it had already decided was out of date")
 	}
 }

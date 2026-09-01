@@ -8,13 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path/filepath"
+	"path"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/curbol/unity-sync/internal/cache"
+	"github.com/curbol/unity-sync/internal/humanize"
 	"github.com/curbol/unity-sync/internal/lockfile"
 	"github.com/curbol/unity-sync/internal/manifest"
 	"github.com/curbol/unity-sync/internal/model"
@@ -22,6 +23,10 @@ import (
 	"github.com/curbol/unity-sync/internal/store"
 	"github.com/curbol/unity-sync/internal/unitypackage"
 )
+
+// sweepGrace is how far back the temp sweep's cutoff is moved so a concurrent run's
+// in-flight transfer is spared even when it has stalled long enough to look abandoned.
+const sweepGrace = time.Minute
 
 // ErrEmptyLibrary guards the committed record against a well-formed but wrong
 // enumeration. A session whose active org differs returns a legitimately different owned
@@ -61,8 +66,8 @@ func (c Class) String() string {
 	}
 }
 
-// NeedsFetch reports whether a class means bytes must come off the network.
-func (c Class) NeedsFetch() bool {
+// needsFetch reports whether a class means bytes must come off the network.
+func (c Class) needsFetch() bool {
 	switch c {
 	case New, Changed, DownloadNow, CacheMissing:
 		return true
@@ -116,7 +121,11 @@ type Store interface {
 type Options struct {
 	LibraryRoot string
 	Selected    map[string]bool
-	OnlyGlob    string
+
+	// OnlyGlob narrows a run further, matched against an asset's slug rather than
+	// against Selected's ids or against any path.
+	OnlyGlob string
+
 	DryRun      bool
 	FullVerify  bool
 	Concurrency int
@@ -192,7 +201,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		opts.Retry = retry.Policy{Attempts: 2, Base: 2 * time.Second}
 	}
 	if opts.OnlyGlob != "" {
-		if _, err := filepath.Match(opts.OnlyGlob, ""); err != nil {
+		if _, err := path.Match(opts.OnlyGlob, ""); err != nil {
 			return Report{}, fmt.Errorf("bad --only pattern %q: %w", opts.OnlyGlob, err)
 		}
 	}
@@ -212,10 +221,13 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 	// Sweeping before classification matters: an abandoned partial left in the tree is
 	// otherwise a candidate the adopt scan could reach.
 	if !opts.DryRun {
-		n, freed := cache.SweepTemps(opts.LibraryRoot, started)
+		// The cutoff is backdated because started is captured before enumeration, which is
+		// several round trips. A concurrent run whose transfer has stalled has not touched
+		// its temp since before this run began, and sweeping it kills a live download.
+		n, freed := cache.SweepTemps(opts.LibraryRoot, started.Add(-sweepGrace))
 		report.Swept = n
 		if n > 0 {
-			opts.Progress(fmt.Sprintf("reclaimed %d abandoned download(s), %s", n, humanBytes(freed)))
+			opts.Progress(fmt.Sprintf("reclaimed %d abandoned download(s), %s", n, humanize.Bytes(freed)))
 		}
 	}
 
@@ -308,17 +320,14 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 				// superseded by what just landed at the derived path, and nothing else
 				// will ever mention it again — the summary names only assets that left
 				// the account, so an orphan here is one the tool made and never reports.
-				if old := prev.CachePath; old != "" && old != r.cachePath {
-					if rmErr := cache.RemoveStale(opts.LibraryRoot, old); rmErr != nil {
-						res.Warning = fmt.Sprintf(
-							"could not remove the superseded copy at %s: %v", old, rmErr)
-					}
+				if w := removeSuperseded(opts.LibraryRoot, prev.CachePath, r.cachePath); w != "" {
+					res.Warning = w
 				}
 				resolutions[a.ID] = r
 			}
 		case Unchanged:
 			// Keep the prior resolution, but move it if the slug changed under it.
-			if !opts.DryRun && hasPrev && prev.Tracked && prev.CachePath != derived {
+			if !opts.DryRun && hasPrev && prev.Tracked && !cache.SamePath(prev.CachePath, derived) {
 				if err := cache.Relocate(opts.LibraryRoot, prev.CachePath, derived); err != nil {
 					res.Warning = err.Error()
 				} else {
@@ -328,7 +337,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 				}
 			}
 		}
-		if class.NeedsFetch() {
+		if class.needsFetch() {
 			pending = append(pending, res)
 			continue
 		}
@@ -364,7 +373,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 				done[i] = res
 				return
 			}
-			opts.Progress(fmt.Sprintf("fetching %s (%s)", res.Asset.Name, humanBytes(res.Asset.AdvertisedSize)))
+			opts.Progress(fmt.Sprintf("fetching %s (%s)", res.Asset.Name, humanize.Bytes(res.Asset.AdvertisedSize)))
 			var (
 				r        resolution
 				warning  string
@@ -396,11 +405,8 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 				// A rename that also bumped the version downloads to the new derived
 				// path, so the prior directory would otherwise be left holding a
 				// superseded copy of the same asset.
-				if old := priorPaths[res.Asset.ID]; old != "" && old != r.cachePath {
-					if rmErr := cache.RemoveStale(opts.LibraryRoot, old); rmErr != nil {
-						res.Warning = strings.TrimSpace(res.Warning + " " +
-							fmt.Sprintf("(could not remove the superseded copy at %s: %v)", old, rmErr))
-					}
+				if w := removeSuperseded(opts.LibraryRoot, priorPaths[res.Asset.ID], r.cachePath); w != "" {
+					res.Warning = strings.TrimSpace(res.Warning + " (" + w + ")")
 				}
 				mu.Lock()
 				resolutions[res.Asset.ID] = r
@@ -449,7 +455,7 @@ func adopt(opts Options, a model.Asset, found cache.Candidate, derived, damagedR
 	// copy after it failed verification: a download would rename straight over that file,
 	// so a verified copy of the same package may replace it too. Without this the good copy
 	// can never move in, nothing is resolved, and every later run repeats the refusal.
-	if damagedRel != "" && damagedRel == derived {
+	if damagedRel != "" && cache.SamePath(damagedRel, derived) {
 		if err := cache.RemoveStale(opts.LibraryRoot, damagedRel); err != nil {
 			return resolution{}, err
 		}
@@ -557,6 +563,23 @@ func download(ctx context.Context, s Store, opts Options, a model.Asset) (resolu
 		downloadedAt:       opts.Now().UTC().Format(time.RFC3339),
 		storeFilename:      dl.Filename,
 	}, warning, true, nil
+}
+
+// removeSuperseded deletes the copy this asset's own new bytes replace, reporting what
+// went wrong rather than failing the asset over housekeeping.
+//
+// The two paths are compared canonically, not as strings: old comes out of the lockfile,
+// which is committed and hand-editable, so "./pub/a/a.unitypackage" and
+// "pub/a/a.unitypackage" name one file. Comparing them raw makes the run delete the copy
+// it just wrote and then record a digest for a path with nothing on it.
+func removeSuperseded(root, old, current string) string {
+	if old == "" || cache.SamePath(old, current) {
+		return ""
+	}
+	if err := cache.RemoveStale(root, old); err != nil {
+		return fmt.Sprintf("could not remove the superseded copy at %s: %v", old, err)
+	}
+	return ""
 }
 
 // belowFloor is the hard short-body rule. The tolerance is absolute because the gap it
@@ -674,21 +697,11 @@ func selected(a model.Asset, opts Options) bool {
 	if opts.OnlyGlob == "" {
 		return true
 	}
-	ok, _ := filepath.Match(opts.OnlyGlob, a.Slug())
+	// path.Match, not filepath.Match: the pattern is matched against a slug, and on
+	// Windows filepath.Match reads a backslash as a separator rather than as an escape, so
+	// the same --only would behave differently there.
+	ok, _ := path.Match(opts.OnlyGlob, a.Slug())
 	return ok
-}
-
-func humanBytes(n int64) string {
-	const unit = 1000
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
-	}
-	div, exp := int64(unit), 0
-	for v := n / unit; v >= unit; v /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "kMGT"[exp])
 }
 
 // progressReader reports how far a transfer has got, at most once a second, so a
@@ -713,9 +726,9 @@ func (p *progressReader) Read(b []byte) (int, error) {
 
 func progressLine(read, total int64) string {
 	if total <= 0 {
-		return humanBytes(read)
+		return humanize.Bytes(read)
 	}
-	return fmt.Sprintf("%s of %s (%d%%)", humanBytes(read), humanBytes(total), read*100/total)
+	return fmt.Sprintf("%s of %s (%d%%)", humanize.Bytes(read), humanize.Bytes(total), read*100/total)
 }
 
 // memoize runs a probe at most once. The probes it wraps read or hash whole packages, so

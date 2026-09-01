@@ -31,6 +31,16 @@ type fakeStore struct {
 	lookups  map[string]model.Asset
 	lookupEr map[string]error
 
+	// firstErr fails whichever fetch the pool serves first, rather than a named asset.
+	// With one worker and forty goroutines racing for the semaphore, the goroutine that
+	// wins is not the one that was spawned first, so keying a failure to an asset id makes
+	// the test depend on scheduling.
+	firstErr error
+
+	// beforeFetch runs at the top of each fetch with the number served before it, so a
+	// test can observe what the run had already persisted at that moment.
+	beforeFetch func(servedSoFar int)
+
 	inFlight atomic.Int32
 	maxSeen  atomic.Int32
 	hold     time.Duration
@@ -62,8 +72,17 @@ func (f *fakeStore) Fetch(_ context.Context, id string) (*store.Download, error)
 	}
 	f.mu.Lock()
 	f.fetched = append(f.fetched, id)
+	first := len(f.fetched) == 1
+	served := len(f.fetched) - 1
 	f.mu.Unlock()
 
+	if f.beforeFetch != nil {
+		f.beforeFetch(served)
+	}
+
+	if first && f.firstErr != nil {
+		return nil, f.firstErr
+	}
 	if err := f.fetchEr[id]; err != nil {
 		return nil, err
 	}
@@ -269,6 +288,23 @@ func TestRenamedAssetIsRecognisedByIdAndRekeyedOnce(t *testing.T) {
 	}
 	if _, ok := rep.Lockfile.Assets["brand-new-name-1"]; !ok {
 		t.Errorf("entry was not re-keyed: %v", keys(rep.Lockfile))
+	}
+	// The resolution half has to travel with the key. A relocate that rebuilt the entry
+	// instead of carrying it forward leaves these blank, and the next run reads the blank
+	// resolvedVersionId as out of date and re-downloads a package already on disk.
+	e := rep.Lockfile.Assets["brand-new-name-1"]
+	if e.ResolvedVersionID != "v1" || e.DeliveredVersionID != "v1" {
+		t.Errorf("version ids = %q/%q, want v1/v1 carried through the rename",
+			e.ResolvedVersionID, e.DeliveredVersionID)
+	}
+	if e.SHA256 != p.SHA256 || e.SizeBytes != p.Size {
+		t.Errorf("digest/size = %q/%d, want %q/%d", e.SHA256, e.SizeBytes, p.SHA256, p.Size)
+	}
+	if !e.Tracked {
+		t.Error("the relocated entry lost its tracked flag")
+	}
+	if classify(renamed, e, true, func() bool { return true }, func() bool { return false }) != Unchanged {
+		t.Error("the relocated entry no longer classifies Unchanged, so the next run re-downloads it")
 	}
 	moved := filepath.Join(root, "pub-one", "brand-new-name-1", "brand-new-name-1.unitypackage")
 	if _, err := os.Stat(moved); err != nil {

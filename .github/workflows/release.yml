@@ -7,6 +7,11 @@ on:
 
 # Scoped per job rather than workflow-wide: check-branch only reads, and the called CI
 # workflow declares contents: read for itself. Only the job that publishes needs write.
+#
+# Every action is pinned by commit, not by tag. A tag can be repointed, and the actions in
+# the release job run beside contents: write and id-token: write, publishing the binaries
+# `unity-sync update` installs unattended; the ones in the CI job decide whether a build
+# ships at all. The comment on each is the readable half; the SHA is the enforced one.
 permissions:
   contents: read
 
@@ -14,7 +19,7 @@ jobs:
   check-branch:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
       - name: Verify tag is on main
@@ -41,10 +46,10 @@ jobs:
       id-token: write
       attestations: write
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
 
@@ -82,9 +87,6 @@ jobs:
         with:
           subject-path: dist/*.zip
 
-      # Pinned by commit, not by tag: this job holds contents: write and publishes the
-      # binaries `unity-sync update` installs unattended, and a tag can be repointed.
-      # The comment is the readable half; the SHA is the one that is enforced.
       - name: Create GitHub release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:

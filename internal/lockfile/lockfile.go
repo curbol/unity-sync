@@ -140,7 +140,15 @@ func Save(path string, lf Lockfile) error {
 		os.Remove(name)
 		return err
 	}
-	return os.Rename(name, path)
+	// Cleaned up like every other failure above. On Windows the rename fails outright
+	// when the destination is held open — an editor, an on-access scanner — and this one
+	// is written once per download, so the orphans pile up in a directory that is
+	// committed.
+	if err := os.Rename(name, path); err != nil {
+		os.Remove(name)
+		return err
+	}
+	return nil
 }
 
 // FindByAssetID returns the entry recorded for a product id, whatever key it sits under.

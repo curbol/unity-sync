@@ -6,6 +6,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,6 +50,11 @@ type Flags struct {
 // A path from any of these can be written with a leading "~", which no shell expands when
 // it comes out of an environment variable, so each one is expanded here rather than
 // reaching filepath as a directory literally named "~".
+//
+// With no home and no XDG variable it falls back to a relative "unity-sync". That only
+// ever decides where an optional file is looked for, so a wrong answer costs a config
+// that is not found rather than data written somewhere unintended, which is why this one
+// degrades where defaultLibraryPath refuses.
 func ResolveDir(flag string) string {
 	if flag != "" {
 		return expandHome(flag)
@@ -67,21 +73,24 @@ func ResolveDir(flag string) string {
 
 // defaultLibraryPath is $XDG_DATA_HOME/unity-sync, else ~/.local/share/unity-sync. App
 // data rather than ~/.cache, so an OS cache cleaner cannot wipe a 75 GB mirror.
-func defaultLibraryPath() string {
+//
+// It refuses rather than falling back to a relative path. A mirror runs to tens of
+// gigabytes, and writing that into whatever directory the user happened to be in is a
+// worse outcome than an error naming the four ways to say where it should go.
+func defaultLibraryPath() (string, error) {
 	if v := os.Getenv("XDG_DATA_HOME"); v != "" {
-		return filepath.Join(expandHome(v), "unity-sync")
+		return filepath.Join(expandHome(v), "unity-sync"), nil
 	}
-	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".local", "share", "unity-sync")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("no home directory to put the library under (%w): set XDG_DATA_HOME "+
+			"or UNITY_SYNC_LIBRARY, put library_path in config.toml, or pass --library", err)
 	}
-	return "unity-library"
+	return filepath.Join(home, ".local", "share", "unity-sync"), nil
 }
 
 func defaults() Config {
-	return Config{
-		LibraryPath: defaultLibraryPath(),
-		Concurrency: 2,
-	}
+	return Config{Concurrency: 2}
 }
 
 // Load merges built-in defaults, an optional config.toml in dir, then the environment
@@ -95,8 +104,19 @@ func Load(dir string, f Flags) (Config, error) {
 	path := filepath.Join(dir, "config.toml")
 	if _, err := os.Stat(path); err == nil {
 		var fc fileConfig
-		if _, err := toml.DecodeFile(path, &fc); err != nil {
+		md, err := toml.DecodeFile(path, &fc)
+		if err != nil {
 			return Config{}, err
+		}
+		// A key that decodes to nothing is almost always a misspelling of one that would
+		// have decoded, and silence is expensive here: `library-path` for `library_path`
+		// mirrors tens of gigabytes into the default directory with no diagnostic.
+		if un := md.Undecoded(); len(un) > 0 {
+			keys := make([]string, 0, len(un))
+			for _, k := range un {
+				keys = append(keys, k.String())
+			}
+			return Config{}, fmt.Errorf("%s: unknown key(s): %s", path, strings.Join(keys, ", "))
 		}
 		overlay(&c, fc)
 	}
@@ -114,6 +134,15 @@ func Load(dir string, f Flags) (Config, error) {
 	}
 	if f.Concurrency > 0 {
 		c.Concurrency = f.Concurrency
+	}
+	// Last, and only when no level above supplied one: the default needs a home directory
+	// and a run that names its own library has no use for one.
+	if c.LibraryPath == "" {
+		p, err := defaultLibraryPath()
+		if err != nil {
+			return Config{}, err
+		}
+		c.LibraryPath = p
 	}
 	c.LibraryPath = expandHome(c.LibraryPath)
 	c.SessionSource = expandHome(c.SessionSource)

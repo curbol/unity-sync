@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/curbol/unity-sync/internal/manifest"
@@ -199,5 +200,73 @@ func TestSaveDoesNotMakeTheManifestOwnerOnly(t *testing.T) {
 	fi, _ = os.Stat(path)
 	if got := fi.Mode().Perm(); got != 0o664 {
 		t.Errorf("rewriting reset the mode to %04o, want the 0664 it had", got)
+	}
+}
+
+// An empty enumeration is not the only shape a wrong-org session takes. A session for a
+// different organisation returns a legitimately different owned set, and one that overlaps
+// the curated selection in nothing looks exactly like it — but Reconcile used to accept it,
+// clear every selection, and hand the select page an enabled set that was already empty.
+// The page's own would-empty refusal then had nothing to compare against and accepted the
+// save that replaced the file.
+func TestReconcileRefusesAnOwnedSetThatSharesNoSelection(t *testing.T) {
+	curated := manifest.Manifest{Assets: []manifest.Entry{
+		{ID: "1", Name: "Mine", Enabled: true},
+		{ID: "2", Name: "Also mine", Enabled: true},
+	}}
+	foreign := []model.Asset{{ID: "900", Name: "Someone else's"}, {ID: "901", Name: "And another"}}
+
+	m := curated
+	_, err := m.Reconcile(foreign)
+	var deselect *manifest.ErrWouldDeselectAll
+	if !errors.As(err, &deselect) {
+		t.Fatalf("Reconcile = %v, want ErrWouldDeselectAll", err)
+	}
+	if deselect.Enabled != 2 {
+		t.Errorf("Enabled = %d, want 2", deselect.Enabled)
+	}
+
+	// Losing some selections is ordinary — a refund, a delisting — and must still go
+	// through, with the surviving selection intact.
+	m = curated
+	dropped, err := m.Reconcile([]model.Asset{{ID: "1", Name: "Mine"}, {ID: "900", Name: "New"}})
+	if err != nil {
+		t.Fatalf("Reconcile on a partial overlap: %v", err)
+	}
+	if len(dropped) != 1 || dropped[0].ID != "2" {
+		t.Errorf("dropped = %v, want just asset 2", dropped)
+	}
+	if !m.EnabledIDs()["1"] {
+		t.Error("the surviving selection was cleared")
+	}
+
+	// And a manifest with nothing selected yet has nothing to protect: a first run whose
+	// entries are all disabled must reconcile against anything.
+	fresh := manifest.Manifest{Assets: []manifest.Entry{{ID: "1", Name: "Mine"}}}
+	if _, err := fresh.Reconcile(foreign); err != nil {
+		t.Errorf("Reconcile refused a manifest with no selections to lose: %v", err)
+	}
+}
+
+// Same rule as the lockfile's: every other failure path removes the temp, and the rename
+// is the one that runs on a destination another process can be holding open.
+func TestSaveLeavesNoTempBehindWhenTheRenameFails(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, manifest.FileName)
+	if err := os.MkdirAll(filepath.Join(path, "occupied"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	m := manifest.Manifest{Assets: []manifest.Entry{{ID: "1", Name: "A", Enabled: true}}}
+	if err := manifest.Save(path, m); err == nil {
+		t.Fatal("Save reported success onto a destination it could not take")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".unity-sync-manifest-") {
+			t.Errorf("a failed rename left the temp file %q beside the manifest", e.Name())
+		}
 	}
 }

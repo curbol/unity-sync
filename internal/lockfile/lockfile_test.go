@@ -200,3 +200,28 @@ func TestSaveDoesNotMakeTheLockfileOwnerOnly(t *testing.T) {
 		t.Errorf("rewriting reset the mode to %04o, want the 0664 it had", got)
 	}
 }
+
+// Every other failure in Save removes the temp; the rename used not to. On Windows a
+// rename over an open destination fails outright — an editor holding the file, an
+// on-access scanner — and Save runs once per download, so the orphans pile up in the
+// directory the user commits.
+func TestSaveLeavesNoTempBehindWhenTheRenameFails(t *testing.T) {
+	dir := t.TempDir()
+	// A non-empty directory where the file should go: the rename cannot succeed onto it.
+	path := filepath.Join(dir, "unity-sync.lock.json")
+	if err := os.MkdirAll(filepath.Join(path, "occupied"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := lockfile.Save(path, sample()); err == nil {
+		t.Fatal("Save reported success onto a destination it could not take")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".unity-sync-lock-") {
+			t.Errorf("a failed rename left the temp file %q beside the lockfile", e.Name())
+		}
+	}
+}

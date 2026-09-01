@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/curbol/unity-sync/internal/config"
@@ -177,5 +178,47 @@ func TestMalformedConfigIsAnError(t *testing.T) {
 	}
 	if _, err := config.Load(dir, config.Flags{}); err == nil {
 		t.Error("Load accepted a malformed config.toml")
+	}
+}
+
+// A key that decodes to nothing is almost always a misspelling of one that would have
+// decoded, and the manifest already refuses those. Silence is more expensive here:
+// `library-path` for `library_path` mirrors tens of gigabytes into the default directory
+// with no diagnostic at all.
+func TestAnUnknownConfigKeyIsRefusedRatherThanIgnored(t *testing.T) {
+	dir := t.TempDir()
+	body := "library-path = \"/mnt/big/unity\"\nconcurrency = 4\n"
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := config.Load(dir, config.Flags{})
+	if err == nil {
+		t.Fatal("Load accepted a misspelled key and silently kept the default library path")
+	}
+	if !strings.Contains(err.Error(), "library-path") {
+		t.Errorf("error %q does not name the key that did not decode", err)
+	}
+}
+
+// With no home and no XDG variable there is nowhere to put a 75 GB mirror, and the old
+// answer was a relative "unity-library" under whatever directory the user happened to be
+// in. An error naming the four ways to say where it should go is the better outcome.
+func TestNoHomeAndNoXDGRefusesRatherThanPickingARelativeLibrary(t *testing.T) {
+	t.Setenv("HOME", "")
+	t.Setenv("USERPROFILE", "")
+	t.Setenv("XDG_DATA_HOME", "")
+	t.Setenv("UNITY_SYNC_LIBRARY", "")
+
+	if _, err := config.Load(t.TempDir(), config.Flags{}); err == nil {
+		t.Fatal("Load invented a library path with no home directory to put one under")
+	}
+
+	// But a run that says where its library is has no use for a home directory at all.
+	cfg, err := config.Load(t.TempDir(), config.Flags{LibraryPath: "/mnt/big/unity"})
+	if err != nil {
+		t.Fatalf("Load with an explicit --library still needed a home: %v", err)
+	}
+	if cfg.LibraryPath != "/mnt/big/unity" {
+		t.Errorf("LibraryPath = %q, want the flag's value", cfg.LibraryPath)
 	}
 }

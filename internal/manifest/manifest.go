@@ -121,7 +121,15 @@ func Save(path string, m Manifest) error {
 		os.Remove(name)
 		return err
 	}
-	return os.Rename(name, path)
+	// Cleaned up like every other failure above. On Windows the rename fails outright
+	// when the destination is held open — an editor, an on-access scanner — and this one
+	// is written once per download, so the orphans pile up in a directory that is
+	// committed.
+	if err := os.Rename(name, path); err != nil {
+		os.Remove(name)
+		return err
+	}
+	return nil
 }
 
 // ErrWouldEmpty is returned by Reconcile when the owned set is empty but the manifest is
@@ -133,6 +141,21 @@ type ErrWouldEmpty struct{ Existing int }
 func (e *ErrWouldEmpty) Error() string {
 	return fmt.Sprintf("refusing to rewrite the manifest: the store reported no owned assets while "+
 		"the manifest holds %d (a session with a different active org looks exactly like this)", e.Existing)
+}
+
+// ErrWouldDeselectAll is returned by Reconcile when the owned set shares no id with the
+// entries that were enabled. An empty enumeration is not the only shape a wrong-org
+// session takes: a session for a different organisation returns a legitimately different
+// owned set, and one that overlaps a curated selection in nothing looks exactly like it.
+//
+// Without this the reconciled manifest has every selection cleared before the select page
+// is even rendered, so the page's own would-empty refusal has nothing left to compare
+// against and accepts the save that replaces the file.
+type ErrWouldDeselectAll struct{ Enabled int }
+
+func (e *ErrWouldDeselectAll) Error() string {
+	return fmt.Sprintf("refusing to rewrite the manifest: the store owns none of the %d asset(s) "+
+		"selected in it (a session with a different active org looks exactly like this)", e.Enabled)
 }
 
 // Reconcile rebuilds the allowlist against what is currently owned: existing selections
@@ -155,10 +178,22 @@ func (m *Manifest) Reconcile(owned []model.Asset) (dropped []Entry, err error) {
 		stillOwned[a.ID] = true
 		out = append(out, Entry{ID: a.ID, Name: a.Name, Enabled: prev[a.ID].Enabled})
 	}
+	enabled, survived := 0, 0
 	for _, e := range m.Assets {
 		if !stillOwned[e.ID] {
 			dropped = append(dropped, e)
 		}
+		if e.Enabled {
+			enabled++
+			if stillOwned[e.ID] {
+				survived++
+			}
+		}
+	}
+	// Losing some selections is ordinary: a refund, a delisting. Losing every one of them
+	// is the signature of an enumeration made against a different account or org.
+	if enabled > 0 && survived == 0 {
+		return nil, &ErrWouldDeselectAll{Enabled: enabled}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	m.Assets = out

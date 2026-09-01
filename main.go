@@ -36,6 +36,13 @@ const defaultSelectAddr = "127.0.0.1:8788"
 // diagnostics stay on stderr.
 var stdout io.Writer = os.Stdout
 
+// storeBaseURL points the client somewhere other than the real store. Empty outside
+// tests, and a package variable for the same reason stdout is: run's config → session →
+// client → write chain is otherwise unreachable without going to the live store, so the
+// one place that decides which cookie reaches it, and the fact that neither committed
+// file is written until the store has answered, would ship untested.
+var storeBaseURL string
+
 func main() {
 	code, err := run(os.Args[1:])
 	if err != nil {
@@ -141,7 +148,11 @@ func run(args []string) (int, error) {
 	if err != nil {
 		return 1, err
 	}
-	client := store.New(cookie, version)
+	var opts []store.Option
+	if storeBaseURL != "" {
+		opts = append(opts, store.WithBaseURL(storeBaseURL))
+	}
+	client := store.New(cookie, version, opts...)
 
 	if err := client.Bootstrap(ctx); err != nil {
 		return 1, err

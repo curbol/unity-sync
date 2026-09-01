@@ -106,6 +106,9 @@ func TestUnsafePathsAreRefused(t *testing.T) {
 		if err := cache.RemoveStale(root, rel); err == nil {
 			t.Errorf("RemoveStale accepted path %q", rel)
 		}
+		if _, err := cache.Canonical(rel); err == nil {
+			t.Errorf("Canonical accepted path %q", rel)
+		}
 	}
 }
 
@@ -235,6 +238,170 @@ func TestAnUnresolvableExclusionRefusesEveryCandidate(t *testing.T) {
 	for _, bad := range []string{"/etc/passwd", "../outside/x.unitypackage"} {
 		if _, ok := cache.Scan(root).Find("111", "", bad); ok {
 			t.Errorf("exclusion %q was dropped and a candidate offered anyway", bad)
+		}
+	}
+}
+
+// Two spellings of one path have to compare equal. Callers hold a path that came out of
+// the committed, hand-editable lockfile against one this package derived, and deciding
+// they are two files means deleting the one that was just written or refusing to move onto
+// a destination that is really the source.
+func TestCanonicalCollapsesTheSpellingsOfOnePath(t *testing.T) {
+	same := []string{
+		"pub/a/a.unitypackage",
+		"./pub/a/a.unitypackage",
+		"pub//a/a.unitypackage",
+		"pub/b/../a/a.unitypackage",
+		"./pub/./a/a.unitypackage",
+	}
+	want, err := cache.Canonical(same[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range same[1:] {
+		got, err := cache.Canonical(rel)
+		if err != nil {
+			t.Errorf("Canonical(%q): %v", rel, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("Canonical(%q) = %q, want %q", rel, got, want)
+		}
+		if !cache.SamePath(rel, same[0]) {
+			t.Errorf("SamePath(%q, %q) = false", rel, same[0])
+		}
+	}
+	if cache.SamePath("pub/a/a.unitypackage", "pub/b/b.unitypackage") {
+		t.Error("SamePath called two different files the same")
+	}
+	// A value it cannot resolve matches nothing, including another unresolvable one: the
+	// caller is about to delete or move something on the strength of the answer.
+	if cache.SamePath("../escape", "../escape") {
+		t.Error("SamePath matched a pair of paths that leave the root")
+	}
+}
+
+// The sweep and the adopt scan both recognise an in-flight download by its filename, and
+// every other test writes that name by hand. Nothing put a temp Store actually created in
+// front of either, so a change to the CreateTemp pattern that no longer matched tempPrefix
+// would leave the suite green while 23 GB partials accumulated in the library forever.
+func TestATempStoreCreatedIsATempTheSweepAndScanRecognise(t *testing.T) {
+	root := t.TempDir()
+	p, err := cache.Store(root, "pub", "asset", bytes.NewReader(pkg(t, "115488", "v1", 400)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The adopt scan must not offer an uncommitted partial as something to adopt: a
+	// truncated body can clear the size floor with its descriptor intact.
+	if _, ok := cache.Scan(root).Find("115488", ""); ok {
+		t.Error("the adopt scan offered an uncommitted download temp as a candidate")
+	}
+	old := time.Unix(1600000000, 0)
+	if err := os.Chtimes(p.TempPath(), old, old); err != nil {
+		t.Fatal(err)
+	}
+	n, freed := cache.SweepTemps(root, time.Unix(1700000000, 0))
+	if n != 1 {
+		t.Fatalf("SweepTemps reclaimed %d, want 1: Store's temp name no longer matches what "+
+			"the sweep looks for, so abandoned downloads are never reclaimed", n)
+	}
+	if freed != p.Size {
+		t.Errorf("freed = %d bytes, want %d", freed, p.Size)
+	}
+	if _, err := os.Stat(p.TempPath()); !os.IsNotExist(err) {
+		t.Error("the temp survived its own sweep")
+	}
+}
+
+// Store creates the two directories a package lives in before it opens the temp. Discard
+// runs whenever a semantic guard rejects a body, which for an asset that never downloads
+// successfully means an empty <publisher>/<asset>/ pair left in a tree quarry walks.
+func TestDiscardUnwindsTheDirectoriesStoreCreated(t *testing.T) {
+	root := t.TempDir()
+	p, err := cache.Store(root, "pub", "asset", bytes.NewReader([]byte("rejected")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Discard(); err != nil {
+		t.Fatalf("Discard: %v", err)
+	}
+	for _, dir := range []string{filepath.Join(root, "pub", "asset"), filepath.Join(root, "pub")} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("%s survived a discarded download", dir)
+		}
+	}
+	// Never past the root, whatever the removal empties.
+	if _, err := os.Stat(root); err != nil {
+		t.Errorf("pruning climbed past the library root: %v", err)
+	}
+}
+
+// Relocate is the only export that moves a real file to a caller-supplied destination, so
+// both ends have to be confined and not just the source. Asserting an error is not enough:
+// an unconfined destination still errors when the source happens not to exist, so the file
+// has to be real and the check has to be that nothing landed outside the root.
+func TestRelocateConfinesBothEnds(t *testing.T) {
+	for _, bad := range []string{"", "/etc/passwd", "../escape.unitypackage", "a/../../escape"} {
+		outside := t.TempDir()
+		root := filepath.Join(outside, "library")
+		src := filepath.Join(root, "pub", "a")
+		if err := os.MkdirAll(src, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		real := filepath.Join(src, "a.unitypackage")
+		if err := os.WriteFile(real, []byte("payload"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := cache.Relocate(root, "pub/a/a.unitypackage", bad); err == nil {
+			t.Errorf("Relocate accepted destination %q", bad)
+		}
+		if _, err := os.Stat(real); err != nil {
+			t.Errorf("Relocate to %q moved the source anyway: %v", bad, err)
+		}
+		// Nothing may have been written above the root, whatever the destination spelled.
+		entries, err := os.ReadDir(outside)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(entries) != 1 || entries[0].Name() != "library" {
+			t.Errorf("Relocate to %q wrote outside the library root: %v", bad, entries)
+		}
+
+		if err := cache.Relocate(root, bad, "pub/b/b.unitypackage"); err == nil {
+			t.Errorf("Relocate accepted source %q", bad)
+		}
+		if _, err := os.Stat(filepath.Join(root, "pub", "b", "b.unitypackage")); err == nil {
+			t.Errorf("Relocate from %q produced a destination file", bad)
+		}
+	}
+}
+
+// Find prefers the copy already at the derived path, so an adopt that is really a no-op
+// does not turn into a relocation onto an occupied destination. preferRel comes from the
+// same layout the exclusions do, so it has to be compared the same way: raw, a caller
+// holding a differently-spelled path silently loses the preference and Relocate refuses.
+func TestFindPrefersTheCopyAlreadyInPlaceWhateverItIsCalled(t *testing.T) {
+	root := t.TempDir()
+	inPlace := "pub-one/asset-1/asset-1.unitypackage"
+	for _, rel := range []string{inPlace, "elsewhere/stray-1/stray-1.unitypackage"} {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, pkg(t, "1", "v1", 400), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ix := cache.Scan(root)
+	for _, spelling := range []string{inPlace, "./" + inPlace, "pub-one//asset-1/asset-1.unitypackage"} {
+		got, ok := ix.Find("1", spelling)
+		if !ok {
+			t.Fatalf("Find(%q) found nothing", spelling)
+		}
+		if got.RelPath != inPlace {
+			t.Errorf("Find(%q) chose %q, want the copy already in place at %q",
+				spelling, got.RelPath, inPlace)
 		}
 	}
 }

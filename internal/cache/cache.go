@@ -50,10 +50,15 @@ func safeSegment(kind, s string) error {
 	return nil
 }
 
-// resolve turns a lockfile-supplied relative path into an absolute one, refusing
-// anything that would leave the library root. These values arrive from a file that is
-// committed and travels between machines, so they are validated rather than trusted.
-func resolve(root, rel string) (string, error) {
+// Canonical is the one spelling of a cache-relative path, in the forward slashes a
+// lockfile records. Two values naming the same file inside the root canonicalise to the
+// same string, and anything that would leave the root is refused instead.
+//
+// It is exported because comparing a recorded path against a derived one is not a string
+// comparison. The lockfile is committed, hand-editable and travels between machines, so
+// "./pub/a/a.unitypackage" has to compare equal to the "pub/a/a.unitypackage" a run
+// derives; a caller that compares them raw decides two names for one file are two files.
+func Canonical(rel string) (string, error) {
 	if rel == "" || path.IsAbs(rel) || filepath.IsAbs(rel) {
 		return "", fmt.Errorf("unsafe cache path %q", rel)
 	}
@@ -61,7 +66,34 @@ func resolve(root, rel string) (string, error) {
 	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("unsafe cache path %q", rel)
 	}
-	return filepath.Join(root, clean), nil
+	return filepath.ToSlash(clean), nil
+}
+
+// SamePath reports whether two cache-relative paths name the same file. A value that
+// cannot be canonicalised matches nothing, including another unsafe value: the caller is
+// deciding whether to delete or move a file, and two paths it cannot resolve are not
+// grounds for treating them as one.
+func SamePath(a, b string) bool {
+	ca, err := Canonical(a)
+	if err != nil {
+		return false
+	}
+	cb, err := Canonical(b)
+	if err != nil {
+		return false
+	}
+	return ca == cb
+}
+
+// resolve turns a lockfile-supplied relative path into an absolute one, refusing
+// anything that would leave the library root. These values arrive from a file that is
+// committed and travels between machines, so they are validated rather than trusted.
+func resolve(root, rel string) (string, error) {
+	clean, err := Canonical(rel)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(root, filepath.FromSlash(clean)), nil
 }
 
 // Pending is a fully-written but uncommitted download.
@@ -70,6 +102,7 @@ type Pending struct {
 	SHA256  string
 	Size    int64
 
+	root     string
 	tempPath string
 	final    string
 }
@@ -94,28 +127,35 @@ func Store(root, publisherSlug, assetSlug string, r io.Reader) (*Pending, error)
 	}
 	tmp, err := os.CreateTemp(dir, tempPrefix+"*")
 	if err != nil {
+		pruneEmptyParents(root, dir)
+		return nil, err
+	}
+	// Every failure below also unwinds the directories MkdirAll just made. An asset whose
+	// download never succeeds would otherwise leave an empty <publisher>/<asset>/ behind
+	// on every attempt, in a tree quarry walks.
+	abandon := func(err error) (*Pending, error) {
+		os.Remove(tmp.Name())
+		pruneEmptyParents(root, dir)
 		return nil, err
 	}
 	h := sha256.New()
 	size, err := io.Copy(io.MultiWriter(tmp, h), r)
 	if err != nil {
 		tmp.Close()
-		os.Remove(tmp.Name())
-		return nil, err
+		return abandon(err)
 	}
 	if err := tmp.Sync(); err != nil {
 		tmp.Close()
-		os.Remove(tmp.Name())
-		return nil, err
+		return abandon(err)
 	}
 	if err := tmp.Close(); err != nil {
-		os.Remove(tmp.Name())
-		return nil, err
+		return abandon(err)
 	}
 	return &Pending{
 		RelPath:  rel,
 		SHA256:   hex.EncodeToString(h.Sum(nil)),
 		Size:     size,
+		root:     root,
 		tempPath: tmp.Name(),
 		final:    filepath.Join(dir, assetSlug+packageExt),
 	}, nil
@@ -130,14 +170,16 @@ func (p *Pending) Commit() error {
 	return nil
 }
 
-// Discard removes the pending bytes. Callers use it whenever a check fails, so a
-// rejected body never reaches a real cache path.
+// Discard removes the pending bytes, and the directories Store created for them if the
+// removal leaves them empty. Callers use it whenever a check fails, so a rejected body
+// never reaches a real cache path.
 func (p *Pending) Discard() error {
 	err := os.Remove(p.tempPath)
-	if os.IsNotExist(err) {
-		return nil
+	if err != nil && !os.IsNotExist(err) {
+		return err
 	}
-	return err
+	pruneEmptyParents(p.root, filepath.Dir(p.tempPath))
+	return nil
 }
 
 // Verify is the cheap check: the file exists, its size is exactly what was recorded, and
@@ -168,6 +210,8 @@ func Verify(root, rel string, wantSize int64, wantDeliveredID string) bool {
 
 // VerifyDeep re-hashes the file. It is opt-in because the library runs to tens of
 // gigabytes, and it is the only check that sees a mid-file corruption.
+//
+// It takes no size or version id, and does not need them: a digest match implies both.
 func VerifyDeep(root, rel, wantSHA string) bool {
 	sha, _, err := Hash(root, rel)
 	return err == nil && sha == wantSHA
@@ -296,8 +340,12 @@ func (ix *Index) Find(productID, preferRel string, excludeRel ...string) (Candid
 	if len(found) == 0 {
 		return Candidate{}, false
 	}
+	// Canonically, like the exclusions above and for the same reason: preferRel is the
+	// path the current layout derives, and a caller holding a differently-spelled one
+	// would silently lose "the copy already in place wins" and get a relocation conflict
+	// where an adopt was really a no-op.
 	for _, c := range found {
-		if c.RelPath == preferRel {
+		if SamePath(c.RelPath, preferRel) {
 			return c, true
 		}
 	}

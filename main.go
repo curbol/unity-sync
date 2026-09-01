@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -48,7 +49,7 @@ func main() {
 
 func run(args []string) (int, error) {
 	if len(args) == 0 {
-		usage()
+		usage(os.Stderr)
 		return 1, errors.New("a subcommand is required")
 	}
 	cmd, rest := args[0], args[1:]
@@ -57,7 +58,9 @@ func run(args []string) (int, error) {
 	fs.SetOutput(io.Discard)
 	cfgDir := fs.String("config", "", "user config dir (default $XDG_CONFIG_HOME/unity-sync)")
 	manifestFlag := fs.String("manifest", "", "project manifest path (default: nearest unity-sync.toml walking up)")
-	sessionFlag := fs.String("session", "", "session file: a pasted-curl or cookies.txt export")
+	sessionFlag := fs.String("session", "", "session source: \"browser\" to read a signed-in\n"+
+		"Firefox-family profile, or a path to a pasted-curl file, a cookies.txt,\n"+
+		"a browser profile directory, or a recovery.jsonlz4")
 	library := fs.String("library", "", "library directory (overrides config / UNITY_SYNC_LIBRARY)")
 	only := fs.String("only", "", "limit to assets whose slug matches this glob")
 	concurrency := fs.Int("concurrency", 0, "max simultaneous downloads (overrides config)")
@@ -69,7 +72,7 @@ func run(args []string) (int, error) {
 	case "select", "status", "sync", "list", "update", "version",
 		"-h", "--help", "help", "-v", "--version":
 	default:
-		usage()
+		usage(os.Stderr)
 		return 1, fmt.Errorf("unknown subcommand %q", cmd)
 	}
 	switch cmd {
@@ -82,15 +85,19 @@ func run(args []string) (int, error) {
 		if cmd == "version" || cmd == "-v" || cmd == "--version" {
 			fmt.Fprintln(stdout, "unity-sync", version)
 		} else {
-			usage()
+			// Asked for on purpose, so it goes to stdout where it can be piped, and it
+			// carries the flag descriptions rather than a bare list of names.
+			help(stdout, fs)
 		}
 		return 0, nil
 	}
 	if err := fs.Parse(rest); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
-			usage()
+			help(stdout, fs)
 			return 0, nil
 		}
+		// The FlagSet's own output stays discarded on this branch: run returns the error
+		// and main prints it, so letting the flag package print too says it twice.
 		return 1, err
 	}
 
@@ -141,7 +148,13 @@ func run(args []string) (int, error) {
 	}
 
 	if cmd == "select" {
-		return 0, selectAssets(ctx, client, manifestPath, *addr)
+		// Bound here rather than inside selectAssets: a port already in use is worth
+		// finding out about before a run spends a full enumeration discovering it.
+		ln, err := net.Listen("tcp", *addr)
+		if err != nil {
+			return 1, err
+		}
+		return 0, selectAssets(ctx, client, manifestPath, ln)
 	}
 	return syncOrStatus(ctx, client, cfg, manifestPath, lockPath, *only, *verify, cmd == "status" || *dryRun)
 }
@@ -182,9 +195,10 @@ func resolveSession(cfg config.Config, configDir string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Which profile a browser search settled on is not obvious from `--session browser`,
-	// and a run against the wrong signed-in account is otherwise silent.
-	if src == session.BrowserKeyword {
+	// Which profile a search settled on is not obvious, and a run against the wrong
+	// signed-in account is otherwise silent. The keyword is not the only source that
+	// searches: a directory is a profile root too, and picks among the profiles under it.
+	if from != src {
 		fmt.Fprintln(os.Stderr, "session: read from", from)
 	}
 	return header, nil
@@ -195,7 +209,11 @@ type enumerator interface {
 	Enumerate(ctx context.Context) ([]model.Asset, error)
 }
 
-func selectAssets(ctx context.Context, client enumerator, manifestPath, addr string) error {
+func selectAssets(ctx context.Context, client enumerator, manifestPath string, ln net.Listener) error {
+	// Closed here as well as by Serve's own shutdown, because every return above it leaves
+	// the port bound otherwise.
+	defer func() { _ = ln.Close() }()
+
 	m, err := manifest.Load(manifestPath)
 	if err != nil {
 		return err
@@ -211,7 +229,7 @@ func selectAssets(ctx context.Context, client enumerator, manifestPath, addr str
 	for _, e := range dropped {
 		fmt.Fprintf(os.Stderr, "no longer owned, dropping from the manifest: %s (%s)\n", e.Name, e.ID)
 	}
-	chosen, err := web.Serve(ctx, addr, owned, m.EnabledIDs())
+	chosen, err := web.Serve(ctx, ln, owned, m.EnabledIDs())
 	if err != nil {
 		return err
 	}
@@ -347,8 +365,24 @@ func list(w io.Writer, lockPath string) error {
 	return nil
 }
 
-func usage() {
-	fmt.Fprint(os.Stderr, strings.TrimLeft(`
+// usage is what an error prints: the command list and where to find the flags. The
+// descriptions themselves would bury the diagnostic that follows.
+func usage(w io.Writer) {
+	commands(w)
+	fmt.Fprintln(w, `Run "unity-sync <command> --help" for the flags.`)
+}
+
+// help is what an explicit --help prints, on stdout so it can be piped: the same list plus
+// every flag's own description.
+func help(w io.Writer, fs *flag.FlagSet) {
+	commands(w)
+	fmt.Fprintln(w, "Flags:")
+	fs.SetOutput(w)
+	fs.PrintDefaults()
+}
+
+func commands(w io.Writer) {
+	fmt.Fprint(w, strings.TrimLeft(`
 unity-sync mirrors the assets you own on the Unity Asset Store.
 
   unity-sync select    pick which assets to mirror (opens a local page)
@@ -358,7 +392,5 @@ unity-sync mirrors the assets you own on the Unity Asset Store.
   unity-sync update    replace this binary with the latest release
   unity-sync version   print the installed version
 
-Flags: --config --manifest --session --library --only --concurrency --verify
-       --dry-run --addr
 `, "\n"))
 }

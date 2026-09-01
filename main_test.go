@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	"github.com/curbol/unity-sync/internal/manifest"
 	"github.com/curbol/unity-sync/internal/model"
 	"github.com/curbol/unity-sync/internal/store"
+	"github.com/curbol/unity-sync/internal/web"
 )
 
 func capture(t *testing.T) *bytes.Buffer {
@@ -27,22 +29,33 @@ func capture(t *testing.T) *bytes.Buffer {
 	return buf
 }
 
+// select opens a browser at the address it binds, and selectAssets reaches that whenever
+// an enumeration succeeds. Stubbed for the whole binary rather than per test: a stub each
+// test has to remember is one a test will eventually forget, and forgetting means a real
+// tab on whoever ran the suite.
+func TestMain(m *testing.M) {
+	web.OpenBrowser = func(string) {}
+	os.Exit(m.Run())
+}
+
 // isolate keeps a developer's real config, session and library out of the tests.
 func isolate(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
+	// os.UserHomeDir reads USERPROFILE on Windows and HOME everywhere else, so both are
+	// pinned: setting only one leaves the resolver pointed at the real account whenever an
+	// XDG variable is absent.
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
 	for _, k := range []string{"UNITY_SYNC_CONFIG_DIR", "UNITY_SYNC_LIBRARY", "UNITY_SYNC_SESSION"} {
 		os.Unsetenv(k)
 	}
 	wd := t.TempDir()
-	prev, _ := os.Getwd()
-	if err := os.Chdir(wd); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chdir(prev) })
+	// t.Chdir restores the directory itself and makes t.Parallel in this test a hard error
+	// rather than silent cross-test corruption.
+	t.Chdir(wd)
 	return wd
 }
 
@@ -255,7 +268,11 @@ func TestSelectRefusesToEmptyACuratedManifest(t *testing.T) {
 	}
 	before, _ := os.ReadFile(manifestPath)
 
-	err := selectAssets(context.Background(), &fakeStore{}, manifestPath, "127.0.0.1:0")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = selectAssets(context.Background(), &fakeStore{}, manifestPath, ln)
 	if err == nil {
 		t.Fatal("select rewrote the manifest against an empty enumeration")
 	}

@@ -18,7 +18,9 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/curbol/unity-sync/internal/humanize"
 	"github.com/curbol/unity-sync/internal/model"
 )
 
@@ -29,6 +31,11 @@ const (
 	msgWouldEmptySelection = "refusing a save that would deselect everything"
 	msgStaleTab            = "this page was served by an earlier run; reload and choose again"
 )
+
+// shutdownGrace bounds how long Serve waits for the in-flight save to be written before
+// it stops waiting. The response is one short line, so reaching this means the client
+// stopped reading rather than that the write is slow.
+const shutdownGrace = 5 * time.Second
 
 type row struct {
 	ID        string
@@ -145,7 +152,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			ID:        a.ID,
 			Name:      a.Name,
 			Publisher: a.Publisher.Name,
-			Size:      humanBytes(a.AdvertisedSize),
+			Size:      humanize.Bytes(a.AdvertisedSize),
 			State:     string(a.State),
 			Thumb:     absoluteURL(a.ThumbnailURL),
 			Enabled:   h.enabled[a.ID],
@@ -184,20 +191,37 @@ func (h *Handler) save(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprintf(w, "Saved %d selection(s). You can close this tab.", len(chosen))
 }
 
-// Serve runs the page until it is saved once or the context ends.
-func Serve(ctx context.Context, addr string, assets []model.Asset, enabled map[string]bool) (Selection, error) {
+// Serve runs the page on ln until it is saved once or the context ends.
+//
+// It takes a bound listener rather than an address so the caller decides where the page
+// lives and when the port is claimed — failing on a port already in use before a run
+// spends an enumeration on it — and so a test can hand it an ephemeral port instead of
+// carrying a fixed number that another test can collide with.
+//
+// It opens a browser at the address ln is bound to, so a test driving it must stub
+// OpenBrowser first.
+func Serve(ctx context.Context, ln net.Listener, assets []model.Asset, enabled map[string]bool) (Selection, error) {
 	h := NewHandler(assets, enabled)
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return nil, err
-	}
 	srv := &http.Server{Handler: h}
 	go srv.Serve(ln)
-	defer srv.Close()
+	// Shutdown, not Close. The accepted save is delivered on a buffered channel, so this
+	// function is runnable the instant save() sends and before the handler has written a
+	// byte; Close severs the active connection and the browser shows a connection reset
+	// for a selection that was in fact kept. Shutdown waits for the handler to finish.
+	defer func() {
+		// Background, not the caller's ctx: the usual reason Serve is returning is that
+		// ctx ended, and shutting down under an already-cancelled context severs the
+		// connection exactly as Close would.
+		ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+		defer cancel()
+		if srv.Shutdown(ctx) != nil {
+			srv.Close()
+		}
+	}()
 
 	url := "http://" + ln.Addr().String()
 	fmt.Fprintln(os.Stderr, "select assets at", url)
-	openBrowser(url)
+	OpenBrowser(url)
 
 	select {
 	case sel := <-h.done:
@@ -225,7 +249,10 @@ func anyEnabled(m map[string]bool) bool {
 	return false
 }
 
-func openBrowser(url string) {
+// OpenBrowser launches the page. It is an exported variable so that tests in any package
+// can stop it: Serve's whole job is to open a tab, so a test that drives Serve opens a
+// real one per call on whoever is running the suite, at a URL that dies with the test.
+var OpenBrowser = func(url string) {
 	var cmd string
 	switch runtime.GOOS {
 	case "darwin":
@@ -236,17 +263,4 @@ func openBrowser(url string) {
 		cmd = "xdg-open"
 	}
 	exec.Command(cmd, url).Start()
-}
-
-func humanBytes(n int64) string {
-	const unit = 1000
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
-	}
-	div, exp := int64(unit), 0
-	for v := n / unit; v >= unit; v /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "kMGT"[exp])
 }

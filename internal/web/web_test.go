@@ -1,6 +1,9 @@
 package web_test
 
 import (
+	"context"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -42,6 +45,17 @@ func tokenFrom(t *testing.T, body string) string {
 		t.Fatal("page carries no token")
 	}
 	return m[1]
+}
+
+// listen binds an ephemeral loopback port, so no test here carries a fixed port number
+// for another test — or another run — to collide with.
+func listen(t *testing.T) net.Listener {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ln
 }
 
 func TestPageRendersEveryAssetWithItsState(t *testing.T) {
@@ -218,5 +232,79 @@ func TestARefusedSaveLeavesThePageServing(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("the save after a refusal never arrived")
+	}
+}
+
+// The accepted save is delivered on a buffered channel, so Serve becomes runnable the
+// instant save() sends and before the handler has written a byte. Closing the server there
+// severs the active connection: the browser shows a connection reset for a selection that
+// was in fact kept, and a reload-and-retry is then refused as a stale tab, which is
+// doubly wrong.
+//
+// Repeated because the window is a scheduling race rather than a data race, so the race
+// detector does not report it and a single pass usually wins it. Under `go test -race`,
+// which is what CI runs, the detector's slowdown widens the window enough that this
+// catches a regression every time; without it, roughly one run in ten.
+func TestTheSaveConfirmationReachesTheBrowser(t *testing.T) {
+	// Serve opens a tab every time it is called, and this calls it once per round. The
+	// launcher is stubbed for the whole binary in TestMain; the count is what proves the
+	// stub is still on the path Serve really takes.
+	launchedBefore := web.BrowserLaunches()
+	assets := []model.Asset{{ID: "1", Name: "A"}}
+	const rounds = 40
+	for i := range rounds {
+		ln := listen(t)
+		base := "http://" + ln.Addr().String()
+		type reply struct {
+			body string
+			err  error
+		}
+		done := make(chan reply, 1)
+		go func() {
+			// No retry loop: the listener was bound before Serve was called, so the page
+			// answers on the first request.
+			resp, err := http.Get(base)
+			if err != nil {
+				done <- reply{err: err}
+				return
+			}
+			page, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			var token string
+			const marker = `name=token value="`
+			if k := strings.Index(string(page), marker); k >= 0 {
+				rest := string(page)[k+len(marker):]
+				token = rest[:strings.Index(rest, `"`)]
+			}
+			resp, err = http.PostForm(base, url.Values{"token": {token}, "asset": {"1"}})
+			if err != nil {
+				done <- reply{err: err}
+				return
+			}
+			body, err := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			done <- reply{body: string(body), err: err}
+		}()
+
+		sel, err := web.Serve(context.Background(), ln, assets, map[string]bool{"1": true})
+		if err != nil {
+			t.Fatalf("Serve: %v", err)
+		}
+		if !sel["1"] {
+			t.Fatal("the selection did not come back")
+		}
+		got := <-done
+		if got.err != nil {
+			t.Fatalf("round %d: the save that was accepted answered with %v; the server closed "+
+				"the connection before the handler finished writing", i, got.err)
+		}
+		if !strings.Contains(got.body, "Saved") {
+			t.Fatalf("round %d: response body = %q, want the save confirmation", i, got.body)
+		}
+	}
+	// Without the stub this loop opens `rounds` real browser tabs on whoever ran the suite.
+	if got := web.BrowserLaunches() - launchedBefore; got != rounds {
+		t.Errorf("Serve asked to open %d tabs over %d rounds; the stub is no longer on the "+
+			"path that would really launch", got, rounds)
 	}
 }

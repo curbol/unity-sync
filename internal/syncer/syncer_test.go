@@ -127,6 +127,38 @@ func newRun(t *testing.T) (root, lockPath string) {
 	return root, filepath.Join(t.TempDir(), "unity-sync.lock.json")
 }
 
+// place commits a package under <publisherSlug>/<assetSlug>/ and returns what was
+// written. Every test that needs a file already on disk goes through this, so the two
+// sites that used to drop cache.Store's error — and then nil-deref on the Pending rather
+// than reporting it — cannot come back.
+func place(t *testing.T, root, publisherSlug, assetSlug string, body []byte) *cache.Pending {
+	t.Helper()
+	p, err := cache.Store(root, publisherSlug, assetSlug, bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("cache.Store(%s/%s): %v", publisherSlug, assetSlug, err)
+	}
+	if err := p.Commit(); err != nil {
+		t.Fatalf("Commit(%s/%s): %v", publisherSlug, assetSlug, err)
+	}
+	return p
+}
+
+// tracked is the lockfile entry a previous run would have written for p at versionID: an
+// asset whose bytes are mirrored and whose resolution half points at them.
+func tracked(assetID, name, versionID string, p *cache.Pending) lockfile.Entry {
+	return lockfile.Entry{
+		AssetID:            assetID,
+		Name:               name,
+		Version:            lockfile.Version{ID: versionID},
+		Tracked:            true,
+		ResolvedVersionID:  versionID,
+		DeliveredVersionID: versionID,
+		SizeBytes:          p.Size,
+		SHA256:             p.SHA256,
+		CachePath:          p.RelPath,
+	}
+}
+
 func allSelected(assets ...model.Asset) map[string]bool {
 	m := map[string]bool{}
 	for _, a := range assets {
@@ -438,9 +470,7 @@ func TestUnknownManifestIdsAreReported(t *testing.T) {
 func TestAdoptionRecordsTheDiffKeyAndLeavesDownloadedAtEmpty(t *testing.T) {
 	root, lockPath := newRun(t)
 	a := asset("1", "Asset", "v1", 500)
-	body := pkg(t, "1", "v1", 500)
-	p, _ := cache.Store(root, a.PublisherSlug(), a.Slug(), bytes.NewReader(body))
-	p.Commit()
+	place(t, root, a.PublisherSlug(), a.Slug(), pkg(t, "1", "v1", 500))
 
 	fs := &fakeStore{owned: []model.Asset{a}}
 	rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, opts(root, allSelected(a)))
@@ -469,8 +499,7 @@ func TestATruncatedFileIsNotAdopted(t *testing.T) {
 	root, lockPath := newRun(t)
 	a := asset("1", "Asset", "v1", 4000)
 	// Descriptor intact, body far short of what the store advertises.
-	p, _ := cache.Store(root, a.PublisherSlug(), a.Slug(), bytes.NewReader(pkg(t, "1", "v1", 200)))
-	p.Commit()
+	place(t, root, a.PublisherSlug(), a.Slug(), pkg(t, "1", "v1", 200))
 
 	fs := &fakeStore{owned: []model.Asset{a}, bodies: map[string][]byte{"1": pkg(t, "1", "v1", 4000)}}
 	rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, opts(root, allSelected(a)))

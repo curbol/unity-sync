@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,12 +29,13 @@ func TestSemanticGuardsRejectAndDiscard(t *testing.T) {
 	good := pkg(t, "1", "v1", 2000)
 
 	cases := []struct {
-		name      string
-		body      []byte
-		lookup    *model.Asset // when set, the re-query reports this
-		wantOK    bool
-		wantWarn  string
-		wantStore bool
+		name       string
+		body       []byte
+		advertised int64        // defaults to 2000
+		lookup     *model.Asset // when set, the re-query reports this
+		wantOK     bool
+		wantWarn   string
+		wantStore  bool
 	}{
 		{name: "not gzip at all", body: []byte("<html>sign in</html>")},
 		{name: "descriptor names another product", body: pkg(t, "999", "v1", 2000)},
@@ -50,11 +52,25 @@ func TestSemanticGuardsRejectAndDiscard(t *testing.T) {
 		},
 		{name: "20 bytes short is a warning only", body: pkg(t, "1", "v1", 1980), wantOK: true, wantStore: true},
 		{name: "exact", body: good, wantOK: true, wantStore: true},
+		{
+			// The allowance is capped at 4096 absolute, because the gap it forgives is a
+			// fixed alignment artifact rather than a proportion. Every other case here is
+			// small enough that advertised/8 is the binding half, so this is the only one
+			// that fails if the cap is dropped — and without it a 23 GB package ended
+			// cleanly 2 GB early clears the floor and is recorded as that asset's truth.
+			name:       "10% short of a large package is below the absolute floor",
+			body:       pkg(t, "1", "v1", 90000),
+			advertised: 100000,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			root, lockPath := newRun(t)
-			a := asset("1", "Asset", "v1", 2000)
+			advertised := tc.advertised
+			if advertised == 0 {
+				advertised = 2000
+			}
+			a := asset("1", "Asset", "v1", advertised)
 			fs := &fakeStore{owned: []model.Asset{a}, bodies: map[string][]byte{"1": tc.body}}
 			if tc.lookup != nil {
 				fs.lookups = map[string]model.Asset{"1": *tc.lookup}
@@ -82,10 +98,23 @@ func TestSemanticGuardsRejectAndDiscard(t *testing.T) {
 				if leftovers := tempsUnder(t, root); leftovers != 0 {
 					t.Errorf("%d temp files survived", leftovers)
 				}
+				// A republish is not a failure: nothing was stored and the next run picks
+				// up the new build. Counting it would make an ordinary event exit
+				// non-zero for every wrapper script watching this.
+				if rep.Failed() {
+					t.Error("an accepted body made the run exit non-zero")
+				}
 				return
 			}
 			if res.Err == nil {
 				t.Fatal("Run accepted a body it should have refused")
+			}
+			// The other half of "a failed download fails its asset, not the run": a
+			// corrupt body still has to exit non-zero. Only a pulled asset is permanent
+			// and silent, so a guard rejection widened into that bucket would report a
+			// clean sync over a download the tool itself refused.
+			if !rep.Failed() {
+				t.Error("a rejected body left the run exiting 0")
 			}
 			// Nothing may survive at a real cache path.
 			if _, err := os.Stat(final); !os.IsNotExist(err) {
@@ -227,6 +256,85 @@ func TestConcurrentDownloadsEachLandInTheLockfile(t *testing.T) {
 	}
 }
 
+// The other half, and the one the post-run check above cannot see: Run ends with an
+// unconditional save that rebuilds the whole document, so a lost incremental write is
+// invisible once the run is over. It matters while the run is still going, because the
+// incremental save exists precisely so a run killed at asset 90 of 100 keeps the 89.
+//
+// persist holds the mutex across both the map write and the save. Split into two
+// statements, two goroutines reach the rename in the order opposite to how they built
+// their snapshots and the older one wins, dropping a record a crash a moment later would
+// never get back. What that looks like from outside is two saves in flight at once, and
+// Save leaves a temp beside the lockfile for the whole of its write-fsync-rename — so a
+// second temp appearing is the serialization being gone.
+func TestLockfileSavesNeverOverlap(t *testing.T) {
+	root, lockPath := newRun(t)
+	var owned []model.Asset
+	bodies := map[string][]byte{}
+	for i := range 60 {
+		id := fmt.Sprint(i)
+		owned = append(owned, asset(id, "Asset "+id, "v1", 500))
+		bodies[id] = pkg(t, id, "v1", 500)
+	}
+
+	var overlapped atomic.Bool
+	lockDir := filepath.Dir(lockPath)
+	sample := func() {
+		entries, err := os.ReadDir(lockDir)
+		if err != nil {
+			return
+		}
+		var inFlight int
+		for _, e := range entries {
+			if strings.HasPrefix(e.Name(), ".unity-sync-lock-") {
+				inFlight++
+			}
+		}
+		if inFlight > 1 {
+			overlapped.Store(true)
+		}
+	}
+
+	fs := &fakeStore{owned: owned, bodies: bodies, beforeFetch: func(int) { sample() }}
+	o := opts(root, allSelected(owned...))
+	o.Concurrency = 12
+
+	done, polled := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(polled)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				sample()
+			}
+		}
+	}()
+
+	if _, err := Run(context.Background(), fs, lockfile.New(), lockPath, o); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	close(done)
+	<-polled
+
+	if overlapped.Load() {
+		t.Error("two lockfile saves were in flight at once: the write is no longer in the " +
+			"same critical section as the map update, so a stale snapshot can land last")
+	}
+	// The run still has to have left a complete record, or the check above passed only
+	// because nothing was written.
+	saved, err := lockfile.Load(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range owned {
+		if _, e, ok := saved.FindByAssetID(a.ID); !ok || !e.Tracked {
+			t.Fatalf("asset %s is missing from the saved lockfile", a.ID)
+		}
+	}
+}
+
 func TestConcurrencyCeilingIsHonoured(t *testing.T) {
 	root, lockPath := newRun(t)
 	var assets []model.Asset
@@ -328,13 +436,7 @@ func TestAdoptRefusesACandidateFromAnotherVersion(t *testing.T) {
 	a := asset("1", "Asset", "v2", 500)
 
 	// On disk: the right product, stamped with the previous build.
-	p, err := cache.Store(root, a.PublisherSlug(), a.Slug(), bytes.NewReader(pkg(t, "1", "v1", 500)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := p.Commit(); err != nil {
-		t.Fatal(err)
-	}
+	place(t, root, a.PublisherSlug(), a.Slug(), pkg(t, "1", "v1", 500))
 
 	fs := &fakeStore{owned: []model.Asset{a}, bodies: map[string][]byte{"1": pkg(t, "1", "v2", 500)}}
 	rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, opts(root, allSelected(a)))
@@ -361,13 +463,7 @@ func TestAdoptRelocatesACandidateFoundOffTheDerivedPath(t *testing.T) {
 	a := asset("1", "Renamed Asset", "v1", 500)
 
 	// The package sits under a stale slug, as it would after an upstream rename.
-	stale, err := cache.Store(root, a.PublisherSlug(), "old-slug-1", bytes.NewReader(pkg(t, "1", "v1", 500)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := stale.Commit(); err != nil {
-		t.Fatal(err)
-	}
+	place(t, root, a.PublisherSlug(), "old-slug-1", pkg(t, "1", "v1", 500))
 
 	fs := &fakeStore{owned: []model.Asset{a}}
 	rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, opts(root, allSelected(a)))
@@ -406,13 +502,7 @@ func TestOneScanServesEveryAdoptionInARun(t *testing.T) {
 		a := asset(id, "Asset "+id, "v1", 500)
 		owned = append(owned, a)
 		// Each under a stale slug, so every one of them needs the scan and a relocation.
-		stale, err := cache.Store(root, a.PublisherSlug(), "old-slug-"+id, bytes.NewReader(pkg(t, id, "v1", 500)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := stale.Commit(); err != nil {
-			t.Fatal(err)
-		}
+		place(t, root, a.PublisherSlug(), "old-slug-"+id, pkg(t, id, "v1", 500))
 	}
 
 	fs := &fakeStore{owned: owned}
@@ -479,13 +569,7 @@ func TestAFileThatFailedVerificationIsNotAdoptedBackIn(t *testing.T) {
 			a := asset("1", "Asset", "v1", 40000)
 			good := pkg(t, "1", "v1", 40000)
 
-			p, err := cache.Store(root, a.PublisherSlug(), a.Slug(), bytes.NewReader(good))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := p.Commit(); err != nil {
-				t.Fatal(err)
-			}
+			p := place(t, root, a.PublisherSlug(), a.Slug(), good)
 			prior := lockfile.New()
 			prior.Assets[a.Slug()] = lockfile.Entry{
 				AssetID: "1", Name: a.Name, Tracked: true,
@@ -523,13 +607,7 @@ func TestARenameWithAVersionBumpDoesNotStrandTheOldDirectory(t *testing.T) {
 	root, lockPath := newRun(t)
 	renamed := asset("1", "Brand New Name", "v2", 500)
 
-	old, err := cache.Store(root, renamed.PublisherSlug(), "old-name-1", bytes.NewReader(pkg(t, "1", "v1", 500)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := old.Commit(); err != nil {
-		t.Fatal(err)
-	}
+	old := place(t, root, renamed.PublisherSlug(), "old-name-1", pkg(t, "1", "v1", 500))
 	prior := lockfile.New()
 	prior.Assets["old-name-1"] = lockfile.Entry{
 		AssetID: "1", Name: "Old Name", Tracked: true,
@@ -719,91 +797,69 @@ func TestMemoizeRunsTheProbeOnce(t *testing.T) {
 	}
 }
 
-// The damaged file sits at the derived path, so a good copy found elsewhere has nowhere to
-// land unless the damaged one goes first. Getting this wrong is not a bad classification,
-// it is a permanent one: nothing resolves, the prior entry carries forward, and every later
-// run refuses in exactly the same way.
-func TestAGoodCopyReplacesTheDamagedFileHoldingItsPath(t *testing.T) {
-	root, lockPath := newRun(t)
-	a := asset("1", "Asset", "v1", 4000)
-	good := pkg(t, "1", "v1", 4000)
+// A recorded file that fails verification is excluded from the adopt scan, so the good
+// copy found elsewhere has to displace it — and cache.Relocate refuses an occupied
+// destination, which makes clearing the damaged occupant first the whole of the work.
+//
+// The two spellings are one test because the second is the first with the entry written
+// the way a hand-edit or another machine leaves it. The path comparison behind the
+// removal is canonical, so "./pub/a/a.unitypackage" has to be recognised as the file
+// "pub/a/a.unitypackage" names: compared raw, the damaged copy is left in place, Relocate
+// refuses the occupied destination, and the run re-downloads gigabytes it already has.
+func TestAGoodCopyDisplacesADamagedOneHoweverTheEntrySpellsIt(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		recorded func(derived string) string
+	}{
+		{"as derived", func(d string) string { return d }},
+		{"non-canonically", func(d string) string { return "./" + d }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, lockPath := newRun(t)
+			a := asset("1", "Quick Outline", "v1", 4000)
+			derived := cache.RelPath(a.PublisherSlug(), a.Slug())
 
-	derived, err := cache.Store(root, a.PublisherSlug(), a.Slug(), bytes.NewReader(good))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := derived.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	stray, err := cache.Store(root, "somewhere", "else-1", bytes.NewReader(good))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := stray.Commit(); err != nil {
-		t.Fatal(err)
-	}
+			// Right product and an intact descriptor, so the scan still sees a candidate;
+			// only the size fails against what the entry records.
+			damaged := place(t, root, a.PublisherSlug(), a.Slug(), pkg(t, "1", "v1", 3000))
+			// A good copy elsewhere in the library, as a rename would leave one.
+			stray := place(t, root, "elsewhere", "stray-1", pkg(t, "1", "v1", 4000))
 
-	// Truncating leaves the descriptor intact, so the scan still sees a candidate; only the
-	// recorded size no longer matches, which is what fails verification.
-	full := filepath.Join(root, filepath.FromSlash(derived.RelPath))
-	if err := os.Truncate(full, derived.Size-100); err != nil {
-		t.Fatal(err)
-	}
+			prior := lockfile.New()
+			e := tracked("1", a.Name, "v1", damaged)
+			e.SizeBytes = 4000 // does not match the damaged file, so verification fails
+			e.CachePath = tc.recorded(derived)
+			prior.Assets[a.Slug()] = e
 
-	prior := lockfile.New()
-	prior.Assets[a.Slug()] = lockfile.Entry{
-		AssetID: "1", Name: a.Name, Tracked: true,
-		ResolvedVersionID: "v1", DeliveredVersionID: "v1",
-		SizeBytes: derived.Size, SHA256: derived.SHA256, CachePath: derived.RelPath,
-		Version: lockfile.Version{ID: "v1"},
-	}
-
-	fs := &fakeStore{owned: []model.Asset{a}}
-	rep, err := Run(context.Background(), fs, prior, lockPath, opts(root, allSelected(a)))
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rep.Results[0].Err != nil {
-		t.Fatalf("adoption failed: %v", rep.Results[0].Err)
-	}
-	if rep.Results[0].Class != Adopted {
-		t.Fatalf("class = %v, want Adopted", rep.Results[0].Class)
-	}
-	if len(fs.fetched) != 0 {
-		t.Errorf("downloaded %v; a good copy was already on disk", fs.fetched)
-	}
-	if got := cache.VerifyDeep(root, derived.RelPath, stray.SHA256); !got {
-		t.Error("the derived path does not hold the good copy's bytes")
-	}
-	e, ok := rep.Lockfile.Assets[a.Slug()]
-	if !ok || e.CachePath != derived.RelPath || e.SHA256 != stray.SHA256 {
-		t.Errorf("lockfile records %+v, want the adopted copy at the derived path", e)
+			fs := &fakeStore{owned: []model.Asset{a}}
+			rep, err := Run(context.Background(), fs, prior, lockPath, opts(root, allSelected(a)))
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if rep.Results[0].Class != Adopted || rep.Results[0].Err != nil {
+				t.Fatalf("class = %v, err = %v; want Adopted with no error",
+					rep.Results[0].Class, rep.Results[0].Err)
+			}
+			if len(fs.fetched) != 0 {
+				t.Errorf("adoption fell through to a download of %v", fs.fetched)
+			}
+			if !cache.VerifyDeep(root, derived, stray.SHA256) {
+				t.Error("the derived path does not hold the good copy's bytes")
+			}
+			got := rep.Lockfile.Assets[a.Slug()]
+			if got.CachePath != derived || got.SHA256 != stray.SHA256 || got.SizeBytes != stray.Size {
+				t.Errorf("lockfile records %+v, want the adopted copy at the derived path", got)
+			}
+		})
 	}
 }
-
-// The candidate can already be at the derived path while the lockfile still points at the
-// old one — a run killed between the commit and the incremental save leaves exactly that.
-// Adoption then relocates nothing, so without an explicit removal the recorded copy is
-// orphaned: unreferenced by the new lockfile and named by nothing in the summary.
 func TestAdoptionRemovesTheEntrysOwnSupersededCopy(t *testing.T) {
 	root, lockPath := newRun(t)
 	a := asset("1", "New Name", "v1", 4000)
 	body := pkg(t, "1", "v1", 4000)
 
-	atDerived, err := cache.Store(root, a.PublisherSlug(), a.Slug(), bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := atDerived.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	stale, err := cache.Store(root, a.PublisherSlug(), "old-name-1", bytes.NewReader(body))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := stale.Commit(); err != nil {
-		t.Fatal(err)
-	}
+	atDerived := place(t, root, a.PublisherSlug(), a.Slug(), body)
+	stale := place(t, root, a.PublisherSlug(), "old-name-1", body)
 	// Truncated, so the recorded copy fails verification and adoption is what runs.
 	if err := os.Truncate(filepath.Join(root, filepath.FromSlash(stale.RelPath)), stale.Size-100); err != nil {
 		t.Fatal(err)
@@ -927,13 +983,7 @@ func TestARecordedPathSpelledDifferentlyIsNotTreatedAsASecondFile(t *testing.T) 
 	derived := cache.RelPath(a.PublisherSlug(), a.Slug())
 
 	old := pkg(t, "1", "v1", 500)
-	p, err := cache.Store(root, a.PublisherSlug(), a.Slug(), bytes.NewReader(old))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := p.Commit(); err != nil {
-		t.Fatal(err)
-	}
+	p := place(t, root, a.PublisherSlug(), a.Slug(), old)
 
 	prior := lockfile.New()
 	prior.Assets[a.Slug()] = lockfile.Entry{
@@ -967,65 +1017,6 @@ func TestARecordedPathSpelledDifferentlyIsNotTreatedAsASecondFile(t *testing.T) 
 	}
 }
 
-// The other half of the same comparison, and the half that never recovers. When the
-// recorded copy is damaged and a good one sits elsewhere, adoption has to remove the
-// damaged file before relocating onto it. Compared raw, a differently-spelled entry skips
-// that removal, Relocate refuses the occupied destination, nothing resolves, and every
-// later run repeats the refusal identically.
-func TestAdoptionClearsADamagedCopyWhateverTheEntryCallsIt(t *testing.T) {
-	root, lockPath := newRun(t)
-	a := asset("1", "Quick Outline", "v1", 4000)
-	derived := cache.RelPath(a.PublisherSlug(), a.Slug())
-
-	// A damaged file at the recorded path: right product, wrong bytes, wrong size.
-	damaged, err := cache.Store(root, a.PublisherSlug(), a.Slug(), bytes.NewReader(pkg(t, "1", "v1", 3000)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := damaged.Commit(); err != nil {
-		t.Fatal(err)
-	}
-	// A good copy somewhere else in the library, as a rename would leave one.
-	stray, err := cache.Store(root, "elsewhere", "stray-1", bytes.NewReader(pkg(t, "1", "v1", 4000)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := stray.Commit(); err != nil {
-		t.Fatal(err)
-	}
-
-	prior := lockfile.New()
-	prior.Assets[a.Slug()] = lockfile.Entry{
-		AssetID: "1", Name: a.Name, Tracked: true,
-		ResolvedVersionID: "v1", DeliveredVersionID: "v1",
-		SizeBytes: 4000, // does not match the damaged file, so verification fails
-		SHA256:    damaged.SHA256,
-		CachePath: "./" + derived,
-		Version:   lockfile.Version{ID: "v1"},
-	}
-
-	fs := &fakeStore{owned: []model.Asset{a}}
-	rep, err := Run(context.Background(), fs, prior, lockPath, opts(root, allSelected(a)))
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if rep.Results[0].Class != Adopted || rep.Results[0].Err != nil {
-		t.Fatalf("class = %v, err = %v; want Adopted with no error",
-			rep.Results[0].Class, rep.Results[0].Err)
-	}
-	if len(fs.fetched) != 0 {
-		t.Errorf("adoption fell through to a download of %v", fs.fetched)
-	}
-	e := rep.Lockfile.Assets[a.Slug()]
-	if e.CachePath != derived || e.SizeBytes != 4000 {
-		t.Errorf("entry = %q/%d, want %q/4000", e.CachePath, e.SizeBytes, derived)
-	}
-}
-
-// The lockfile is rewritten after every download, not only at the end, so a run that dies
-// at asset 90 of 100 keeps the 89 it already fetched. Both tests that look like they cover
-// this read the file after Run returns, and Run always reaches its final save, so deleting
-// the per-download write left the whole suite green.
 func TestEachDownloadIsPersistedBeforeTheNextOneStarts(t *testing.T) {
 	root, lockPath := newRun(t)
 	var owned []model.Asset

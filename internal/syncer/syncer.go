@@ -362,6 +362,19 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		sem  = make(chan struct{}, opts.Concurrency)
 		done = make([]Result, len(pending))
 	)
+	// persist records one resolved asset and rewrites the lockfile, both under mu.
+	// Persisting per download is what keeps a run that dies at asset 90 of 100 from
+	// discarding the 89 it already fetched, and the two steps are one critical section
+	// rather than two statements a later edit can separate: with the write outside the
+	// lock, two goroutines reach the rename in the order opposite to how they built their
+	// snapshots, and the older one wins — losing exactly the record this write exists to
+	// keep.
+	persist := func(assetID string, r resolution) error {
+		mu.Lock()
+		defer mu.Unlock()
+		resolutions[assetID] = r
+		return lockfile.Save(lockPath, build(owned, prior, resolutions, nil))
+	}
 	for i, res := range pending {
 		wg.Add(1)
 		go func(i int, res Result) {
@@ -408,16 +421,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 				if w := removeSuperseded(opts.LibraryRoot, priorPaths[res.Asset.ID], r.cachePath); w != "" {
 					res.Warning = strings.TrimSpace(res.Warning + " (" + w + ")")
 				}
-				mu.Lock()
-				resolutions[res.Asset.ID] = r
-				// Persisting per download is what keeps a run that dies at asset 90 of
-				// 100 from discarding the 89 it already fetched. The write stays inside
-				// the lock: released first, two goroutines can reach the rename in the
-				// order opposite to how they built their snapshots, and the older one
-				// wins — losing exactly the record this write exists to keep.
-				err := lockfile.Save(lockPath, build(owned, prior, resolutions, nil))
-				mu.Unlock()
-				if err != nil {
+				if err := persist(res.Asset.ID, r); err != nil {
 					res.Err = fmt.Errorf("persisting progress: %w", err)
 				}
 			}

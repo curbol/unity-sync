@@ -77,9 +77,8 @@ func TestTheWaysABrowserAddressesThisPageAreAccepted(t *testing.T) {
 	}{
 		{&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 8788},
 			[]string{"127.0.0.1:8788", "localhost:8788", "[::1]:8788"}},
-		// A wildcard bind has no one address to match, so loopback is what is accepted.
-		{&net.TCPAddr{IP: net.IPv4zero, Port: 8788},
-			[]string{"127.0.0.1:8788", "localhost:8788"}},
+		// A wildcard bind never reaches here: main refuses it, because Host alone cannot
+		// tell a loopback claim made on this machine from the same claim off the network.
 		// On the scheme's default port a browser sends no port at all.
 		{&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 80},
 			[]string{"127.0.0.1", "localhost"}},

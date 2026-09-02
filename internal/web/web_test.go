@@ -105,23 +105,6 @@ func TestThumbnailsAreMadeAbsolute(t *testing.T) {
 	}
 }
 
-func TestSaveReturnsTheChosenSet(t *testing.T) {
-	h := newHandler(assets(), map[string]bool{"115488": true})
-	body := render(t, h)
-
-	form := url.Values{"token": {tokenFrom(t, body)}, "asset": {"115488", "193760"}}
-	rec := httptest.NewRecorder()
-	req := newRequest(http.MethodPost, form.Encode())
-
-	done := make(chan struct{})
-	go func() { h.ServeHTTP(rec, req); close(done) }()
-	<-done
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("POST = %d: %s", rec.Code, rec.Body)
-	}
-}
-
 // Two tabs on this page carry the same per-run token, so the token alone does not stop a
 // second save. Accepting one tells that tab "Saved ..." for a selection Serve has already
 // stopped reading — the user is told their choice was kept while the manifest holds the

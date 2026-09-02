@@ -165,6 +165,9 @@ func run(args []string) (int, error) {
 	}
 
 	if cmd == "select" {
+		if err := checkLoopback(*addr); err != nil {
+			return 2, err
+		}
 		// Bound here rather than inside selectAssets: a port already in use is worth
 		// finding out about before a run spends a full enumeration discovering it.
 		ln, err := net.Listen("tcp", *addr)
@@ -177,6 +180,41 @@ func run(args []string) (int, error) {
 		return 0, nil
 	}
 	return syncOrStatus(ctx, client, cfg, manifestPath, lockPath, *only, *verify, cmd == "status" || *dryRun)
+}
+
+// checkLoopback refuses a select address that is not this machine's own.
+//
+// The page is the account's purchase history and it carries the token that spends the one
+// save the run accepts, so the handler checks each request's Host against the address it
+// bound. That check can only ever be as good as the address: a wildcard bind has no one
+// address to match, and Host is written by the client, so a request off the network
+// claiming "localhost" is indistinguishable from a browser on this machine. Naming a
+// specific non-loopback address is a deliberate exposure and stays allowed; a wildcard is
+// almost always someone reaching for a port number, which --addr 127.0.0.1:PORT gives.
+func checkLoopback(addr string) error {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("bad --addr %q: %w", addr, err)
+	}
+	if host == "localhost" {
+		return nil
+	}
+	if host == "" {
+		return fmt.Errorf("--addr %q binds every interface, which would serve your owned-asset "+
+			"list to anything that can reach this machine: name an address, e.g. 127.0.0.1%s",
+			addr, addr)
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip == nil {
+		// A hostname resolves at bind time, and whether it lands on loopback is not
+		// something this can answer without repeating the lookup the listener will do.
+		return fmt.Errorf("--addr %q must name an IP address or localhost", addr)
+	}
+	if ip.IsUnspecified() {
+		return fmt.Errorf("--addr %q binds every interface, which would serve your owned-asset "+
+			"list to anything that can reach this machine: name an address, e.g. 127.0.0.1", addr)
+	}
+	return nil
 }
 
 // resolveManifest finds the project manifest. Every command needs one except select,

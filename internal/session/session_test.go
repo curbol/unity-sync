@@ -92,3 +92,50 @@ func TestDiscoverPrefersSessionCurl(t *testing.T) {
 		t.Errorf("Discover = %q, want session.curl to win", got)
 	}
 }
+
+// Every spelling a real browser's "Copy as cURL" produces has to yield the same header.
+// The release ships Windows binaries and the README sends those users to DevTools, where
+// the copy is double-quoted — a form no other test in the tree exercises, so tightening
+// either regex would break every Windows paste with the suite green.
+func TestEveryCurlPasteSpellingYieldsTheSameHeader(t *testing.T) {
+	const cookie = "_csrf=stale; LS=the-credential; DS=abc"
+	for _, tc := range []struct{ name, body string }{
+		{"single-quoted", `curl 'https://assetstore.unity.com/' -H 'Cookie: ` + cookie + `'`},
+		// Windows: cmd and PowerShell both copy with double quotes.
+		{"double-quoted", `curl "https://assetstore.unity.com/" -H "Cookie: ` + cookie + `"`},
+		{"long-flag", `curl 'https://assetstore.unity.com/' --header 'Cookie: ` + cookie + `'`},
+		{"long-flag double-quoted", `curl "https://assetstore.unity.com/" --header "Cookie: ` + cookie + `"`},
+		// Chrome writes the header name lowercase.
+		{"lowercase header name", `curl 'https://assetstore.unity.com/' -H 'cookie: ` + cookie + `'`},
+		// curl.exe is what a Windows paste names, so the structural check cannot key on
+		// the literal "curl ".
+		{"curl.exe", `curl.exe "https://assetstore.unity.com/" -H "Cookie: ` + cookie + `"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, _, err := session.ResolveFrom(write(t, "session.curl", tc.body))
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if !strings.Contains(got, "LS=the-credential") {
+				t.Errorf("header %q lost the credential", got)
+			}
+			if !strings.Contains(got, "DS=abc") {
+				t.Errorf("header %q dropped an ordinary cookie", got)
+			}
+		})
+	}
+}
+
+// A paste that is a curl command but carries no Cookie header has to say so. Falling
+// through to the cookies.txt parser would report a parse failure about a format the file
+// is not in.
+func TestACurlPasteWithNoCookieHeaderSaysSo(t *testing.T) {
+	body := `curl 'https://assetstore.unity.com/' -H 'accept: application/json'`
+	_, _, err := session.ResolveFrom(write(t, "session.curl", body))
+	if err == nil {
+		t.Fatal("a curl paste with no Cookie header resolved")
+	}
+	if !strings.Contains(err.Error(), "Cookie") {
+		t.Errorf("error %q does not name the missing Cookie header", err)
+	}
+}

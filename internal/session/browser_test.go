@@ -488,6 +488,41 @@ func TestEveryPlatformKnowsTheSameBrowsers(t *testing.T) {
 			}
 		}
 	}
+
+	// On Ubuntu 22.04+ `apt install firefox` installs the snap, whose profiles live
+	// nowhere near ~/.mozilla. A list that names only the unsandboxed path answers "no
+	// session store found" on the most common Linux desktop there is.
+	linux := strings.Join(geckoRootsFor("linux", filepath.Join("home", "someone")), "\n")
+	for _, sandboxed := range []string{
+		filepath.FromSlash("snap/firefox/common/.mozilla/firefox"),
+		filepath.FromSlash(".var/app/org.mozilla.firefox/.mozilla/firefox"),
+	} {
+		if !strings.Contains(linux, sandboxed) {
+			t.Errorf("linux has no root under %s, so a sandboxed install reports no session", sandboxed)
+		}
+	}
+}
+
+// README.md offers a profile directory as the escape hatch for a browser the root list
+// does not know, which makes it the recovery route for exactly the case above. Every
+// other directory-valued case in this file passes a browser *root* holding profiles.ini
+// and reaches the store through profileDirs, so nothing else makes this branch fire.
+func TestANamedProfileDirectoryIsReadDirectly(t *testing.T) {
+	root := t.TempDir()
+	store := writeProfile(t, root, "p1", []storeCookie{
+		{Host: "assetstore.unity.com", Name: credentialCookie, Value: "from-the-named-profile"},
+	})
+
+	header, from, err := ResolveFrom(filepath.Join(root, "p1"))
+	if err != nil {
+		t.Fatalf("a profile directory named directly did not resolve: %v", err)
+	}
+	if from != store {
+		t.Errorf("from = %q, want the named profile's own store %q", from, store)
+	}
+	if !strings.Contains(header, credentialCookie+"=from-the-named-profile") {
+		t.Errorf("header %q did not come from the profile that was named", header)
+	}
 }
 
 // A real recovery.jsonlz4 is highly repetitive JSON, so its block is a chain of

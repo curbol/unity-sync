@@ -61,6 +61,18 @@ func geckoRootsFor(goos, home string) []string {
 			".waterfox",
 			".floorp", ".config/floorp",
 		}
+		// Sandboxed packagings put the profile somewhere else entirely, and on Ubuntu
+		// 22.04+ the snap is what `apt install firefox` gives you — so omitting these
+		// answers "no session store found" on a machine with a signed-in Firefox, for
+		// a browser the README promises by name.
+		rel = append(rel,
+			"snap/firefox/common/.mozilla/firefox",
+			".var/app/org.mozilla.firefox/.mozilla/firefox",
+			".var/app/app.zen_browser.zen/.zen",
+			".var/app/io.gitlab.librewolf-community/.librewolf",
+			".var/app/net.waterfox.waterfox/.waterfox",
+			".var/app/one.ablaze.floorp/.floorp",
+		)
 	}
 	roots := make([]string, 0, len(rel))
 	for _, r := range rel {
@@ -244,9 +256,10 @@ func searchedRoots(source string) []string {
 // they should be tried.
 //
 // A source is one of: the browser keyword, which sweeps every known Gecko root; a browser
-// root holding profiles.ini; a single profile directory; or a path straight to a session
-// store. Anything the caller names is tried first and alone, so pointing at a specific
-// profile never silently falls through to a different browser.
+// root holding profiles.ini; or a single profile directory. Anything the caller names is
+// tried first and alone, so pointing at a specific profile never silently falls through
+// to a different browser. A path to a regular file never reaches here: ResolveFrom
+// identifies a file by its contents instead.
 func storeCandidates(source string) []string {
 	if source == BrowserKeyword {
 		var out []string
@@ -254,9 +267,6 @@ func storeCandidates(source string) []string {
 			out = append(out, storesUnder(root)...)
 		}
 		return out
-	}
-	if fi, err := os.Stat(source); err == nil && !fi.IsDir() {
-		return []string{source}
 	}
 	return storesUnder(source)
 }

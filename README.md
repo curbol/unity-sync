@@ -108,6 +108,9 @@ the store's own answer in that case is an HTTP 500 that reads like a server faul
 A pasted session expires. When it does, re-copy it, or switch to `session_source =
 "browser"` and stop re-copying.
 
+`UNITY_SYNC_SESSION` sets the same thing from the environment, between `config.toml` and
+`--session` in precedence.
+
 ## Commands
 
 ```bash
@@ -119,7 +122,8 @@ unity-sync list     # print the current lockfile
 
 Useful flags: `--manifest <path>`, `--only <asset-slug-glob>`, `--library <dir>`,
 `--concurrency <n>`, `--verify`, `--dry-run` (makes `sync` behave like `status`),
-`--config <dir>`, `--session <file>`, `--addr <host:port>` (the `select` page's address).
+`--config <dir>`, `--session <file>`, `--addr <host:port>` (the `select` page's address;
+it must name an address on this machine, since the page lists everything the account owns).
 
 ## Selecting assets
 

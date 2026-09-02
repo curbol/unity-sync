@@ -89,13 +89,18 @@ each with a package doc comment stating its contract:
   names, so without this the asset fails on Windows and nowhere else.
 - **A recorded `cachePath` is compared with `cache.SamePath`, never `==`.** That file is
   committed and hand-editable, so two spellings name one file; comparing them raw makes a
-  run delete the package it just downloaded as a superseded copy.
+  run delete the package it just downloaded as a superseded copy. `cache.Canonical` works
+  in slash space and refuses a backslash or a colon: Windows' `filepath.Clean` lifts a
+  volume prefix out before resolving `..` and restores it after, so `Z:../../x` cleans to
+  itself and escapes the root on that platform alone.
 - **Nothing unverified reaches a real cache path.** `cache.Store` does not rename;
   `Commit` does, after the syncer's guards pass.
 - **A failed download fails its asset, not the run**, and a pulled asset does not make the
   run exit non-zero.
-- **The select page is served only to a browser on this machine.** Every request's `Host`
-  is checked against the bound address, before the render as well as before a save. The
+- **The select page is served only to a browser on this machine.** The bind address is
+  refused unless it names one address, because `Host` is client-supplied and a wildcard
+  bind has nothing to check it against. Every request's `Host` is then checked against the
+  bound address, before the render as well as before a save. The
   per-run token stops a blind cross-origin POST but not DNS rebinding, which the browser
   treats as same-origin *by name*: without the check, a page the user is already on could
   read the whole owned-asset list and spend the one save this page accepts, leaving the

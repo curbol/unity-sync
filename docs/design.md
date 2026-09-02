@@ -51,6 +51,11 @@ measured, 156 of 169 cookie hosts had no tab open anywhere in the session, and
 lasts as long as the browsing session. And the file is rewritten **periodically**, not on
 every cookie change, so it lags a sign-in by seconds.
 
+Profiles are looked for under each browser's own root and under the sandboxed layouts too
+— the snap that `apt install firefox` gives Ubuntu, and the Flatpak `~/.var/app` roots —
+since a list that names only the unsandboxed path reports "no session" on the most common
+Linux desktop there is.
+
 The supported sources are therefore a session store, a pasted curl command, and a
 `cookies.txt` export. Which one a path is gets decided by reading it: a session store is
 identified by its `mozLz40\0` magic, a curl paste by its structure. Chromium keeps session
@@ -233,9 +238,13 @@ accepted rather than overlooked. The alternative is trusting a delivered id no r
 vouches for, and the case it would cover — no lockfile, no prior entry — is exactly the one
 with no evidence to check it against.
 
-A path the lockfile records is compared canonically, never as a string. That file is
+A path the lockfile records is compared canonically, never as a string, and the whole
+comparison runs in slash space so it answers the same on every platform. That file is
 committed, hand-editable and read on other machines, so `./pub/a/a.unitypackage` has to be
-recognised as the file `pub/a/a.unitypackage` names. Treating two spellings as two files
+recognised as the file `pub/a/a.unitypackage` names — and a backslash or a drive letter is
+refused rather than interpreted, because `filepath.Clean` on Windows lifts a volume prefix
+out before it resolves `..` and puts it back afterwards, so `Z:../../x` cleans to itself
+and walks out of the root that a leading-`..` test would have caught anywhere else. Treating two spellings as two files
 makes a run delete the copy it just downloaded as though it were a superseded one, and
 leaves adoption unable to clear a damaged file off the destination it needs.
 
@@ -276,13 +285,19 @@ not.
 `select` serves the owned-asset list on loopback and takes one save back. Three things
 stand between that page and a curated manifest, and none of them is advisory.
 
-The page is served only to a browser on this machine, decided by checking each request's
-`Host` against the address it bound. The per-run token in the form stops a blind
-cross-origin POST, since a page on another origin cannot read it out of this one — but it
-does nothing against DNS rebinding, where a page the user is already on re-resolves its own
-name to a loopback address and the browser then treats it as same-origin *by name*. Its
-script could read the rendered list, which is the account's purchase history, and the token
-with it. So the check runs before the render, not only before the save.
+The page is served only to a browser on this machine, decided by two things together. The
+bind address is refused unless it names one address: a wildcard binds every interface, and
+`Host` is written by the client, so a request off the network claiming `localhost` is
+indistinguishable from a browser here. Naming a non-loopback address stays allowed, because
+that is a deliberate exposure rather than a reach for a port number.
+
+Given an address, each request's `Host` is checked against it. The per-run token in the
+form stops a blind cross-origin POST, since a page on another origin cannot read it out of
+this one — but it does nothing against DNS rebinding, where a page the user is already on
+re-resolves its own name to a loopback address and the browser then treats it as
+same-origin *by name*. Its script could read the rendered list, which is the account's
+purchase history, and the token with it. So the check runs before the render, not only
+before the save.
 
 The save is accepted exactly once, through a `sync.Once` rather than by assumption: two
 tabs carry the same per-run token, so without it the second POST is answered "Saved …" for
@@ -360,6 +375,10 @@ unattended and TLS to GitHub was otherwise the only thing vouching for the bytes
 attestation is a signed statement that the release workflow built that artifact from that
 commit, verifiable with `gh attestation verify <file> --repo curbol/unity-sync`. Publishing
 a checksum the updater did not check would have been worse than publishing nothing.
+
+Both publish the same way the lockfile is written — flush, then rename — because a rename
+is durable ahead of the data it publishes, and a crash inside the writeback window would
+otherwise leave a truncated binary on PATH.
 
 Neither the installer nor the updater installs bytes it has not recognised as a native
 binary. The zip reader already verifies each entry's CRC, so what the magic-byte check

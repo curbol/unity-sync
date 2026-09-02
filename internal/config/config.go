@@ -6,7 +6,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -102,7 +104,14 @@ func defaults() Config {
 func Load(dir string, f Flags) (Config, error) {
 	c := defaults()
 	path := filepath.Join(dir, "config.toml")
-	if _, err := os.Stat(path); err == nil {
+	// Only a genuinely absent file is skipped. A permission error, or a --config that
+	// named the file instead of the directory holding it, otherwise looks exactly like
+	// "no config here": library_path is dropped and the run mirrors tens of gigabytes
+	// into the default directory with no diagnostic, which is what the undecoded-key
+	// check below exists to prevent.
+	if _, err := os.Stat(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return Config{}, fmt.Errorf("%s: %w", path, err)
+	} else if err == nil {
 		var fc fileConfig
 		md, err := toml.DecodeFile(path, &fc)
 		if err != nil {

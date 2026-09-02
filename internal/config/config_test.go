@@ -222,3 +222,31 @@ func TestNoHomeAndNoXDGRefusesRatherThanPickingARelativeLibrary(t *testing.T) {
 		t.Errorf("LibraryPath = %q, want the flag's value", cfg.LibraryPath)
 	}
 }
+
+// A config.toml that exists but cannot be read must not look like one that is absent.
+// Load's own contract says a missing file is fine and an unreadable one is not, and the
+// difference is expensive: dropping the file silently loses library_path and mirrors tens
+// of gigabytes into the default directory with no diagnostic.
+func TestAnUnreadableConfigIsAnErrorRatherThanNoConfig(t *testing.T) {
+	dir := t.TempDir()
+	// --config pointed at the file rather than the directory holding it, which the flag's
+	// own help text ("user config dir") invites. Statting <file>/config.toml is ENOTDIR.
+	notADir := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(notADir, []byte("library_path = \"/mnt/big\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(notADir, config.Flags{LibraryPath: "/tmp/x"}); err == nil {
+		t.Error("Load treated an unreadable config dir as an absent config")
+	}
+
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0000 file regardless")
+	}
+	locked := t.TempDir()
+	if err := os.WriteFile(filepath.Join(locked, "config.toml"), []byte("concurrency = 4\n"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(locked, config.Flags{LibraryPath: "/tmp/x"}); err == nil {
+		t.Error("Load silently dropped a config.toml it had no permission to read")
+	}
+}

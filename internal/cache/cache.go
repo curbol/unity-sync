@@ -66,15 +66,27 @@ func safeSegment(kind, s string) error {
 // comparison. The lockfile is committed, hand-editable and travels between machines, so
 // "./pub/a/a.unitypackage" has to compare equal to the "pub/a/a.unitypackage" a run
 // derives; a caller that compares them raw decides two names for one file are two files.
+//
+// The whole check runs in slash space, so it answers identically on every platform. A
+// backslash and a colon are refused rather than interpreted: filepath.Clean strips a
+// Windows volume name before resolving "..", then puts it back, so "Z:../../x" cleans to
+// itself there and slips past a leading-".." test that catches it everywhere else. The
+// same committed value would then confine on the machine that wrote it and escape on the
+// machine that read it.
 func Canonical(rel string) (string, error) {
-	if rel == "" || path.IsAbs(rel) || filepath.IsAbs(rel) {
+	if rel == "" || strings.ContainsAny(rel, `\:`) {
 		return "", fmt.Errorf("unsafe cache path %q", rel)
 	}
-	clean := filepath.Clean(filepath.FromSlash(rel))
-	if clean == "." || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+	clean := path.Clean(rel)
+	if path.IsAbs(clean) || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") {
 		return "", fmt.Errorf("unsafe cache path %q", rel)
 	}
-	return filepath.ToSlash(clean), nil
+	for _, seg := range strings.Split(clean, "/") {
+		if model.ReservedSegment(seg) {
+			return "", fmt.Errorf("unsafe cache path %q: %q is a Windows device name", rel, seg)
+		}
+	}
+	return clean, nil
 }
 
 // SamePath reports whether two cache-relative paths name the same file. A value that
@@ -402,8 +414,16 @@ func pruneEmptyParents(root, dir string) {
 	// joins and cleans. A root of "./lib" or "lib/" would otherwise match nothing and
 	// silently prune nothing.
 	root = filepath.Clean(root)
+	// Clean strips a trailing separator from every path except a filesystem root, where
+	// it is part of the value. Appending one unconditionally would make the prefix "//"
+	// or `D:\\` for such a root, which nothing under it matches, so a library at the top
+	// of a drive would silently never prune.
+	prefix := root
+	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+		prefix += string(filepath.Separator)
+	}
 	for {
-		if dir == root || !strings.HasPrefix(dir, root+string(filepath.Separator)) {
+		if dir == root || !strings.HasPrefix(dir, prefix) {
 			return
 		}
 		entries, err := os.ReadDir(dir)

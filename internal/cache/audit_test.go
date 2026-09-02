@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -95,7 +97,18 @@ func TestUnsafePathsAreRefused(t *testing.T) {
 			t.Errorf("Store accepted asset slug %q", seg)
 		}
 	}
-	for _, rel := range []string{"", "/etc/passwd", "../escape.unitypackage", "a/../../escape"} {
+	// The Windows-shaped values matter on the platform this suite does not run on.
+	// filepath.Clean there strips a drive prefix before resolving "..", then restores it,
+	// so "Z:../../x" cleans to itself and a leading-".." test never sees the escape;
+	// resolve then joins it under the root and the ".." walk right back out. Canonical
+	// works in slash space precisely so these fail here too.
+	for _, rel := range []string{
+		"", "/etc/passwd", "../escape.unitypackage", "a/../../escape",
+		"Z:../../../../../Users/me/Documents/thesis.docx",
+		"C:../x",
+		`pub\a\a.unitypackage`,
+		"pub/con/a.unitypackage",
+	} {
 		if cache.Verify(root, rel, 1, "") {
 			t.Errorf("Verify accepted path %q", rel)
 		}
@@ -336,6 +349,37 @@ func TestDiscardUnwindsTheDirectoriesStoreCreated(t *testing.T) {
 		t.Errorf("pruning climbed past the library root: %v", err)
 	}
 }
+
+// The other half, and the one a real run hits: the body itself fails mid-transfer. A
+// stalled download is in the failure model, retry reopens a fresh temp for every attempt,
+// and a 23 GB package that strands its partial on each one leaves tens of gigabytes
+// behind until some later run's sweep clears the grace window.
+func TestStoreUnwindsWhenTheBodyFailsMidTransfer(t *testing.T) {
+	root := t.TempDir()
+	body := io.MultiReader(bytes.NewReader([]byte("first chunk")), errReader{})
+	if _, err := cache.Store(root, "pub", "asset", body); err == nil {
+		t.Fatal("Store accepted a body that failed mid-transfer")
+	}
+	for _, dir := range []string{filepath.Join(root, "pub", "asset"), filepath.Join(root, "pub")} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("%s survived a failed download", dir)
+		}
+	}
+	var temps int
+	filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() {
+			temps++
+		}
+		return nil
+	})
+	if temps != 0 {
+		t.Errorf("%d file(s) left under the root; the partial was not removed", temps)
+	}
+}
+
+type errReader struct{}
+
+func (errReader) Read([]byte) (int, error) { return 0, errors.New("the transfer stalled") }
 
 // Relocate is the only export that moves a real file to a caller-supplied destination, so
 // both ends have to be confined and not just the source. Asserting an error is not enough:

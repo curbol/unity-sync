@@ -238,3 +238,130 @@ func TestAnExpiredSessionLeavesTheCommittedFilesAlone(t *testing.T) {
 		})
 	}
 }
+
+// repoDir is captured before any test chdirs away from it, so the committed fixtures
+// stay reachable from a test running in a temporary working directory.
+var repoDir = func() string {
+	wd, err := os.Getwd()
+	if err != nil {
+		panic(err)
+	}
+	return wd
+}()
+
+// serveFixtures answers the bootstrap and then the enumeration from the committed
+// fixtures, so a command runs all the way through classification.
+func serveFixtures(t *testing.T) {
+	t.Helper()
+	pages := [][]byte{}
+	for _, name := range []string{"my_assets_p0.json", "my_assets_p1.json", "my_assets_p2.json"} {
+		// Absolute: isolate() chdirs into a scratch directory before this runs.
+		raw, err := os.ReadFile(filepath.Join(repoDir, "testdata", "store", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		pages = append(pages, raw)
+	}
+	var mu sync.Mutex
+	var served int
+	serveStore(t, func(w http.ResponseWriter, r *http.Request) {
+		if !strings.Contains(r.URL.Path, "graphql") {
+			w.Header().Set("Set-Cookie", "_csrf=issued")
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		mu.Lock()
+		page := served
+		served++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		if page < len(pages) {
+			w.Write(pages[page])
+			return
+		}
+		io.WriteString(w, `[{"data":{"searchMyAssets":{"total":0,"results":[]}}}]`)
+	})
+}
+
+// `status` is `sync` with DryRun, and that mapping is one expression in run(). Losing it
+// makes `unity-sync status` download packages and rewrite the lockfile — the opposite of
+// what the subcommand is for. Every other status test in this file stops at the session
+// or the bootstrap, so none of them reaches the gate.
+func TestStatusAndDryRunReachClassificationAndStillWriteNothing(t *testing.T) {
+	for _, args := range [][]string{{"status"}, {"sync", "--dry-run"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			wd := isolate(t)
+			capture(t)
+			serveFixtures(t)
+			lib := t.TempDir()
+			manifestPath := project(t, wd)
+
+			code, err := run(append(append([]string{}, args...),
+				"--session", sessionFile(t), "--library", lib))
+			if err != nil {
+				t.Fatalf("run %v: %v (exit %d)", args, err, code)
+			}
+
+			if _, err := os.Stat(manifest.LockPath(manifestPath)); !os.IsNotExist(err) {
+				t.Error("a read-only command wrote the lockfile")
+			}
+			entries, err := os.ReadDir(lib)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 0 {
+				t.Errorf("a read-only command wrote %d entries into the library", len(entries))
+			}
+			before, err := os.ReadFile(manifestPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(before), "115488") {
+				t.Error("a read-only command rewrote the manifest")
+			}
+		})
+	}
+}
+
+// A de-owned asset's bytes stay on disk, so the summary naming them is the only signal
+// the user gets that a package is now unreferenced. A manifest entry the account does not
+// own is the other half: silently ignoring it hides a typo'd id forever.
+func TestTheSummaryNamesDroppedAndUnknownAssets(t *testing.T) {
+	buf := &bytes.Buffer{}
+	printReport(buf, syncer.Report{
+		Owned: 1,
+		Removed: []lockfile.Entry{
+			{Name: "Old Pack", CachePath: "pub/old-pack-42/old-pack-42.unitypackage", SizeBytes: 4096},
+			{Name: "Never Mirrored"},
+		},
+		Unknown: []manifest.Entry{{ID: "404", Name: "Typo'd Entry"}},
+	}, false, "/lib")
+
+	out := buf.String()
+	for _, want := range []string{
+		"Old Pack", "pub/old-pack-42/old-pack-42.unitypackage", "4096", "left in place",
+		"Never Mirrored",
+		"404", "Typo'd Entry",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the summary does not name %q:\n%s", want, out)
+		}
+	}
+}
+
+// The select page is the account's purchase history and it carries the token that spends
+// the run's one save. Host is written by the client, so a wildcard bind cannot tell a
+// browser on this machine from anything that can route to it — the address is the only
+// real control, and it is checked before the listener opens.
+func TestSelectRefusesAnAddressThatIsNotThisMachine(t *testing.T) {
+	for _, addr := range []string{":8788", "0.0.0.0:8788", "[::]:8788"} {
+		if err := checkLoopback(addr); err == nil {
+			t.Errorf("--addr %q was accepted; the owned-asset list would be served to the network", addr)
+		}
+	}
+	for _, addr := range []string{"127.0.0.1:8788", "localhost:8788", "[::1]:0", "192.168.1.20:8788"} {
+		if err := checkLoopback(addr); err != nil {
+			t.Errorf("--addr %q was refused (%v); the page is unreachable this way", addr, err)
+		}
+	}
+}

@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -249,4 +250,44 @@ func TestAnUnreadableConfigIsAnErrorRatherThanNoConfig(t *testing.T) {
 	if _, err := config.Load(locked, config.Flags{LibraryPath: "/tmp/x"}); err == nil {
 		t.Error("Load silently dropped a config.toml it had no permission to read")
 	}
+}
+
+// The example is what a user copies, and Load refuses a key it cannot decode — so feeding
+// the file in is a real check that its keys still match the struct, where reading it is
+// not. Every commented-out setting is uncommented first, because those are the lines
+// copied.
+func TestTheExampleConfigStillParses(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "config.example.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), UncommentSettings(raw), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(dir, config.Flags{})
+	if err != nil {
+		t.Fatalf("config.example.toml no longer parses as a config.toml: %v", err)
+	}
+	// Every key the example names must have reached the struct, not merely decoded.
+	if cfg.SessionSource == "" || cfg.LibraryPath == "" || cfg.Concurrency == 0 {
+		t.Errorf("the example set a key Load did not carry through: %+v", cfg)
+	}
+}
+
+// settingLine matches a whole commented-out setting and not the prose around it, which in
+// these files often opens with a key name mid-sentence.
+var settingLine = regexp.MustCompile(`^[a-z_]+ *= *(".*"|[0-9]+|true|false)$`)
+
+// UncommentSettings strips the leading "#" from every line that is a commented-out
+// setting or table header, leaving explanatory comments in place.
+func UncommentSettings(raw []byte) []byte {
+	out := strings.Split(string(raw), "\n")
+	for i, line := range out {
+		body := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "#"))
+		if strings.HasPrefix(body, "[[") || settingLine.MatchString(body) {
+			out[i] = body
+		}
+	}
+	return []byte(strings.Join(out, "\n"))
 }

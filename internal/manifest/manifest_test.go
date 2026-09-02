@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -270,3 +271,39 @@ func TestSaveLeavesNoTempBehindWhenTheRenameFails(t *testing.T) {
 		}
 	}
 }
+
+// The example is what a user copies into unity-sync.toml, and Load refuses a key it
+// cannot decode — so feeding the file in checks that its keys still match Entry, where
+// reading it does not. The whole [[asset]] block is commented out in the example, so it
+// is uncommented first: those are exactly the lines a user uncomments.
+func TestTheExampleManifestStillParses(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "unity-sync.example.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := strings.Split(string(raw), "\n")
+	for i, line := range out {
+		body := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "#"))
+		if strings.HasPrefix(body, "[[") || settingLine.MatchString(body) {
+			out[i] = body
+		}
+	}
+	path := filepath.Join(t.TempDir(), "unity-sync.toml")
+	if err := os.WriteFile(path, []byte(strings.Join(out, "\n")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := manifest.Load(path)
+	if err != nil {
+		t.Fatalf("unity-sync.example.toml no longer parses as a manifest: %v", err)
+	}
+	if len(m.Assets) != 1 {
+		t.Fatalf("the example's [[asset]] block decoded to %d entries, want 1", len(m.Assets))
+	}
+	// Every field the example names must have reached Entry, not merely decoded.
+	if e := m.Assets[0]; e.ID == "" || e.Name == "" || !e.Enabled {
+		t.Errorf("the example set a field Load did not carry through: %+v", e)
+	}
+}
+
+// settingLine matches a whole commented-out setting and not the prose around it.
+var settingLine = regexp.MustCompile(`^[a-z_]+ *= *(".*"|[0-9]+|true|false)$`)

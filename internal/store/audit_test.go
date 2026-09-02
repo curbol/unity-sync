@@ -147,6 +147,14 @@ func TestClientSendsTheHeadersTheStoreNeeds(t *testing.T) {
 	if strings.Count(got.Get("Cookie"), "_csrf=") != 1 {
 		t.Errorf("Cookie %q has more than one _csrf", got.Get("Cookie"))
 	}
+	// The bootstrap rewrites the whole Cookie header to swap the token in, and this is
+	// the only assertion in the tree made on the far side of that rewrite. LS is the
+	// entire credential: dropping it turns every later call into a 500 with an empty
+	// GraphqlError, which this client reports as an expired session — so the user is
+	// told to re-copy a session that was never the problem.
+	if cookie := got.Get("Cookie"); !strings.Contains(cookie, "LS=cred") {
+		t.Errorf("Cookie %q lost the credential to the CSRF rewrite", cookie)
+	}
 	// Losing this field from the document would break every classification silently.
 	if !strings.Contains(body, `currentVersion { id name publishedDate }`) {
 		t.Error("the pinned query no longer requests currentVersion.id")
@@ -228,6 +236,48 @@ func TestSlowBodyIsAllowedButSlowHeadersAreNot(t *testing.T) {
 	}, store.WithResponseHeaderTimeout(50*time.Millisecond))
 	if _, err := slowHeaders.Fetch(context.Background(), "1"); err == nil {
 		t.Error("Fetch waited indefinitely for headers")
+	}
+}
+
+// The per-call deadline the API requests carry must never reach a download. It is
+// declared beside the stall timeout and applied to the other two request paths, so
+// extending it to the shared http.Client or to Fetch's own context reads as a
+// consistency fix — and kills every package that takes longer than it, mid-transfer, on
+// exactly the slow links the tool exists to survive. The deadline here is far shorter
+// than the transfer, so only a download that carries no whole-request bound completes.
+func TestADownloadCarriesNoWholeRequestDeadline(t *testing.T) {
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		for range 6 {
+			time.Sleep(30 * time.Millisecond)
+			io.WriteString(w, "chunk")
+			w.(http.Flusher).Flush()
+		}
+	}, store.WithRequestTimeout(50*time.Millisecond), store.WithStallTimeout(2*time.Second))
+
+	dl, err := c.Fetch(context.Background(), "1")
+	if err != nil {
+		t.Fatalf("Fetch: %v — the API deadline reached the download path", err)
+	}
+	body, err := io.ReadAll(dl.Body)
+	dl.Body.Close()
+	if err != nil {
+		t.Fatalf("a transfer longer than the API deadline was cut off: %v", err)
+	}
+	if len(body) != 30 {
+		t.Errorf("read %d bytes, want 30", len(body))
+	}
+}
+
+// The other half of the same rule, checked structurally because no test server can prove
+// the absence of a timeout that is hours long. Client.Timeout bounds headers and body
+// together and cannot be scoped to the API calls, so the only correct value is zero.
+func TestTheSharedClientCarriesNoTimeout(t *testing.T) {
+	if d := store.ClientTimeout(store.New("LS=x", "test")); d != 0 {
+		t.Errorf("http.Client.Timeout = %v, want 0: a whole-request bound on the shared "+
+			"client kills a multi-hour download that is transferring normally", d)
 	}
 }
 

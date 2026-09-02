@@ -88,6 +88,10 @@ check_executable() {
         cffaedfe*|cefaedfe*|cafebabe*) ;;
         *) err "the downloaded file is not a macOS executable"; exit 1 ;;
       esac ;;
+    # No silent fall-through. detect_platform refuses an OS this does not build for, so
+    # reaching here means a platform was added there and not here — and the check before
+    # the rename would then pass on anything at all.
+    *) err "no executable signature is known for $(uname -s)"; exit 1 ;;
   esac
 }
 
@@ -115,6 +119,11 @@ install() {
   # Set, not `chmod +x`: mktemp makes the file 0600, so adding the execute bits alone
   # would install 0711 and strip read access from group and other.
   chmod 0755 "$STAGED"
+  # Flushed before the rename, the way selfupdate.Replace does it. The rename is durable
+  # ahead of the data it publishes, so a crash inside the writeback window leaves a
+  # truncated binary on PATH — and the smoke test below has already run by then. macOS's
+  # sync takes no operand, hence the fallback.
+  sync "$STAGED" 2>/dev/null || sync
   mv -f "$STAGED" "${INSTALL_DIR}/${BINARY_NAME}"
   STAGED=""
   log "installed to ${INSTALL_DIR}/${BINARY_NAME}"

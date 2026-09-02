@@ -100,10 +100,7 @@ func stubRelease(t *testing.T, asset []byte) *httptest.Server {
 }
 
 // runInstaller runs install.sh with a throwaway HOME and no credential in the
-// environment. Any token the caller does supply is checked against the output: the
-// installer passes it through a curl config on stdin precisely so it stays out of
-// anything another local user can read, and that is worth holding here rather than
-// trusting to whichever test remembers.
+// environment, so the gh fallback on a developer machine cannot decide what it finds.
 func runInstaller(t *testing.T, home string, env ...string) (string, error) {
 	t.Helper()
 	requireShell(t)
@@ -119,19 +116,54 @@ func runInstaller(t *testing.T, home string, env ...string) (string, error) {
 		"GITHUB_TOKEN=", "GH_TOKEN=",
 	}, env...)
 	raw, err := cmd.CombinedOutput()
-	out := string(raw)
-	for _, e := range env {
-		for _, key := range []string{"GITHUB_TOKEN=", "GH_TOKEN="} {
-			token, ok := strings.CutPrefix(e, key)
-			if !ok || token == "" {
-				continue
-			}
-			if strings.Contains(out, token) {
-				t.Errorf("the installer put %s in its output:\n%s", strings.TrimSuffix(key, "="), out)
-			}
-		}
+	return string(raw), err
+}
+
+// curlStub puts a curl on PATH that records its arguments and its stdin separately, then
+// fails, so the installer stops at its first fetch.
+const curlStub = `#!/bin/sh
+echo "$@" >> ARGV_PATH
+cat >> STDIN_PATH
+exit 22
+`
+
+// A credential on a command line is readable out of `ps` by every other local user, so
+// the installer writes it into a curl config on stdin instead. Nothing about that shows
+// up in the script's own output — curl -s prints nothing either way — so the only way to
+// hold it is to be curl and look at which channel the token arrived on. Rewriting fetch()
+// to pass -H "Authorization: token $token" leaves every other test in this file green.
+func TestTheGitHubTokenNeverReachesACommandLine(t *testing.T) {
+	requireShell(t)
+	const sentinel = "ghp-sentinel-not-in-ps"
+
+	dir := t.TempDir()
+	argvPath := filepath.Join(dir, "argv")
+	stdinPath := filepath.Join(dir, "stdin")
+	stub := strings.NewReplacer("ARGV_PATH", argvPath, "STDIN_PATH", stdinPath).Replace(curlStub)
+	if err := os.WriteFile(filepath.Join(dir, "curl"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	return out, err
+
+	cmd := exec.Command("bash", "install.sh")
+	cmd.Env = []string{
+		"HOME=" + t.TempDir(),
+		"PATH=" + dir + ":/usr/bin:/bin",
+		"GITHUB_TOKEN=" + sentinel,
+	}
+	cmd.CombinedOutput() // fails at the first fetch by design: the stub exits 22
+
+	argv, err := os.ReadFile(argvPath)
+	if err != nil {
+		t.Fatalf("the installer never invoked curl, so nothing was observed: %v", err)
+	}
+	if strings.Contains(string(argv), sentinel) {
+		t.Errorf("the token reached curl's argv, where any local user can read it out of ps:\n%s", argv)
+	}
+	body, err := os.ReadFile(stdinPath)
+	if err != nil || !strings.Contains(string(body), sentinel) {
+		t.Errorf("the token did not reach curl over stdin, so this test is not watching the "+
+			"channel it claims: stdin=%q err=%v", body, err)
+	}
 }
 
 // The ordinary no-credential case must say what went wrong. Every version lookup here

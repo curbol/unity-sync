@@ -171,6 +171,16 @@ func TestPlatformAssetNamesMatchWhatTheReleaseWorkflowPublishes(t *testing.T) {
 				"cannot name", goos, goarch, err)
 			continue
 		}
+		// The magic-byte check is what stops a release that shipped an error page from
+		// being renamed over a working binary, and an unknown GOOS is let through by
+		// design so an unlisted platform stays updatable. That fail-open is only safe
+		// while every platform the release actually builds has a signature: adding one to
+		// the workflow without one here turns the last guard before the rename into a
+		// no-op, on that platform alone, invisibly.
+		if _, known := selfupdate.ExecutableMagicFor(goos); !known {
+			t.Errorf("release.yml builds %s but executableMagic has no signature for it, so "+
+				"checkExecutable would accept anything there", goos)
+		}
 		if want := "unity-sync-1.2.3-" + label + ".zip"; got != want {
 			t.Errorf("PlatformAsset(%s, %s) = %q, want %q", goos, goarch, got, want)
 		}

@@ -55,7 +55,7 @@ func New(apiBase, token string) *Client {
 // It is opportunistic: the releases this reads are public, and an empty token means the
 // requests go out unauthenticated, which works. What a token buys is GitHub's authenticated
 // rate limit, 5000 requests an hour against 60 for an anonymous address.
-func Token(ctx context.Context) string {
+func token(ctx context.Context) string {
 	for _, k := range []string{"GITHUB_TOKEN", "GH_TOKEN"} {
 		if v := os.Getenv(k); v != "" {
 			return v
@@ -332,7 +332,7 @@ func Run(ctx context.Context, current, version string) error {
 	if self, err = filepath.EvalSymlinks(self); err != nil {
 		return err
 	}
-	return update(ctx, New("", Token(ctx)), current, version, self)
+	return update(ctx, New("", token(ctx)), current, version, self)
 }
 
 // update is Run with the client and the binary it replaces supplied, which is the only

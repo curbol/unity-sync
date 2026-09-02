@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/curbol/unity-sync/internal/fixtures"
+	"github.com/curbol/unity-sync/internal/store"
 )
 
 const oneRowCapture = `[{"data":{"searchMyAssets":{"total":1,"results":[
@@ -129,5 +130,53 @@ func TestScrubRefusesAResultRowThatIsNotAnObject(t *testing.T) {
 	bad := `[{"data":{"searchMyAssets":{"total":1,"results":["not an object"]}}}]`
 	if _, err := fixtures.Scrub([]byte(bad)); err == nil {
 		t.Error("Scrub accepted a result row that is not an object")
+	}
+}
+
+// The projection has to reach the whole operation, not just the rows. A capture can carry
+// an errors or extensions array beside data — the client parses exactly that shape — or a
+// second root field beside searchMyAssets when the capture came from the storefront's own
+// wider query. Those sit above the row projection, so nothing else in the scrub looks at
+// them, and whatever they hold is committed verbatim.
+func TestScrubDropsWhatSitsBesideTheRowsToo(t *testing.T) {
+	raw := []byte(`[{
+	  "data": {
+	    "searchMyAssets": {"total": 1, "results": []},
+	    "purchaseSummary": {"invoiceEmail": "someone@example.com", "orgId": "4242"}
+	  },
+	  "extensions": {"traceId": "abc-123"},
+	  "errors": []
+	}]`)
+
+	out, err := fixtures.Scrub(raw)
+	if err != nil {
+		t.Fatalf("Scrub: %v", err)
+	}
+	for _, gone := range []string{"purchaseSummary", "invoiceEmail", "example.com", "4242", "extensions", "traceId"} {
+		if strings.Contains(string(out), gone) {
+			t.Errorf("scrubbed output still carries %q:\n%s", gone, out)
+		}
+	}
+	if !strings.Contains(string(out), "searchMyAssets") {
+		t.Errorf("the scrub dropped the payload it exists to keep:\n%s", out)
+	}
+}
+
+// The parser turns anything it does not recognise into a leaf, and prune keeps a leaf's
+// value whole — so an unhandled construct in the pinned query widens the scrub instead of
+// narrowing it. It has to refuse rather than guess.
+func TestTheQueryParserRefusesConstructsItCannotProject(t *testing.T) {
+	for _, doc := range []string{
+		`query Q { searchMyAssets { mainImage @include(if: $x) { icon75 } } }`,
+		`query Q { searchMyAssets { icon: icon75 } }`,
+		`query Q { searchMyAssets { ...rowFields } }`,
+	} {
+		if _, err := fixtures.ParseSelectionSets(doc); err == nil {
+			t.Errorf("the parser accepted %q; every field under it would be kept whole", doc)
+		}
+	}
+	// The document actually in use still parses, or the check above is vacuous.
+	if _, err := fixtures.ParseSelectionSets(store.SearchDocument); err != nil {
+		t.Errorf("the pinned query no longer parses: %v", err)
 	}
 }

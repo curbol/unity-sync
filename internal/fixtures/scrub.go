@@ -36,7 +36,10 @@ var searchFields = sync.OnceValues(func() (fieldTree, error) {
 	if !ok || len(sel) == 0 {
 		return nil, fmt.Errorf("the pinned query has no searchMyAssets selection set")
 	}
-	return sel, nil
+	// The whole operation is pruned, not just the rows: a capture can carry a second root
+	// field beside searchMyAssets, or an errors/extensions array beside data, and those
+	// sit above the row projection where nothing else would look at them.
+	return fieldTree{"data": root}, nil
 })
 
 // Scrub rewrites one captured `searchMyAssets` batch response into fixture form,
@@ -56,11 +59,10 @@ func Scrub(raw []byte) ([]byte, error) {
 		return nil, fmt.Errorf("capture holds no operations")
 	}
 	for _, op := range batch {
-		search, err := searchObject(op)
-		if err != nil {
+		if _, err := searchObject(op); err != nil {
 			return nil, err
 		}
-		prune(search, allowed)
+		prune(op, allowed)
 	}
 	var out bytes.Buffer
 	enc := json.NewEncoder(&out)
@@ -148,6 +150,13 @@ func parseSet(toks []string, i int) (fieldTree, int, error) {
 			return set, i + 1, nil
 		case "{":
 			return nil, 0, fmt.Errorf("selection set with no field before it")
+		case "@", ":", ".":
+			// Refused, not skipped. Each of these changes which response key a field
+			// answers to, and guessing wrong here widens what reaches a committed
+			// fixture. Teach this parser the construct before using it in the query.
+			return nil, 0, fmt.Errorf("the pinned query uses %q, which this parser does not "+
+				"understand; a directive, alias or fragment must be handled explicitly "+
+				"before it can appear in a document the scrub projects from", toks[i])
 		}
 		name := toks[i]
 		i++
@@ -189,6 +198,13 @@ func tokenize(doc string) []string {
 			out = append(out, string(r))
 		case unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_':
 			word.WriteRune(r)
+		// Emitted rather than dropped as whitespace. A directive, an alias or a fragment
+		// spread would otherwise leave the field before it looking like a leaf, and a
+		// leaf's value is kept whole — so the scrub would silently widen, which is the
+		// one direction a scrubber must never fail in.
+		case r == '@' || r == ':' || r == '.':
+			flush()
+			out = append(out, string(r))
 		default:
 			flush()
 		}

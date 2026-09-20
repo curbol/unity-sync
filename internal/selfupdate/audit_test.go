@@ -1,6 +1,7 @@
 package selfupdate_test
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -441,5 +442,74 @@ func TestTheGitHubTokenNeverReachesTheRedirectTarget(t *testing.T) {
 	}
 	if cdnAuth != "" {
 		t.Errorf("the GitHub token reached the redirect target: %q", cdnAuth)
+	}
+}
+
+// Both CLAUDE.md and docs/design.md rest the magic-byte argument on "the zip reader has
+// already verified each entry's CRC, so what this catches is the *other* failure". That is
+// true today only because io.ReadAll happens to drain the entry to EOF, which is where
+// archive/zip's checksumReader compares the digest. It is not a property anything asserts.
+//
+// Bounding the read by the declared size instead, switching to OpenRaw to avoid
+// decompressing twice, or breaking early at the ceiling are each a plausible edit, each
+// compiles, and each silently removes CRC verification — after which a bit-flipped release
+// asset whose first bytes are still a valid signature is renamed over the working binary.
+func TestAnAssetWhoseCRCDoesNotMatchIsRefusedBeforeTheSwap(t *testing.T) {
+	if _, known := selfupdate.ExecutableMagicFor(runtime.GOOS); !known {
+		t.Skipf("no executable signature is checked on %s", runtime.GOOS)
+	}
+	// Stored rather than deflated, so a byte can be flipped in the archive without
+	// disturbing anything but the payload and its checksum. The flip lands past the magic
+	// so the signature check still passes and the CRC is the only thing left to catch it.
+	good := nativeBinary(t, "the new build")
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	w, err := zw.CreateHeader(&zip.FileHeader{Name: "unity-sync", Method: zip.Store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write([]byte(good)); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	archive := buf.Bytes()
+	at := bytes.Index(archive, []byte("the new build"))
+	if at < 0 {
+		t.Fatal("stored entry not found in the archive; the payload was compressed after all")
+	}
+	archive[at] ^= 0xff
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/releases/latest") {
+			asset, err := selfupdate.PlatformAssetFor(runtime.GOOS, runtime.GOARCH, "9.9.9")
+			if err != nil {
+				t.Errorf("PlatformAsset: %v", err)
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"tag_name": "v9.9.9",
+				"assets":   []any{map[string]any{"name": asset, "url": "http://" + r.Host + "/asset"}},
+			})
+			return
+		}
+		w.Write(archive)
+	}))
+	defer srv.Close()
+
+	target := filepath.Join(t.TempDir(), "unity-sync")
+	working := nativeBinary(t, "the working one")
+	if err := os.WriteFile(target, []byte(working), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := selfupdate.Update(context.Background(), io.Discard, selfupdate.New(srv.URL, ""), "0.1.0", "", target); err == nil {
+		t.Error("an asset whose CRC does not match installed successfully")
+	}
+	got, readErr := os.ReadFile(target)
+	if readErr != nil {
+		t.Fatalf("the working binary is gone after a refused update: %v", readErr)
+	}
+	if string(got) != working {
+		t.Errorf("the working binary was replaced by corrupt bytes: %q", got)
 	}
 }

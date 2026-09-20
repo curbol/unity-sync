@@ -126,6 +126,30 @@ func classify(a model.Asset, prior lockfile.Entry, hasPrior bool, cacheOK, adopt
 	return Unchanged
 }
 
+// priorEntry is a prior lockfile entry together with the key it was filed under. The two
+// travel as a pair because a rename re-keys an entry, so the key is not derivable from the
+// entry: carrying a resolution forward means carrying its key forward with it, or the key
+// and the cachePath drift apart between runs.
+type priorEntry struct {
+	key   string
+	entry lockfile.Entry
+}
+
+// indexByAssetID indexes a lockfile by product id, which is the identity classification
+// uses. Built once per run and shared: FindByAssetID walks the whole map, the
+// classification loop needs one lookup per owned asset, and the pool rebuilds the lockfile
+// after every download inside the critical section — so a three-thousand-asset account
+// otherwise paid full map walks per asset per save. One index also means one lookup decides
+// both the entry and its key, which two separate walks over a hand-merged duplicate could
+// answer differently.
+func indexByAssetID(lf lockfile.Lockfile) map[string]priorEntry {
+	index := make(map[string]priorEntry, len(lf.Assets))
+	for k, e := range lf.Assets {
+		index[e.AssetID] = priorEntry{key: k, entry: e}
+	}
+	return index
+}
+
 // Store is the part of the Asset Store client a run needs.
 type Store interface {
 	Enumerate(ctx context.Context) ([]model.Asset, error)
@@ -251,6 +275,10 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		}
 	}
 
+	// One index for the whole run: the classification loop below and every build() the
+	// pool triggers read it, and it is never written after this point.
+	priorByID := indexByAssetID(prior)
+
 	resolutions := map[string]lockfile.Resolution{}
 	// priorPaths remembers where each asset's bytes used to live, so a download that lands
 	// somewhere else can clean up after itself.
@@ -273,7 +301,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		mu.Lock()
 		defer mu.Unlock()
 		resolutions[assetID] = r
-		return lockfile.Save(lockPath, build(owned, prior, resolutions, nil))
+		return lockfile.Save(lockPath, build(owned, prior, priorByID, resolutions, nil))
 	}
 
 	// One scan of the library serves every adopt probe below, built on first use and only
@@ -311,7 +339,8 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		if !selected(a, opts) {
 			continue
 		}
-		_, prev, hasPrev := prior.FindByAssetID(a.ID)
+		recorded, hasPrev := priorByID[a.ID]
+		prev := recorded.entry
 		derived := cache.RelPath(a.PublisherSlug(), a.Slug())
 
 		// Memoized: classify calls this, and so does the excludeRel decision below. Under
@@ -405,7 +434,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 
 	if opts.DryRun {
 		report.Results = append(report.Results, pending...)
-		report.Lockfile = build(owned, prior, resolutions, &report)
+		report.Lockfile = build(owned, prior, priorByID, resolutions, &report)
 		return report, nil
 	}
 
@@ -490,7 +519,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		report.Results = append(report.Results, res)
 	}
 
-	report.Lockfile = build(owned, prior, resolutions, &report)
+	report.Lockfile = build(owned, prior, priorByID, resolutions, &report)
 	if err := lockfile.Save(lockPath, report.Lockfile); err != nil {
 		return report, err
 	}
@@ -676,23 +705,12 @@ func republished(ctx context.Context, s Store, a model.Asset) bool {
 
 // build produces the new lockfile: every owned asset gets an entry, advertised fields are
 // refreshed, and any resolution this run did not touch is carried forward verbatim.
-func build(owned []model.Asset, prior lockfile.Lockfile, resolutions map[string]lockfile.Resolution,
-	report *Report) lockfile.Lockfile {
+// prior is still needed alongside index for the Removed pass, which walks entries by key
+// rather than by id.
+func build(owned []model.Asset, prior lockfile.Lockfile, index map[string]priorEntry,
+	resolutions map[string]lockfile.Resolution, report *Report) lockfile.Lockfile {
 
 	out := lockfile.New()
-	// Indexed once. FindByAssetID walks the whole map, this called it twice per owned
-	// asset, and the pool rebuilds the lockfile after every single download — so a
-	// three-thousand-asset account paid two full map walks per asset per save, inside the
-	// critical section. Indexing also means one lookup decides both the entry and its
-	// key, which two separate walks over a hand-merged duplicate could answer differently.
-	type priorEntry struct {
-		key   string
-		entry lockfile.Entry
-	}
-	index := make(map[string]priorEntry, len(prior.Assets))
-	for k, e := range prior.Assets {
-		index[e.AssetID] = priorEntry{key: k, entry: e}
-	}
 	kept := map[string]bool{}
 
 	for _, a := range owned {

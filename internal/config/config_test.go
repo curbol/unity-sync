@@ -266,6 +266,7 @@ func TestAnUnreadableConfigIsAnErrorRatherThanNoConfig(t *testing.T) {
 // not. Every commented-out setting is uncommented first, because those are the lines
 // copied.
 func TestTheExampleConfigStillParses(t *testing.T) {
+	isolate(t)
 	raw, err := os.ReadFile(filepath.Join("..", "..", "config.example.toml"))
 	if err != nil {
 		t.Fatal(err)
@@ -278,9 +279,29 @@ func TestTheExampleConfigStillParses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config.example.toml no longer parses as a config.toml: %v", err)
 	}
-	// Every key the example names must have reached the struct, not merely decoded.
-	if cfg.SessionSource == "" || cfg.LibraryPath == "" || cfg.Concurrency == 0 {
-		t.Errorf("the example set a key Load did not carry through: %+v", cfg)
+	// Every key the example names must have reached the struct, compared against the
+	// values the example actually sets.
+	//
+	// It used to assert only that the three fields were non-empty, which two of them
+	// cannot be: Load fills LibraryPath from defaultLibraryPath and Concurrency from
+	// defaults(). The third was satisfiable by a stray UNITY_SYNC_SESSION in the
+	// environment, hence isolate(t) above. So if settingLine ever stopped matching — a
+	// value wrapped over two lines, a setting moved under a table header — Load would be
+	// handed a file with no settings in it, every assertion would still pass, and the
+	// example would have silently stopped being checked at all.
+	if cfg.Concurrency != 2 {
+		t.Errorf("concurrency = %d, want the 2 the example sets", cfg.Concurrency)
+	}
+	if cfg.LibraryPath != "/path/to/your/unity-library" {
+		t.Errorf("library_path = %q, want the path the example sets", cfg.LibraryPath)
+	}
+	// The example writes a ~-prefixed path, and expandHome resolves it against the home
+	// directory, so the suffix is the stable half.
+	if !strings.HasSuffix(cfg.SessionSource, filepath.Join("unity-sync", "session.curl")) {
+		t.Errorf("session_source = %q, want the session.curl path the example sets", cfg.SessionSource)
+	}
+	if strings.HasPrefix(cfg.SessionSource, "~") {
+		t.Errorf("session_source = %q was not expanded; a literal ~ names no directory", cfg.SessionSource)
 	}
 }
 

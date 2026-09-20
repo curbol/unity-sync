@@ -202,6 +202,28 @@ func TestClassifyCoversEveryClass(t *testing.T) {
 		{"disabled but already mirrored stays usable",
 			model.Asset{ID: "1", State: model.StateDisabled, Version: model.Version{ID: "v2"}},
 			tracked, true, yes, no, Unchanged},
+
+		// The delisted branch had two of its seven reachable cells covered, and it is the
+		// one class where a download can never make up the difference: the store answers
+		// 404, so the scan is the only way back to bytes the user already has. The order
+		// inside it — the mirrored copy first, the scan second, unavailable last — is what
+		// decides whether a delisted asset is adopted or the user is sent looking for a
+		// package that is already in their library.
+		{"disabled, mirrored copy damaged, a good one elsewhere",
+			model.Asset{ID: "1", State: model.StateDisabled, Version: model.Version{ID: "v2"}},
+			tracked, true, no, yes, Adopted},
+		{"disabled, mirrored copy damaged and nothing to adopt",
+			model.Asset{ID: "1", State: model.StateDisabled, Version: model.Version{ID: "v2"}},
+			tracked, true, no, no, Undownloadable},
+		{"disabled, recorded but never mirrored, a copy on disk",
+			model.Asset{ID: "1", State: model.StateDisabled, Version: model.Version{ID: "v2"}},
+			lockfile.Entry{Resolution: lockfile.Resolution{Tracked: false}}, true, no, yes, Adopted},
+		{"disabled, recorded but never mirrored, nothing on disk",
+			model.Asset{ID: "1", State: model.StateDisabled, Version: model.Version{ID: "v2"}},
+			lockfile.Entry{Resolution: lockfile.Resolution{Tracked: false}}, true, no, no, Undownloadable},
+		{"disabled with no record at all but a copy on disk",
+			model.Asset{ID: "1", State: model.StateDisabled, Version: model.Version{ID: "v2"}},
+			lockfile.Entry{}, false, no, yes, Adopted},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

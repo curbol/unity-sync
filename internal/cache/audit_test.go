@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/curbol/unity-sync/internal/cache"
+	"github.com/curbol/unity-sync/internal/model"
 )
 
 // Failure models this package must keep pinned. Every case is a way the cache could record
@@ -882,5 +883,62 @@ func TestPruningNeverRemovesALinkTheUserPut(t *testing.T) {
 	}
 	if _, err := os.Lstat(link); err != nil {
 		t.Fatalf("the user's symlink was removed: %v", err)
+	}
+}
+
+// Invariant 15 spans two packages: model promises a slug that is always one usable
+// segment, and cache.safeSegment plus Canonical enforce it. Both halves are well tested
+// in isolation, and the cache side uses hand-written strings — so nothing runs a real
+// model.Asset through PublisherSlug()/Slug() into Store, and the seam between the promise
+// and the enforcement is unwatched.
+//
+// What that misses: slugify currently emits only [a-z0-9-] with the ends trimmed, which
+// is exactly why safeSegment's leading-dot and control-character rules and Canonical's
+// colon rule are unreachable from real input. Widen the character class at all — keep dots
+// or underscores, transliterate rather than fold — and a name derives a segment Store
+// refuses, which fails that one asset on every run with "unsafe asset slug" and nothing
+// linking it back to the slug change. Both packages' suites stay green.
+func TestEverySlugModelDerivesIsOneCacheWillAccept(t *testing.T) {
+	for _, a := range []model.Asset{
+		{ID: "1", Name: "Quick Outline", Publisher: model.Publisher{ID: "37073", Name: "Chris Nolet"}},
+		{ID: "2", Name: "日本語のアセット", Publisher: model.Publisher{ID: "1", Name: "パブリッシャー"}},
+		{ID: "3", Name: "...", Publisher: model.Publisher{ID: "2", Name: "..."}},
+		{ID: "4", Name: "../../etc/passwd", Publisher: model.Publisher{ID: "3", Name: "../.."}},
+		{ID: "5", Name: `a\b:c/d`, Publisher: model.Publisher{ID: "4", Name: `x:\y`}},
+		{ID: "6", Name: "con", Publisher: model.Publisher{ID: "5", Name: "con"}},
+		{ID: "7", Name: "aux.txt", Publisher: model.Publisher{ID: "6", Name: "COM1"}},
+		{ID: "8", Name: "  ", Publisher: model.Publisher{ID: "7", Name: ""}},
+		{ID: "9", Name: "-", Publisher: model.Publisher{ID: "8", Name: "----"}},
+		{ID: "10", Name: "a\x00b", Publisher: model.Publisher{ID: "9", Name: "tab\there"}},
+		{ID: "11", Name: "emoji 🎮 pack", Publisher: model.Publisher{ID: "10", Name: "🎨"}},
+		{ID: "12", Name: "trailing.", Publisher: model.Publisher{ID: "11", Name: "trailing."}},
+	} {
+		t.Run(a.ID, func(t *testing.T) {
+			root := t.TempDir()
+			pub, slug := a.PublisherSlug(), a.Slug()
+			p, err := cache.Store(root, pub, slug, bytes.NewReader(pkg(t, a.ID, "v1", 400)))
+			if err != nil {
+				t.Fatalf("cache refuses the slugs model derived for %q / %q: pub=%q slug=%q: %v",
+					a.Publisher.Name, a.Name, pub, slug, err)
+			}
+			if err := p.Commit(); err != nil {
+				t.Fatalf("Commit: %v", err)
+			}
+			// Three segments deep, because quarry fills its pack facet only when a path
+			// has at least three parts.
+			parts := strings.Split(p.RelPath, "/")
+			if len(parts) != 3 {
+				t.Errorf("RelPath %q is %d segments, want 3", p.RelPath, len(parts))
+			}
+			for _, seg := range parts {
+				if seg == "" {
+					t.Errorf("RelPath %q has an empty segment", p.RelPath)
+				}
+			}
+			// And what was written has to be readable back through the same gate.
+			if !cache.Verify(root, p.RelPath, p.Size, "v1") {
+				t.Errorf("Verify refuses the path Store just wrote: %q", p.RelPath)
+			}
+		})
 	}
 }

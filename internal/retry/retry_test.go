@@ -154,3 +154,50 @@ func TestPermanentDoesNotWrapWhatIsAlreadyPermanent(t *testing.T) {
 		t.Errorf("Do returned %#v, want the sentinel itself so a caller can compare it", err)
 	}
 }
+
+// Attempts is normalised and Base was not, which is the shape that catches a caller out:
+// retry.Policy{Attempts: 3} reads like a complete policy and backed off for zero, issuing
+// three requests back to back. syncer.Options.Retry is exported and guards only Attempts,
+// so the next caller to set one was the trigger.
+func TestAPolicyWithNoBaseStillBacksOff(t *testing.T) {
+	var slept []time.Duration
+	err := retry.Do(context.Background(), retry.Policy{
+		Attempts: 3,
+		Sleep:    func(d time.Duration) { slept = append(slept, d) },
+	}, func(int) error { return errors.New("boom") })
+	if err == nil {
+		t.Fatal("Do returned nil after exhausting attempts")
+	}
+	if len(slept) != 2 {
+		t.Fatalf("slept %v, want two backoffs", slept)
+	}
+	for i, d := range slept {
+		if d <= 0 {
+			t.Errorf("backoff %d was %v; a zero Base makes the retries a burst", i, d)
+		}
+	}
+	if slept[1] <= slept[0] {
+		t.Errorf("backoff did not grow: %v", slept)
+	}
+}
+
+// Do's exhaustion return carries two properties nothing pinned: it wraps with %w, so the
+// sentinel still reaches errors.Is, and it reports the *last* failure rather than the
+// first. The existing limit test returns one error value on every attempt, so it cannot
+// tell them apart, and asserts only that the result is non-nil.
+func TestExhaustionReportsTheLastErrorAndKeepsItUnwrappable(t *testing.T) {
+	first := errors.New("first")
+	last := errors.New("last")
+	attempts := []error{first, errors.New("second"), last}
+
+	clock := &stubClock{}
+	err := retry.Do(context.Background(), policy(3, clock), func(attempt int) error {
+		return attempts[attempt-1]
+	})
+	if !errors.Is(err, last) {
+		t.Errorf("Do = %v; the last failure must stay reachable through errors.Is", err)
+	}
+	if errors.Is(err, first) {
+		t.Errorf("Do = %v; it reported a stale first failure as the verdict", err)
+	}
+}

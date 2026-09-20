@@ -14,12 +14,12 @@ import (
 // The credential is HttpOnly. A parser that treats every '#' line as a comment drops
 // exactly the cookie that authenticates and then reports "no cookies found".
 func TestCookiesTxtKeepsHttpOnlyRecords(t *testing.T) {
-	got, _, err := session.ResolveFrom(write(t, "cookies.txt", cookiesTxt))
+	got, err := session.ResolveFrom(write(t, "cookies.txt", cookiesTxt))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if !strings.Contains(got, "LS=the-credential") {
-		t.Errorf("header %q dropped the #HttpOnly_ record", got)
+	if !strings.Contains(got.Header, "LS=the-credential") {
+		t.Errorf("header %q dropped the #HttpOnly_ record", got.Header)
 	}
 }
 
@@ -29,23 +29,23 @@ func TestCookiesTxtAcceptsTheWholeUnityFamilyAndNothingElse(t *testing.T) {
 	body := "#HttpOnly_assetstore.unity.com\tFALSE\t/\tTRUE\t0\tLS\thost-only\n" +
 		".unity.com\tTRUE\t/\tFALSE\t0\twide\tyes\n" +
 		"evil.com\tFALSE\t/\tFALSE\t0\tleaked\tno\n"
-	got, _, err := session.ResolveFrom(write(t, "cookies.txt", body))
+	got, err := session.ResolveFrom(write(t, "cookies.txt", body))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	for _, want := range []string{"LS=host-only", "wide=yes"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("header %q is missing %q", got, want)
+		if !strings.Contains(got.Header, want) {
+			t.Errorf("header %q is missing %q", got.Header, want)
 		}
 	}
-	if strings.Contains(got, "leaked") {
-		t.Errorf("header %q carries a cookie from an unrelated site", got)
+	if strings.Contains(got.Header, "leaked") {
+		t.Errorf("header %q carries a cookie from an unrelated site", got.Header)
 	}
 }
 
 func TestMissingCredentialIsNamedBeforeAnyRequest(t *testing.T) {
 	body := "assetstore.unity.com\tFALSE\t/\tTRUE\t0\tDS\tabc\n"
-	_, _, err := session.ResolveFrom(write(t, "cookies.txt", body))
+	_, err := session.ResolveFrom(write(t, "cookies.txt", body))
 	var missing *session.ErrNoCredential
 	if !errors.As(err, &missing) {
 		t.Fatalf("Resolve = %v, want ErrNoCredential", err)
@@ -61,9 +61,9 @@ func TestMissingCredentialIsNamedBeforeAnyRequest(t *testing.T) {
 func TestACookiesTxtForAnotherSiteIsNamedAsSuch(t *testing.T) {
 	body := "#HttpOnly_bank.example.com\tFALSE\t/\tTRUE\t0\tsession\tSHOULD-NOT-LEAK\n" +
 		".notunity.com\tTRUE\t/\tFALSE\t0\tLS\tSHOULD-NOT-LEAK\n"
-	header, _, err := session.ResolveFrom(write(t, "cookies.txt", body))
+	got, err := session.ResolveFrom(write(t, "cookies.txt", body))
 	if err == nil {
-		t.Fatalf("ResolveFrom returned %q for a cookies.txt with no unity.com record", header)
+		t.Fatalf("ResolveFrom returned %q for a cookies.txt with no unity.com record", got.Header)
 	}
 	var missing *session.ErrNoCredential
 	if errors.As(err, &missing) {
@@ -85,12 +85,12 @@ func TestACookiesTxtForAnotherSiteIsNamedAsSuch(t *testing.T) {
 func TestTheCmdFormsEscapingIsUndoneExactly(t *testing.T) {
 	body := "curl ^\"https://assetstore.unity.com/^\" ^\n" +
 		"  -H ^\"Cookie: LS=a%^7Bb^|c^&d^^e; _csrf=z^\"\n"
-	got, _, err := session.ResolveFrom(write(t, "session.curl", body))
+	got, err := session.ResolveFrom(write(t, "session.curl", body))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if want := "LS=a%7Bb|c&d^e; _csrf=z"; got != want {
-		t.Errorf("header = %q, want %q", got, want)
+	if want := "LS=a%7Bb|c&d^e; _csrf=z"; got.Header != want {
+		t.Errorf("header = %q, want %q", got.Header, want)
 	}
 }
 
@@ -99,12 +99,12 @@ func TestTheCmdFormsEscapingIsUndoneExactly(t *testing.T) {
 // would corrupt every such value on the platform the tool is mostly used on.
 func TestAValueIsNotUnescapedWhereTheShellDoesNotEscape(t *testing.T) {
 	body := `curl 'https://assetstore.unity.com/' -H 'Cookie: LS=a^b\c; _csrf=z'`
-	got, _, err := session.ResolveFrom(write(t, "session.curl", body))
+	got, err := session.ResolveFrom(write(t, "session.curl", body))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if want := `LS=a^b\c; _csrf=z`; got != want {
-		t.Errorf("header = %q, want %q", got, want)
+	if want := `LS=a^b\c; _csrf=z`; got.Header != want {
+		t.Errorf("header = %q, want %q", got.Header, want)
 	}
 }
 
@@ -113,7 +113,7 @@ func TestAValueIsNotUnescapedWhereTheShellDoesNotEscape(t *testing.T) {
 // cookies.txt export for the right site?)" for a file that is plainly neither.
 func TestAWindowsPasteIsNeverMisreportedAsACookiesTxt(t *testing.T) {
 	body := "curl.exe ^\"https://assetstore.unity.com/^\" ^\n  -H ^\"Accept: application/json^\"\n"
-	_, _, err := session.ResolveFrom(write(t, "session.curl", body))
+	_, err := session.ResolveFrom(write(t, "session.curl", body))
 	if err == nil {
 		t.Fatal("a curl paste with no Cookie header resolved")
 	}

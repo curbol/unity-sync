@@ -67,6 +67,14 @@ func Do(ctx context.Context, p Policy, fn func(attempt int) error) error {
 	if p.Attempts < 1 {
 		p.Attempts = 1
 	}
+	// Floored here rather than left to each caller, because Attempts already is and a
+	// half-normalised zero value is the trap. Policy is exported and so is
+	// syncer.Options.Retry, which guards only Attempts — so retry.Policy{Attempts: 3},
+	// the obvious way to write "try three times", would back off for zero and issue three
+	// download requests back to back, per asset, across the whole pool.
+	if p.Base <= 0 {
+		p.Base = DefaultPolicy().Base
+	}
 	sleep := backoff
 	if p.Sleep != nil {
 		sleep = func(_ context.Context, d time.Duration) error { p.Sleep(d); return nil }

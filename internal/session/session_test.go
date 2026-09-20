@@ -34,15 +34,15 @@ func write(t *testing.T, name, body string) string {
 }
 
 func TestResolveReadsAPastedCurlCommand(t *testing.T) {
-	got, _, err := session.ResolveFrom(write(t, "session.curl", curlPaste))
+	got, err := session.ResolveFrom(write(t, "session.curl", curlPaste))
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if !strings.Contains(got, "LS=the-credential") {
-		t.Errorf("header %q lost the credential", got)
+	if !strings.Contains(got.Header, "LS=the-credential") {
+		t.Errorf("header %q lost the credential", got.Header)
 	}
-	if !strings.Contains(got, "DS=abc") {
-		t.Errorf("header %q dropped an ordinary cookie", got)
+	if !strings.Contains(got.Header, "DS=abc") {
+		t.Errorf("header %q dropped an ordinary cookie", got.Header)
 	}
 }
 
@@ -50,24 +50,24 @@ func TestResolveReadsAPastedCurlCommand(t *testing.T) {
 func TestCurlDetectionUsesStructureNotTheWord(t *testing.T) {
 	body := "# Generated for use with curl\n" +
 		"#HttpOnly_.unity.com\tTRUE\t/\tTRUE\t0\tLS\tthe-credential\n"
-	if _, _, err := session.ResolveFrom(write(t, "cookies.txt", body)); err != nil {
+	if _, err := session.ResolveFrom(write(t, "cookies.txt", body)); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 }
 
 func TestHeaderIsDeterministic(t *testing.T) {
 	p := write(t, "session.curl", curlPaste)
-	first, _, err := session.ResolveFrom(p)
+	first, err := session.ResolveFrom(p)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for range 5 {
-		again, _, err := session.ResolveFrom(p)
+		again, err := session.ResolveFrom(p)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if again != first {
-			t.Fatalf("header varies between reads:\n%q\n%q", first, again)
+		if again.Header != first.Header {
+			t.Fatalf("header varies between reads:\n%q\n%q", first.Header, again.Header)
 		}
 	}
 }
@@ -121,15 +121,15 @@ func TestEveryCurlPasteSpellingYieldsTheSameHeader(t *testing.T) {
 		{"ansi-c quoted", `curl 'https://assetstore.unity.com/' -H $'Cookie: ` + cookie + `'`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, _, err := session.ResolveFrom(write(t, "session.curl", tc.body))
+			got, err := session.ResolveFrom(write(t, "session.curl", tc.body))
 			if err != nil {
 				t.Fatalf("Resolve: %v", err)
 			}
-			if !strings.Contains(got, "LS=the-credential") {
-				t.Errorf("header %q lost the credential", got)
+			if !strings.Contains(got.Header, "LS=the-credential") {
+				t.Errorf("header %q lost the credential", got.Header)
 			}
-			if !strings.Contains(got, "DS=abc") {
-				t.Errorf("header %q dropped an ordinary cookie", got)
+			if !strings.Contains(got.Header, "DS=abc") {
+				t.Errorf("header %q dropped an ordinary cookie", got.Header)
 			}
 		})
 	}
@@ -140,7 +140,7 @@ func TestEveryCurlPasteSpellingYieldsTheSameHeader(t *testing.T) {
 // is not in.
 func TestACurlPasteWithNoCookieHeaderSaysSo(t *testing.T) {
 	body := `curl 'https://assetstore.unity.com/' -H 'accept: application/json'`
-	_, _, err := session.ResolveFrom(write(t, "session.curl", body))
+	_, err := session.ResolveFrom(write(t, "session.curl", body))
 	if err == nil {
 		t.Fatal("a curl paste with no Cookie header resolved")
 	}

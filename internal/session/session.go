@@ -43,6 +43,26 @@ func (e *ErrNoCredential) Error() string {
 		"signed-in Firefox-family tab", e.Source, credentialCookie, BrowserKeyword)
 }
 
+// Resolved is a usable session.
+//
+// The two are a named pair rather than two return values because exactly one of them is
+// printable and they are the same underlying type. main prints Path on every run that
+// searched, three lines below where it takes the result; when these were
+// `(header, from string, err error)`, transposing the two names at the destructure
+// compiled, passed vet, and wrote the live credential to stderr. Nothing in the package
+// would have caught it either, because the tests that guard this assert on error strings
+// and on join's output, never on what main prints.
+type Resolved struct {
+	// Header is the Cookie header for the store. It is the user's live session: it goes
+	// into a request and nowhere else — no log line, no error string, no committed file.
+	Header string
+
+	// Path is the file the credential came from, and is safe to print. Which profile a
+	// search settled on is not obvious, and a run against the wrong signed-in account is
+	// otherwise silent.
+	Path string
+}
+
 // ResolveFrom turns a session source into the Cookie header for the store, and reports
 // which file the credential came from. It asserts the credential is present, whatever the
 // source, so the diagnostic names the real problem instead of leaving it to a 500. The
@@ -52,13 +72,13 @@ func (e *ErrNoCredential) Error() string {
 // A source is the browser keyword, a directory (a Gecko profile or the root holding
 // several), or a file. A file is identified by its contents: a compressed session store, a
 // pasted curl command, or a cookies.txt.
-func ResolveFrom(source string) (header, from string, err error) {
+func ResolveFrom(source string) (Resolved, error) {
 	if source == BrowserKeyword {
 		return resolveBrowser(source)
 	}
 	fi, statErr := os.Stat(source)
 	if statErr != nil {
-		return "", "", statErr
+		return Resolved{}, statErr
 	}
 	if fi.IsDir() {
 		return resolveBrowser(source)
@@ -66,7 +86,7 @@ func ResolveFrom(source string) (header, from string, err error) {
 
 	raw, err := os.ReadFile(source)
 	if err != nil {
-		return "", "", err
+		return Resolved{}, err
 	}
 	var pairs map[string]string
 	if isMozLZ4(raw) {
@@ -75,12 +95,12 @@ func ResolveFrom(source string) (header, from string, err error) {
 		pairs, err = parse(string(raw))
 	}
 	if err != nil {
-		return "", "", fmt.Errorf("%s: %w", source, err)
+		return Resolved{}, fmt.Errorf("%s: %w", source, err)
 	}
 	if _, ok := pairs[credentialCookie]; !ok {
-		return "", "", &ErrNoCredential{Source: source}
+		return Resolved{}, &ErrNoCredential{Source: source}
 	}
-	return join(pairs), source, nil
+	return Resolved{Header: join(pairs), Path: source}, nil
 }
 
 // Discover looks for a session file in the user config dir, so a first run needs no

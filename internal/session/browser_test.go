@@ -188,12 +188,12 @@ func TestTheRunningProfileWinsOverTheDefaultFlag(t *testing.T) {
 	os.WriteFile(filepath.Join(root, "installs.ini"), []byte(
 		"[15B76BAA26BA15E7]\nDefault=bbbb.Default (release)\nLocked=1\n"), 0o644)
 
-	header, from, err := ResolveFrom(root)
+	got, err := ResolveFrom(root)
 	if err != nil {
 		t.Fatalf("ResolveFrom: %v", err)
 	}
-	if !strings.Contains(header, "running-profile") {
-		t.Errorf("header came from the Default=1 profile, not the one installs.ini names: %q", from)
+	if !strings.Contains(got.Header, "running-profile") {
+		t.Errorf("the header came from the Default=1 profile, not the one installs.ini names: %q", got.Path)
 	}
 }
 
@@ -236,12 +236,12 @@ func TestAnAbsoluteProfilePathIsNotJoinedUnderTheRoot(t *testing.T) {
 		"[Profile0]\nName=relocated\nIsRelative=0\nPath="+
 			filepath.ToSlash(filepath.Join(elsewhere, "relocated"))+"\n"), 0o644)
 
-	header, _, err := ResolveFrom(root)
+	got, err := ResolveFrom(root)
 	if err != nil {
 		t.Fatalf("ResolveFrom: %v", err)
 	}
-	if !strings.Contains(header, "relocated-profile") {
-		t.Errorf("header %q did not come from the profile profiles.ini names", header)
+	if !strings.Contains(got.Header, "relocated-profile") {
+		t.Errorf("header %q did not come from the profile profiles.ini names", got.Header)
 	}
 }
 
@@ -276,12 +276,12 @@ func TestAnAbsolutePathInInstallsIniIsNotJoinedUnderTheRoot(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	header, from, err := ResolveFrom(root)
+	got, err := ResolveFrom(root)
 	if err != nil {
 		t.Fatalf("ResolveFrom: %v", err)
 	}
-	if !strings.Contains(header, "the-running-profile") {
-		t.Errorf("header came from %s, not the profile installs.ini names: %q", from, header)
+	if !strings.Contains(got.Header, "the-running-profile") {
+		t.Errorf("header came from %s, not the profile installs.ini names: %q", got.Path, got.Header)
 	}
 }
 
@@ -299,12 +299,12 @@ func TestAProfileWithoutTheCredentialIsSkipped(t *testing.T) {
 		"[Profile0]\nIsRelative=1\nPath=aaaa.empty\nDefault=1\n\n"+
 			"[Profile1]\nIsRelative=1\nPath=bbbb.signed-in\n"), 0o644)
 
-	header, _, err := ResolveFrom(root)
+	got, err := ResolveFrom(root)
 	if err != nil {
 		t.Fatalf("ResolveFrom: %v", err)
 	}
-	if !strings.Contains(header, "LS=credential") {
-		t.Errorf("header = %q, want the signed-in profile's credential", header)
+	if !strings.Contains(got.Header, "LS=credential") {
+		t.Errorf("header = %q, want the signed-in profile's credential", got.Header)
 	}
 }
 
@@ -327,12 +327,12 @@ func TestTheDefaultProfileWinsWhenInstallsIniDoesNotDecide(t *testing.T) {
 		"[Profile0]\nIsRelative=1\nPath=aaaa.other-account\n\n"+
 			"[Profile1]\nIsRelative=1\nPath=bbbb.chosen\nDefault=1\n"), 0o644)
 
-	header, _, err := ResolveFrom(root)
+	got, err := ResolveFrom(root)
 	if err != nil {
 		t.Fatalf("ResolveFrom: %v", err)
 	}
-	if !strings.Contains(header, "LS=the-chosen-account") {
-		t.Errorf("header = %q, want the Default=1 profile's credential", header)
+	if !strings.Contains(got.Header, "LS=the-chosen-account") {
+		t.Errorf("header = %q, want the Default=1 profile's credential", got.Header)
 	}
 }
 
@@ -346,7 +346,7 @@ func TestNoCredentialAnywhereNamesWhatWasTried(t *testing.T) {
 	os.WriteFile(filepath.Join(root, "profiles.ini"),
 		[]byte("[Profile0]\nIsRelative=1\nPath=aaaa.empty\n"), 0o644)
 
-	_, _, err := ResolveFrom(root)
+	_, err := ResolveFrom(root)
 	if err == nil {
 		t.Fatal("ResolveFrom succeeded with no credential anywhere")
 	}
@@ -376,12 +376,12 @@ func TestResolveTellsASessionStoreFromAPasteByContent(t *testing.T) {
 	os.WriteFile(paste, []byte(`curl 'https://assetstore.unity.com/api/graphql/batch' -H 'Cookie: LS=from-paste; _csrf=t'`), 0o600)
 
 	for path, want := range map[string]string{store: "from-store", paste: "from-paste"} {
-		header, _, err := ResolveFrom(path)
+		got, err := ResolveFrom(path)
 		if err != nil {
 			t.Fatalf("%s: %v", filepath.Base(path), err)
 		}
-		if !strings.Contains(header, "LS="+want) {
-			t.Errorf("%s produced %q, want LS=%s", filepath.Base(path), header, want)
+		if !strings.Contains(got.Header, "LS="+want) {
+			t.Errorf("%s produced %q, want LS=%s", filepath.Base(path), got.Header, want)
 		}
 	}
 }
@@ -497,15 +497,15 @@ func TestTheBrowserKeywordFindsAProfileUnderAKnownRoot(t *testing.T) {
 	os.WriteFile(filepath.Join(last, "profiles.ini"),
 		[]byte("[Profile0]\nName=default\nIsRelative=1\nPath=p1\n"), 0o644)
 
-	header, from, err := ResolveFrom(BrowserKeyword)
+	got, err := ResolveFrom(BrowserKeyword)
 	if err != nil {
 		t.Fatalf("ResolveFrom(%q): %v", BrowserKeyword, err)
 	}
-	if from != planted {
-		t.Errorf("read from %q, want %q", from, planted)
+	if got.Path != planted {
+		t.Errorf("read from %q, want %q", got.Path, planted)
 	}
-	if !strings.Contains(header, credentialCookie+"=cred") {
-		t.Errorf("header %q does not carry the credential", header)
+	if !strings.Contains(got.Header, credentialCookie+"=cred") {
+		t.Errorf("header %q does not carry the credential", got.Header)
 	}
 }
 
@@ -528,12 +528,12 @@ func TestANamedSourceNeverFallsThroughToAnotherBrowser(t *testing.T) {
 	os.WriteFile(filepath.Join(roots[0], "profiles.ini"),
 		[]byte("[Profile0]\nName=default\nIsRelative=1\nPath=signed-in\n"), 0o644)
 	// The decoy has to be reachable, or the test proves nothing about not reaching it.
-	if _, from, err := ResolveFrom(BrowserKeyword); err != nil || from != decoy {
-		t.Fatalf("the decoy profile is not discoverable: from=%q err=%v", from, err)
+	if got, err := ResolveFrom(BrowserKeyword); err != nil || got.Path != decoy {
+		t.Fatalf("the decoy profile is not discoverable: from=%q err=%v", got.Path, err)
 	}
 
 	named := t.TempDir() // an empty profile directory, named explicitly
-	_, _, err := ResolveFrom(named)
+	_, err := ResolveFrom(named)
 	if err == nil {
 		t.Fatal("a named empty directory resolved a session from somewhere else")
 	}
@@ -554,7 +554,7 @@ func TestANamedSourceNeverFallsThroughToAnotherBrowser(t *testing.T) {
 func TestEveryPlatformKnowsTheSameBrowsers(t *testing.T) {
 	browsers := []string{"zen", "firefox", "librewolf", "waterfox", "floorp"}
 	for _, goos := range []string{"linux", "darwin", "windows"} {
-		roots := geckoRootsFor(goos, filepath.Join("home", "someone"))
+		roots := geckoRootsFor(goos, filepath.Join("home", "someone"), "")
 		if len(roots) == 0 {
 			t.Errorf("%s has no gecko roots, so the browser keyword can never work there", goos)
 			continue
@@ -577,7 +577,7 @@ func TestEveryPlatformKnowsTheSameBrowsers(t *testing.T) {
 	// On Ubuntu 22.04+ `apt install firefox` installs the snap, whose profiles live
 	// nowhere near ~/.mozilla. A list that names only the unsandboxed path answers "no
 	// session store found" on the most common Linux desktop there is.
-	linux := strings.Join(geckoRootsFor("linux", filepath.Join("home", "someone")), "\n")
+	linux := strings.Join(geckoRootsFor("linux", filepath.Join("home", "someone"), ""), "\n")
 	for _, sandboxed := range []string{
 		filepath.FromSlash("snap/firefox/common/.mozilla/firefox"),
 		filepath.FromSlash(".var/app/org.mozilla.firefox/.mozilla/firefox"),
@@ -598,15 +598,15 @@ func TestANamedProfileDirectoryIsReadDirectly(t *testing.T) {
 		{Host: "assetstore.unity.com", Name: credentialCookie, Value: "from-the-named-profile"},
 	})
 
-	header, from, err := ResolveFrom(filepath.Join(root, "p1"))
+	got, err := ResolveFrom(filepath.Join(root, "p1"))
 	if err != nil {
 		t.Fatalf("a profile directory named directly did not resolve: %v", err)
 	}
-	if from != store {
-		t.Errorf("from = %q, want the named profile's own store %q", from, store)
+	if got.Path != store {
+		t.Errorf("resolved path = %q, want the named profile's own store %q", got.Path, store)
 	}
-	if !strings.Contains(header, credentialCookie+"=from-the-named-profile") {
-		t.Errorf("header %q did not come from the profile that was named", header)
+	if !strings.Contains(got.Header, credentialCookie+"=from-the-named-profile") {
+		t.Errorf("header %q did not come from the profile that was named", got.Header)
 	}
 }
 
@@ -651,9 +651,9 @@ func TestASessionStoreForAnotherSiteIsNamedAsSuch(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	header, _, err := ResolveFrom(path)
+	got, err := ResolveFrom(path)
 	if err == nil {
-		t.Fatalf("ResolveFrom returned %q for a store with no unity.com cookie", header)
+		t.Fatalf("ResolveFrom returned %q for a store with no unity.com cookie", got.Header)
 	}
 	if !strings.Contains(err.Error(), cookieDomain) {
 		t.Errorf("diagnostic %q does not say the file belongs to another site", err)
@@ -739,15 +739,15 @@ func TestAProfileThatExitedCleanlyIsStillFound(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	header, from, err := ResolveFrom(root)
+	got, err := ResolveFrom(root)
 	if err != nil {
 		t.Fatalf("ResolveFrom: %v", err)
 	}
-	if from != want {
-		t.Errorf("read from %q, want the clean-shutdown store at %q", from, want)
+	if got.Path != want {
+		t.Errorf("read from %q, want the clean-shutdown store at %q", got.Path, want)
 	}
-	if !strings.Contains(header, "LS=cred") {
-		t.Errorf("header %q does not carry the credential", header)
+	if !strings.Contains(got.Header, "LS=cred") {
+		t.Errorf("header %q does not carry the credential", got.Header)
 	}
 }
 
@@ -771,15 +771,15 @@ func TestALiveSessionStoreBeatsACleanShutdownOne(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	header, from, err := ResolveFrom(root)
+	got, err := ResolveFrom(root)
 	if err != nil {
 		t.Fatalf("ResolveFrom: %v", err)
 	}
-	if from != live {
-		t.Errorf("read from %q, want the live store at %q", from, live)
+	if got.Path != live {
+		t.Errorf("read from %q, want the live store at %q", got.Path, live)
 	}
-	if !strings.Contains(header, "LS=current") {
-		t.Errorf("header %q carries the stale credential", header)
+	if !strings.Contains(got.Header, "LS=current") {
+		t.Errorf("header %q carries the stale credential", got.Header)
 	}
 }
 
@@ -914,5 +914,43 @@ func TestARealGeckoDocumentShapeStillYieldsTheCredential(t *testing.T) {
 	// stands between it and the rest of the program.
 	if _, ok := pairs["SID"]; ok {
 		t.Error("a cookie from outside the unity.com family left the package")
+	}
+}
+
+// %APPDATA% is a Windows known folder, not a fixed place under the profile: Folder
+// Redirection, which is ordinary on a domain-joined machine, moves it off the profile
+// entirely. Reconstructing it as <home>/AppData/Roaming is why os.UserConfigDir reads the
+// variable instead, and getting it wrong reports "no Firefox-family session store found"
+// to a user with a signed-in browser, listing five directories that do not exist.
+func TestARedirectedAppDataIsHonoured(t *testing.T) {
+	home := filepath.Join("home", "someone")
+	redirected := filepath.Join("srv", "profiles", "someone", "AppData", "Roaming")
+
+	roots := geckoRootsFor("windows", home, redirected)
+	if len(roots) == 0 {
+		t.Fatal("no windows roots")
+	}
+	for _, r := range roots {
+		if !strings.HasPrefix(r, redirected) {
+			t.Errorf("windows root %q ignores %%APPDATA%%", r)
+		}
+	}
+	// The fallback still applies when the variable is unset, which is every non-Windows
+	// run of this test and a Windows one with a stripped environment.
+	plain := geckoRootsFor("windows", home, "")
+	for _, r := range plain {
+		if !strings.HasPrefix(r, filepath.Join(home, "AppData", "Roaming")) {
+			t.Errorf("windows root %q does not fall back under the home directory", r)
+		}
+	}
+	// Order is what decides which account a run reads when two profiles carry LS, so
+	// redirection must not reshuffle the list.
+	if len(plain) != len(roots) {
+		t.Fatalf("redirecting %%APPDATA%% changed the root count: %d vs %d", len(plain), len(roots))
+	}
+	for i := range plain {
+		if filepath.Base(plain[i]) != filepath.Base(roots[i]) {
+			t.Errorf("root %d moved: %q became %q", i, plain[i], roots[i])
+		}
 	}
 }

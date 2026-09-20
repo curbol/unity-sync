@@ -255,17 +255,18 @@ func resolveSession(cfg config.Config, configDir string) (string, error) {
 			"it from a signed-in Firefox-family browser, save a pasted-curl file as %s, or pass "+
 			"--session", session.BrowserKeyword, filepath.Join(configDir, "session.curl"))
 	}
-	header, from, err := session.ResolveFrom(src)
+	got, err := session.ResolveFrom(src)
 	if err != nil {
 		return "", err
 	}
 	// Which profile a search settled on is not obvious, and a run against the wrong
 	// signed-in account is otherwise silent. The keyword is not the only source that
 	// searches: a directory is a profile root too, and picks among the profiles under it.
-	if from != src {
-		fmt.Fprintln(os.Stderr, "session: read from", from)
+	// Path, never Header: the one is the file's name and the other is the live credential.
+	if got.Path != src {
+		fmt.Fprintln(os.Stderr, "session: read from", got.Path)
 	}
-	return header, nil
+	return got.Header, nil
 }
 
 // enumerator is the slice of the store client that `select` needs.

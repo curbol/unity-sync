@@ -36,44 +36,52 @@ func geckoRoots() []string {
 	if err != nil {
 		return nil
 	}
-	return geckoRootsFor(runtime.GOOS, home)
+	return geckoRootsFor(runtime.GOOS, home, os.Getenv("APPDATA"))
 }
 
-// geckoRootsFor takes the platform explicitly so a test can check every branch. The list
-// is a promise the README makes by name, and a branch that is short a browser is
-// invisible to a run on any other platform.
-func geckoRootsFor(goos, home string) []string {
-	var rel []string
+// geckoRootsFor takes the platform and the redirectable base explicitly so a test can
+// check every branch. The list is a promise the README makes by name, and a branch that is
+// short a browser is invisible to a run on any other platform.
+//
+// appData is passed rather than derived because %APPDATA% is a Windows known folder, not a
+// fixed place under the profile: Folder Redirection, which is ordinary on a domain-joined
+// machine, moves it elsewhere entirely. Reconstructing it as home/AppData/Roaming is why
+// os.UserConfigDir reads the variable instead, and getting it wrong reports "no session
+// store found" to a user with a signed-in browser while listing five directories that do
+// not exist. The Linux paths stay home-relative because the browsers themselves hardcode
+// them: Gecko reads $HOME/.mozilla and does not consult $XDG_CONFIG_HOME.
+func geckoRootsFor(goos, home, appData string) []string {
+	if appData == "" {
+		appData = filepath.Join(home, "AppData", "Roaming")
+	}
+	var roots []string
+	add := func(base string, rel ...string) {
+		for _, r := range rel {
+			roots = append(roots, filepath.Join(base, filepath.FromSlash(r)))
+		}
+	}
 	switch goos {
 	case "darwin":
-		rel = []string{
+		add(home,
 			"Library/Application Support/zen",
 			"Library/Application Support/Firefox",
 			"Library/Application Support/LibreWolf",
 			"Library/Application Support/Waterfox",
 			"Library/Application Support/Floorp",
-		}
+		)
 	case "windows":
-		rel = []string{
-			"AppData/Roaming/zen",
-			"AppData/Roaming/Mozilla/Firefox",
-			"AppData/Roaming/LibreWolf",
-			"AppData/Roaming/Waterfox",
-			"AppData/Roaming/Floorp",
-		}
+		add(appData, "zen", "Mozilla/Firefox", "LibreWolf", "Waterfox", "Floorp")
 	default:
-		rel = []string{
-			".config/zen", ".zen",
-			".mozilla/firefox",
-			".librewolf",
-			".waterfox",
-			".floorp", ".config/floorp",
-		}
+		// Order is the contract, so these stay interleaved exactly as they were when
+		// every entry hung off the home directory: the first root carrying the credential
+		// wins, and reordering them changes which account a run reads.
+		add(home, ".config/zen", ".zen", ".mozilla/firefox", ".librewolf", ".waterfox",
+			".floorp", ".config/floorp")
 		// Sandboxed packagings put the profile somewhere else entirely, and on Ubuntu
 		// 22.04+ the snap is what `apt install firefox` gives you — so omitting these
 		// answers "no session store found" on a machine with a signed-in Firefox, for
 		// a browser the README promises by name.
-		rel = append(rel,
+		add(home,
 			"snap/firefox/common/.mozilla/firefox",
 			".var/app/org.mozilla.firefox/.mozilla/firefox",
 			".var/app/app.zen_browser.zen/.zen",
@@ -81,10 +89,6 @@ func geckoRootsFor(goos, home string) []string {
 			".var/app/net.waterfox.waterfox/.waterfox",
 			".var/app/one.ablaze.floorp/.floorp",
 		)
-	}
-	roots := make([]string, 0, len(rel))
-	for _, r := range rel {
-		roots = append(roots, filepath.Join(home, filepath.FromSlash(r)))
 	}
 	return roots
 }
@@ -340,13 +344,13 @@ func exists(path string) bool {
 //
 // A profile that parses but holds no LS is skipped rather than fatal: a second browser,
 // or a second profile in the same browser, is where the signed-in tab usually is.
-func resolveBrowser(source string) (header, from string, err error) {
+func resolveBrowser(source string) (Resolved, error) {
 	candidates := storeCandidates(source)
 	if len(candidates) == 0 {
 		// Named, the way ErrNoBrowserCredential names what it read. This is the message a
 		// user gets when their browser is not one of the roots swept, and without the list
 		// it reads as "you have no session" rather than "look somewhere else".
-		return "", "", fmt.Errorf("no Firefox-family session store found for %q (looked under: %s)",
+		return Resolved{}, fmt.Errorf("no Firefox-family session store found for %q (looked under: %s)",
 			source, strings.Join(searchedRoots(source), ", "))
 	}
 	var skipped []string
@@ -365,9 +369,9 @@ func resolveBrowser(source string) (header, from string, err error) {
 			skipped = append(skipped, fmt.Sprintf("%s (no %s cookie)", path, credentialCookie))
 			continue
 		}
-		return join(pairs), path, nil
+		return Resolved{Header: join(pairs), Path: path}, nil
 	}
-	return "", "", &ErrNoBrowserCredential{Source: source, Skipped: skipped}
+	return Resolved{}, &ErrNoBrowserCredential{Source: source, Skipped: skipped}
 }
 
 // ErrNoBrowserCredential means session stores were found and read but none held the

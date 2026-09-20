@@ -168,11 +168,16 @@ nothing, moves nothing, and writes nothing.
 Steps 6 and 7 are interruptible, which matters because they are where the time goes: under
 `--verify` step 7 re-hashes the whole library, and the adopt path relocates and deletes
 files before anything is persisted. The classification pass checks the context each asset
-and breaks, and the two whole-tree walks stop mid-walk, so a cancelled run still reaches
-step 9 and records what it did resolve. Without that the run keeps working — and keeps
-mutating — after the interrupt, and a second Ctrl-C does nothing either, because the signal
-handler has already taken SIGINT's default action away for the life of the run. The assets
-never reached are counted as not attempted, so the exit status stays non-zero.
+and breaks, the two whole-tree walks stop mid-walk, and the hash itself stops between reads
+rather than at the end of the file — a single package reaches 23 GB, so per-asset
+granularity would still be minutes. A cancelled run therefore reaches step 9 and records
+what it did resolve. Without that the run keeps working — and keeps mutating — after the
+interrupt, and a second Ctrl-C does nothing either, because the signal handler has already
+taken SIGINT's default action away for the life of the run. The assets never reached are
+counted as not attempted, so the exit status stays non-zero; an asset already in flight
+when the pool was cancelled is counted with them rather than named as its own failure,
+since the cause is the run's and repeating it per goroutine buries the one line that is
+not.
 
 ## Where the guards live
 
@@ -300,10 +305,21 @@ reports a failure, exits non-zero, and does it again on every later run.
 
 Nor is a spelling the whole of confinement. `Canonical` refuses a path that leaves the root
 lexically, and a path whose every segment is an ordinary name still leaves it when one of
-those segments is a symlink, because a link is followed like any other directory. So the
-operations that open, move or delete go through `os.Root`, which resolves inside the
-library at the syscall level and leaves no window between the check and the act. The paths
-these take come out of the lockfile, and `RemoveStale` deletes what it is given.
+those segments is a symlink, because a link is followed like any other directory. So every
+operation that opens, creates, moves or deletes goes through `os.Root`, which resolves
+inside the library at the syscall level and leaves no window between the check and the act.
+
+The writes are in that set, and not only the reads. Held to `Canonical` alone they agreed
+with the reads about spelling and disagreed about symlinks — and the permissive side was
+the write, which is the worst way round. Symlinking a publisher directory onto a second
+disk is a reasonable thing to do to a 75 GB library, and it produced a download that
+succeeded, committed and recorded, followed by a `Verify` that refused the file just
+written and an adopt scan that could not see it either, since `WalkDir` does not descend a
+symlink. The asset classified `CacheMissing` and re-downloaded in full on the next run, and
+on every run after it, reported only as `cache-missing 1`. Both gates now refuse the same
+paths, so the asset fails once with an error naming the segment that is a link. `os.Root`
+has no `CreateTemp`, so the cache does that job through it; the library root itself is
+still created outside the root, because a first run has none to open.
 
 A file that just failed verification is excluded from the scan. A truncation or a mid-file
 flip leaves the descriptor intact and a small truncation clears the floor, so without that

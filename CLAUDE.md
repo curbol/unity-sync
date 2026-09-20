@@ -111,20 +111,28 @@ each with a package doc comment stating its contract:
   where the filesystem ignores case, so every delete or move asks `cache.SameFile` too —
   `cache.Relocate` included, where an occupant that is the source under its other spelling
   is a no-op rather than the refusal that would fail the adopt on those platforms forever.
-- **Confinement of a recorded path is the filesystem's, not the string's.** `Canonical`
-  settles a spelling, and a path whose every segment is an ordinary name still leaves the
-  library when one of them is a symlink. Every operation on a lockfile-supplied path opens,
-  moves or removes through `os.Root` (`cache.rooted`), which resolves inside the root at
-  the syscall level; `resolve` stays lexical and is only for the callers that want the name
-  rather than the file.
+- **Confinement is the filesystem's, not the string's.** `Canonical` settles a spelling,
+  and a path whose every segment is an ordinary name still leaves the library when one of
+  them is a symlink. Every operation that opens, creates, moves or
+  removes goes through `os.Root` — `cache.rooted` for a lockfile-supplied path, and an
+  `os.OpenRoot` inside `Store`, `Commit` and `Discard` for the ones a run derives — which
+  resolves inside the root at the syscall level; `resolve` stays lexical and is only for
+  the callers that want the name rather than the file. The writes belong in that set as
+  much as the reads: held to `Canonical` alone they agreed about spelling and disagreed
+  about symlinks, with the write as the permissive side, so a symlinked publisher directory
+  was writable and then unreadable and the asset re-downloaded in full forever, reported
+  only as `cache-missing`. `pruneEmptyParents` goes through the root too, or walking up
+  removes the user's link and leaves the directory it pointed at.
 - **The lockfile is rewritten as each asset resolves, in every pass.** Not only the
   downloads: the classification pass relocates and deletes whole packages, so a run that
   adopts and fetches nothing would otherwise ride on one closing write. Lose it and the
   library has moved while the record names the old path with a digest that no longer
   matches, which the next run reads as `Unchanged` and carries forward.
 - **Nothing unverified reaches a real cache path.** `cache.Store` does not rename;
-  `Commit` does, after the syncer's guards pass. `Store` also refuses a path `Canonical`
-  would not resolve, so the write gate cannot be weaker than the read gate.
+  `Commit` does, after the syncer's guards pass. `Store` also refuses every path a later
+  read would refuse — one `Canonical` will not resolve, and one that leaves the library
+  through a symlink — so the write gate cannot be weaker than the read gate in either of
+  the two ways a path escapes.
 - **A delisted asset already in the library is adopted, not reported missing.** A disabled
   product answers 404, so it is the one class where a download cannot make up the
   difference and the lockfile is not the only thing that knows the bytes are here.

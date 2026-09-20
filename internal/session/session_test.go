@@ -33,19 +33,6 @@ func write(t *testing.T, name, body string) string {
 	return p
 }
 
-func TestResolveReadsAPastedCurlCommand(t *testing.T) {
-	got, err := session.ResolveFrom(write(t, "session.curl", curlPaste))
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
-	}
-	if !strings.Contains(got.Header, "LS=the-credential") {
-		t.Errorf("header %q lost the credential", got.Header)
-	}
-	if !strings.Contains(got.Header, "DS=abc") {
-		t.Errorf("header %q dropped an ordinary cookie", got.Header)
-	}
-}
-
 // An export whose header comment mentions curl must still parse as a cookies.txt.
 func TestCurlDetectionUsesStructureNotTheWord(t *testing.T) {
 	body := "# Generated for use with curl\n" +

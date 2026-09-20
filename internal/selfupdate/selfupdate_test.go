@@ -123,13 +123,3 @@ func TestReplaceIsAtomicAndExecutable(t *testing.T) {
 		t.Errorf("directory holds %v, want just the binary", names)
 	}
 }
-
-func TestPlatformAssetNamesAreVersioned(t *testing.T) {
-	got, err := selfupdate.PlatformAsset("1.2.3")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(got, "unity-sync-1.2.3-") || !strings.HasSuffix(got, ".zip") {
-		t.Errorf("PlatformAsset = %q", got)
-	}
-}

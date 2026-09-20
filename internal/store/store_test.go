@@ -160,10 +160,9 @@ func TestStrictParsingRejectsAMissingVersionId(t *testing.T) {
 }
 
 func TestFetchReturnsTheBodyAndTheStoresFilename(t *testing.T) {
+	// The Accept-Encoding pin lives in audit_test.go with the rest of the failure model;
+	// this case is about the body and the filename.
 	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
-		if enc := r.Header.Get("Accept-Encoding"); enc != "identity" {
-			t.Errorf("download sent Accept-Encoding %q; gzip makes the store double-gzip the package", enc)
-		}
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Content-Disposition", `attachment; filename="Quick Outline.unitypackage"`)
 		io.WriteString(w, "\x1f\x8b\x08\x04payload")

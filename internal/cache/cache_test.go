@@ -101,7 +101,7 @@ func TestOnlyDeepVerifySeesAMidFileFlip(t *testing.T) {
 	if !cache.Verify(root, p.RelPath, p.Size, "2") {
 		t.Error("cheap verify should not see a mid-file flip; that is what makes it cheap")
 	}
-	if cache.VerifyDeep(root, p.RelPath, p.SHA256) {
+	if cache.VerifyDeep(t.Context(), root, p.RelPath, p.SHA256) {
 		t.Error("deep verify missed a mid-file flip")
 	}
 }

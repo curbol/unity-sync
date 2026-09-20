@@ -322,7 +322,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 			case prev.CachePath == "":
 				return false
 			case opts.FullVerify:
-				return verifyDeep(opts.LibraryRoot, prev.CachePath, prev.SHA256)
+				return verifyDeep(ctx, opts.LibraryRoot, prev.CachePath, prev.SHA256)
 			default:
 				return cache.Verify(opts.LibraryRoot, prev.CachePath, prev.SizeBytes, prev.DeliveredVersionID)
 			}
@@ -365,7 +365,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 			if opts.DryRun {
 				break
 			}
-			r, err := adopt(opts, a, found, derived, excludeRel)
+			r, err := adopt(ctx, opts, a, found, derived, excludeRel)
 			if err != nil {
 				res.Err = err
 				report.Retryable++
@@ -499,7 +499,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 
 // adopt records a package already on disk, relocating it to where the layout puts it so
 // the cache does not drift and quarry's facets stay right.
-func adopt(opts Options, a model.Asset, found cache.Candidate, derived, damagedRel string) (lockfile.Resolution, error) {
+func adopt(ctx context.Context, opts Options, a model.Asset, found cache.Candidate, derived, damagedRel string) (lockfile.Resolution, error) {
 	// Relocate refuses an occupied destination, which is what stops it certifying bytes
 	// nothing checked. The one occupant that must not stop it is this asset's own recorded
 	// copy after it failed verification: a download would rename straight over that file,
@@ -514,7 +514,7 @@ func adopt(opts Options, a model.Asset, found cache.Candidate, derived, damagedR
 	if err := cache.Relocate(opts.LibraryRoot, found.RelPath, derived); err != nil {
 		return lockfile.Resolution{}, err
 	}
-	sha, size, err := cache.Hash(opts.LibraryRoot, derived)
+	sha, size, err := cache.Hash(ctx, opts.LibraryRoot, derived)
 	if err != nil {
 		return lockfile.Resolution{}, err
 	}

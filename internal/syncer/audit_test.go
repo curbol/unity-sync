@@ -938,9 +938,9 @@ func countVerifies(t *testing.T) *int {
 	t.Helper()
 	var n int
 	prev := verifyDeep
-	verifyDeep = func(root, rel, sha string) bool {
+	verifyDeep = func(ctx context.Context, root, rel, sha string) bool {
 		n++
-		return prev(root, rel, sha)
+		return prev(ctx, root, rel, sha)
 	}
 	t.Cleanup(func() { verifyDeep = prev })
 	return &n
@@ -1121,7 +1121,7 @@ func TestAGoodCopyDisplacesADamagedOneHoweverTheEntrySpellsIt(t *testing.T) {
 			if len(fs.fetched) != 0 {
 				t.Errorf("adoption fell through to a download of %v", fs.fetched)
 			}
-			if !cache.VerifyDeep(root, derived, stray.SHA256) {
+			if !cache.VerifyDeep(t.Context(), root, derived, stray.SHA256) {
 				t.Error("the derived path does not hold the good copy's bytes")
 			}
 			got := rep.Lockfile.Assets[a.Slug()]
@@ -1298,7 +1298,7 @@ func TestARecordedPathSpelledDifferentlyIsNotTreatedAsASecondFile(t *testing.T) 
 	}
 	// The recorded digest has to describe what is actually on disk, which is the only
 	// reason deleting the file matters rather than merely being wasteful.
-	sha, size, err := cache.Hash(root, e.CachePath)
+	sha, size, err := cache.Hash(t.Context(), root, e.CachePath)
 	if err != nil {
 		t.Fatalf("hashing the recorded path: %v", err)
 	}

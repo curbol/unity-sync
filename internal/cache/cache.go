@@ -12,6 +12,7 @@ package cache
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -180,17 +181,52 @@ type Pending struct {
 	SHA256  string
 	Size    int64
 
-	root     string
-	tempPath string
-	final    string
+	root string
+	// Both are root-relative and in slash space, like every other path this package
+	// carries, so the operations that act on them can go back through os.Root.
+	tempRel string
+	dirRel  string
 }
 
 // TempPath is where the bytes currently are, so the caller can inspect them before
-// deciding to commit.
-func (p *Pending) TempPath() string { return p.tempPath }
+// deciding to commit. Store wrote it through the root, so the lexical join names the same
+// file the root resolved to.
+func (p *Pending) TempPath() string {
+	return filepath.Join(p.root, filepath.FromSlash(p.tempRel))
+}
+
+// newTemp creates a uniquely named temp inside dirRel, through the root. os.Root has no
+// CreateTemp, and the point of this whole path is that it must not step outside one.
+func newTemp(rt *os.Root, dirRel string) (string, *os.File, error) {
+	for attempt := 0; attempt < 10000; attempt++ {
+		var b [8]byte
+		if _, err := rand.Read(b[:]); err != nil {
+			return "", nil, err
+		}
+		rel := path.Join(dirRel, tempPrefix+hex.EncodeToString(b[:]))
+		f, err := rt.OpenFile(filepath.FromSlash(rel), os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
+		if os.IsExist(err) {
+			continue
+		}
+		if err != nil {
+			return "", nil, err
+		}
+		return rel, f, nil
+	}
+	return "", nil, fmt.Errorf("could not create a temp file in %s", dirRel)
+}
 
 // Store streams r into a temp file beside its eventual destination, hashing as it goes.
 // It does not rename: the caller commits or discards.
+//
+// Every step goes through os.Root, because the write gate has to be no weaker than the
+// read gate in both the ways a path can leave the library. Canonical settles the
+// spelling; os.Root settles what only the filesystem knows, which is that an ordinary
+// segment can still be a symlink out of the tree. Writing through a link the later reads
+// refuse is the worst of the three outcomes: the download succeeds and is recorded, then
+// Verify, Hash and the adopt scan all refuse the file it just wrote, so the asset
+// classifies CacheMissing and re-downloads in full on every subsequent run, forever and
+// with nothing said. Refusing here fails that asset once, with a diagnostic.
 func Store(root, publisherSlug, assetSlug string, r io.Reader) (*Pending, error) {
 	if err := safeSegment("publisher slug", publisherSlug); err != nil {
 		return nil, err
@@ -199,29 +235,41 @@ func Store(root, publisherSlug, assetSlug string, r io.Reader) (*Pending, error)
 		return nil, err
 	}
 	rel := RelPath(publisherSlug, assetSlug)
-	// The write gate has to be no weaker than the read gate. safeSegment refuses a
-	// separator and a device name; Canonical additionally refuses a colon, so a segment
-	// carrying one is a path this can create on Linux and macOS and no later run can
-	// resolve — the entry verifies false, the exclusion it becomes refuses every adopt
-	// candidate, and the asset re-downloads in full on every run with no error saying why.
+	// safeSegment refuses a separator and a device name; Canonical additionally refuses a
+	// colon, so a segment carrying one is a path this can create on Linux and macOS and no
+	// later run can resolve.
 	if _, err := Canonical(rel); err != nil {
 		return nil, err
 	}
-	dir := filepath.Join(root, publisherSlug, assetSlug)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	dirRel := path.Join(publisherSlug, assetSlug)
+
+	// The library root itself is created here rather than inside the root, because there
+	// is no root to open until it exists: a first run has nothing on disk yet. It is the
+	// user's own --library value, so creating it is not the confinement question — what
+	// is confined is everything built underneath it.
+	if err := os.MkdirAll(root, 0o755); err != nil {
 		return nil, err
 	}
-	tmp, err := os.CreateTemp(dir, tempPrefix+"*")
+	rt, err := os.OpenRoot(root)
 	if err != nil {
-		pruneEmptyParents(root, dir)
 		return nil, err
+	}
+	defer rt.Close()
+
+	if err := rt.MkdirAll(filepath.FromSlash(dirRel), 0o755); err != nil {
+		return nil, confinementError(rt, root, dirRel, err)
+	}
+	tempRel, tmp, err := newTemp(rt, dirRel)
+	if err != nil {
+		pruneEmptyParents(rt, dirRel)
+		return nil, confinementError(rt, root, dirRel, err)
 	}
 	// Every failure below also unwinds the directories MkdirAll just made. An asset whose
 	// download never succeeds would otherwise leave an empty <publisher>/<asset>/ behind
 	// on every attempt, in a tree quarry walks.
 	abandon := func(err error) (*Pending, error) {
-		os.Remove(tmp.Name())
-		pruneEmptyParents(root, dir)
+		rt.Remove(filepath.FromSlash(tempRel))
+		pruneEmptyParents(rt, dirRel)
 		return nil, err
 	}
 	h := sha256.New()
@@ -238,13 +286,49 @@ func Store(root, publisherSlug, assetSlug string, r io.Reader) (*Pending, error)
 		return abandon(err)
 	}
 	return &Pending{
-		RelPath:  rel,
-		SHA256:   hex.EncodeToString(h.Sum(nil)),
-		Size:     size,
-		root:     root,
-		tempPath: tmp.Name(),
-		final:    filepath.Join(dir, assetSlug+packageExt),
+		RelPath: rel,
+		SHA256:  hex.EncodeToString(h.Sum(nil)),
+		Size:    size,
+		root:    root,
+		tempRel: tempRel,
+		dirRel:  dirRel,
 	}, nil
+}
+
+// confinementError says which segment is a symlink when one is, because os.Root reports
+// only "path escapes from parent" and the stdlib exports no sentinel to test for. The
+// cause is found by looking rather than by reading the message: the first segment that
+// Lstat calls a link is the one that took the path out of the library. Symlinking a
+// publisher directory onto another disk is a reasonable thing to do to a 75 GB library,
+// and it is worth saying so rather than leaving the user with a bare refusal.
+func confinementError(rt *os.Root, root, dirRel string, err error) error {
+	link := firstSymlink(rt, dirRel)
+	if link == "" {
+		return fmt.Errorf("creating %s in the library at %s: %w", dirRel, root, err)
+	}
+	return fmt.Errorf("%s is a symlink, so %s leaves the library at %s: every read and "+
+		"write is confined to the library, so a package stored through the link could "+
+		"never be found again and would re-download on every run (point --library at the "+
+		"real directory, or replace the link with a bind mount): %w",
+		link, dirRel, root, err)
+}
+
+// firstSymlink returns the first segment of relDir that is a symbolic link, or "" when
+// none is. Each segment is Lstat'd in turn, so the link itself is always reachable even
+// though anything under it is not.
+func firstSymlink(rt *os.Root, relDir string) string {
+	var walked string
+	for _, seg := range strings.Split(path.Clean(relDir), "/") {
+		walked = path.Join(walked, seg)
+		fi, err := rt.Lstat(filepath.FromSlash(walked))
+		if err != nil {
+			return ""
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			return walked
+		}
+	}
+	return ""
 }
 
 // Commit renames the pending bytes into place.
@@ -253,31 +337,39 @@ func Store(root, publisherSlug, assetSlug string, r io.Reader) (*Pending, error)
 // this asset's own superseded version, and refusing it the way Relocate does would make
 // every re-download fail.
 func (p *Pending) Commit() error {
-	// CreateTemp makes the file 0600 and the rename carries that over, so a downloaded
+	rt, err := os.OpenRoot(p.root)
+	if err != nil {
+		return err
+	}
+	defer rt.Close()
+
+	tempName := filepath.FromSlash(p.tempRel)
+	finalName := filepath.FromSlash(p.RelPath)
+	// The temp is created 0600 and the rename carries that over, so a downloaded
 	// package would be owner-only inside a 0755 tree while an adopted one keeps the 0644
 	// it arrived with — one asset changing mode depending on how it got here. An
 	// existing destination's mode wins, so a library deliberately locked down stays so.
 	mode := os.FileMode(0o644)
-	if fi, err := os.Stat(p.final); err == nil {
+	if fi, err := rt.Stat(finalName); err == nil {
 		mode = fi.Mode().Perm()
 	}
-	if err := os.Chmod(p.tempPath, mode); err != nil {
-		return p.abandon(err)
+	if err := rt.Chmod(tempName, mode); err != nil {
+		return p.abandon(rt, err)
 	}
-	if err := os.Rename(p.tempPath, p.final); err != nil {
+	if err := rt.Rename(tempName, finalName); err != nil {
 		// Unwound like every other failure that removes the temp. A rename can fail with
 		// the destination held open — an editor, an on-access scanner — and without this
 		// the empty <publisher>/<asset>/ Store created stays in the tree quarry walks.
-		return p.abandon(err)
+		return p.abandon(rt, err)
 	}
 	return nil
 }
 
 // abandon drops the temp and the directories Store made for it, returning the error that
 // caused it.
-func (p *Pending) abandon(err error) error {
-	os.Remove(p.tempPath)
-	pruneEmptyParents(p.root, filepath.Dir(p.tempPath))
+func (p *Pending) abandon(rt *os.Root, err error) error {
+	rt.Remove(filepath.FromSlash(p.tempRel))
+	pruneEmptyParents(rt, p.dirRel)
 	return err
 }
 
@@ -285,11 +377,16 @@ func (p *Pending) abandon(err error) error {
 // removal leaves them empty. Callers use it whenever a check fails, so a rejected body
 // never reaches a real cache path.
 func (p *Pending) Discard() error {
-	err := os.Remove(p.tempPath)
+	rt, err := os.OpenRoot(p.root)
+	if err != nil {
+		return err
+	}
+	defer rt.Close()
+	err = rt.Remove(filepath.FromSlash(p.tempRel))
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	pruneEmptyParents(p.root, filepath.Dir(p.tempPath))
+	pruneEmptyParents(rt, p.dirRel)
 	return nil
 }
 
@@ -331,14 +428,20 @@ func Verify(root, rel string, wantSize int64, wantDeliveredID string) bool {
 // gigabytes, and it is the only check that sees a mid-file corruption.
 //
 // It takes no size or version id, and does not need them: a digest match implies both.
-func VerifyDeep(root, rel, wantSHA string) bool {
-	sha, _, err := Hash(root, rel)
+func VerifyDeep(ctx context.Context, root, rel, wantSHA string) bool {
+	sha, _, err := Hash(ctx, root, rel)
 	return err == nil && sha == wantSHA
 }
 
 // Hash returns a cached file's digest and size, for adopting a file the tool did not
 // download itself.
-func Hash(root, rel string) (string, int64, error) {
+//
+// It takes a context for the same reason Scan and SweepTemps do. A single package reaches
+// 23 GB, so one call is minutes of reading, and main's signal handler has already taken
+// SIGINT's default action away for the life of the run: without this a Ctrl-C during
+// `sync --verify` is ignored until the whole file is read, and the second and third do
+// nothing either.
+func Hash(ctx context.Context, root, rel string) (string, int64, error) {
 	r, name, err := rooted(root, rel)
 	if err != nil {
 		return "", 0, err
@@ -350,11 +453,25 @@ func Hash(root, rel string) (string, int64, error) {
 	}
 	defer f.Close()
 	h := sha256.New()
-	size, err := io.Copy(h, f)
+	size, err := io.Copy(h, &ctxReader{ctx: ctx, r: f})
 	if err != nil {
 		return "", 0, err
 	}
 	return hex.EncodeToString(h.Sum(nil)), size, nil
+}
+
+// ctxReader ends a long read when the run does. The check is per Read rather than per
+// byte, so the granularity is io.Copy's buffer rather than the file.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c *ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
 }
 
 // Candidate is a package found on disk during an adopt scan.
@@ -551,35 +668,35 @@ func Relocate(root, fromRel, toRel string) error {
 	if err := r.Rename(fromName, toName); err != nil {
 		return err
 	}
-	pruneEmptyParents(root, filepath.Dir(filepath.Join(root, fromName)))
+	pruneEmptyParents(r, path.Dir(from))
 	return nil
 }
 
 // pruneEmptyParents removes directories the move emptied, walking up but never past the
 // library root.
 //
-// Confinement is filepath.Rel, not a string prefix. The root arrives however the user
-// spelled it, while every path it is compared against has been through resolve, which
-// joins and cleans — so a prefix test has to reproduce that cleaning, and gets at least
-// one spelling wrong every time. A bare "." cleans to ".", but Join(".", "pub/a") cleans
-// to "pub/a", which carries no "./" for the prefix to match: every prune site is
-// silently dead for `--library .`. Rel cleans both sides itself and answers the same for
-// ".", "./lib", "lib/", "/" and a drive root alike.
-func pruneEmptyParents(root, dir string) {
-	for {
-		rel, err := filepath.Rel(root, dir)
-		if err != nil || rel == "." || rel == ".." ||
-			strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+// It takes a root-relative path and acts through os.Root, so confinement is the
+// filesystem's rather than a string's: the walk stops at "." whatever the user spelled
+// the library as, and a parent reached through a symlink is refused rather than removed.
+// Removing one would take out the link itself and leave the directory it pointed at, so a
+// user who moved a publisher onto another disk would find their layout quietly rearranged.
+func pruneEmptyParents(rt *os.Root, relDir string) {
+	for rel := path.Clean(relDir); rel != "." && rel != "/" && !strings.HasPrefix(rel, ".."); rel = path.Dir(rel) {
+		name := filepath.FromSlash(rel)
+		f, err := rt.Open(name)
+		if err != nil {
 			return
 		}
-		entries, err := os.ReadDir(dir)
-		if err != nil || len(entries) > 0 {
+		entries, err := f.ReadDir(1)
+		f.Close()
+		// ReadDir(1) reports io.EOF for a directory with nothing in it, which is the one
+		// case worth acting on; anything else leaves the directory alone.
+		if len(entries) > 0 || (err != nil && err != io.EOF) {
 			return
 		}
-		if err := os.Remove(dir); err != nil {
+		if err := rt.Remove(name); err != nil {
 			return
 		}
-		dir = filepath.Dir(dir)
 	}
 }
 
@@ -639,6 +756,6 @@ func RemoveStale(root, rel string) error {
 		}
 		return err
 	}
-	pruneEmptyParents(root, filepath.Dir(filepath.Join(root, name)))
+	pruneEmptyParents(r, path.Dir(filepath.ToSlash(name)))
 	return nil
 }

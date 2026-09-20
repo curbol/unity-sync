@@ -116,7 +116,7 @@ func TestUnsafePathsAreRefused(t *testing.T) {
 		if cache.Verify(root, rel, 1, "") {
 			t.Errorf("Verify accepted path %q", rel)
 		}
-		if _, _, err := cache.Hash(root, rel); err == nil {
+		if _, _, err := cache.Hash(t.Context(), root, rel); err == nil {
 			t.Errorf("Hash accepted path %q", rel)
 		}
 		// RemoveStale deletes. A path that escapes the root would delete a file the tool
@@ -138,7 +138,7 @@ func TestHashReportsTheFilesRealDigestAndSize(t *testing.T) {
 	body := pkg(t, "111", "v1", 4096)
 	p := storeCommitted(t, root, "pub", "asset", body)
 
-	sha, size, err := cache.Hash(root, p.RelPath)
+	sha, size, err := cache.Hash(t.Context(), root, p.RelPath)
 	if err != nil {
 		t.Fatalf("Hash: %v", err)
 	}
@@ -758,7 +758,7 @@ func TestARecordedPathCannotReachOutsideTheLibraryThroughASymlink(t *testing.T) 
 	if cache.Verify(root, escaping, 400, "9") {
 		t.Error("Verify accepted a file outside the library as this asset's cached copy")
 	}
-	if _, _, err := cache.Hash(root, escaping); err == nil {
+	if _, _, err := cache.Hash(t.Context(), root, escaping); err == nil {
 		t.Error("Hash read a file outside the library")
 	}
 }
@@ -792,5 +792,95 @@ func TestBothWalksStopWhenTheContextEnds(t *testing.T) {
 	}
 	if n, _ := cache.SweepTemps(t.Context(), root, time.Now().Add(time.Hour)); n != 1 {
 		t.Errorf("SweepTemps reclaimed %d temp(s) with a live context, want 1", n)
+	}
+}
+
+// The write gate has to refuse exactly what the read gate refuses. Store used plain
+// os.MkdirAll and os.CreateTemp against a lexically joined path while Verify, Hash,
+// RemoveStale and Relocate all went through os.Root, so a symlinked publisher directory —
+// what a user does when one publisher outgrows the disk holding a 75 GB library — was
+// writable and then unreadable. The download succeeded and was recorded, and every later
+// run found Verify false and the adopt scan empty (WalkDir does not descend a symlink),
+// classified the asset CacheMissing and fetched the whole package again. Forever, with
+// nothing printed: a 23 GB transfer on every sync, reported as "cache-missing 1".
+func TestStoreRefusesToWriteThroughASymlinkTheReadsWouldRefuse(t *testing.T) {
+	for _, tc := range []struct{ name, target string }{
+		{"a link off the library", ""},
+		{"a link that stays inside it", "storage"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			root := filepath.Join(base, "library")
+			if err := os.MkdirAll(root, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			target := tc.target
+			if target == "" {
+				target = filepath.Join(base, "disk2")
+				if err := os.MkdirAll(target, 0o755); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.MkdirAll(filepath.Join(root, target), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(target, filepath.Join(root, "bigpub")); err != nil {
+				t.Skipf("this filesystem does not support symlinks: %v", err)
+			}
+
+			body := pkg(t, "111", "9", 400)
+			p, err := cache.Store(root, "bigpub", "asset-111", bytes.NewReader(body))
+			if err == nil {
+				// The half that made it silent: Store succeeding is only harmless if
+				// every later read agrees, and none of them does.
+				if err := p.Commit(); err != nil {
+					t.Fatalf("Store accepted the path but Commit refused it: %v", err)
+				}
+				if !cache.Verify(root, p.RelPath, p.Size, "9") {
+					t.Fatal("Store wrote a package Verify refuses, which re-downloads it on every run")
+				}
+				ix := cache.Scan(t.Context(), root)
+				if _, ok := ix.Find("111", p.RelPath); !ok {
+					t.Fatal("Store wrote a package the adopt scan cannot see, which re-downloads it on every run")
+				}
+				return
+			}
+			// Refused is the other acceptable answer, and the one that names the cause.
+			if !strings.Contains(err.Error(), "symlink") {
+				t.Errorf("Store refused the path without naming the symlink: %v", err)
+			}
+			if !strings.Contains(err.Error(), "bigpub") {
+				t.Errorf("Store refused the path without naming the segment: %v", err)
+			}
+		})
+	}
+}
+
+// pruneEmptyParents walked up with plain os.Remove over a lexically joined path, so the
+// directory it emptied under a symlinked publisher was removed by deleting the *link* and
+// leaving the directory it pointed at. A user who moved a publisher to another disk would
+// find the link gone and their library quietly rearranged.
+func TestPruningNeverRemovesALinkTheUserPut(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "library")
+	away := filepath.Join(base, "disk2")
+	if err := os.MkdirAll(away, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "bigpub")
+	if err := os.Symlink(away, link); err != nil {
+		t.Skipf("this filesystem does not support symlinks: %v", err)
+	}
+	// Whatever Store does with the link, the cleanup that follows a discarded download
+	// must not take the link with it.
+	if p, err := cache.Store(root, "bigpub", "asset-111", bytes.NewReader(pkg(t, "111", "9", 400))); err == nil {
+		if err := p.Discard(); err != nil {
+			t.Fatalf("Discard: %v", err)
+		}
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Fatalf("the user's symlink was removed: %v", err)
 	}
 }

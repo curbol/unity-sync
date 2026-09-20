@@ -350,9 +350,9 @@ func TestNoCredentialAnywhereNamesWhatWasTried(t *testing.T) {
 	if err == nil {
 		t.Fatal("ResolveFrom succeeded with no credential anywhere")
 	}
-	var missing *ErrNoBrowserCredential
+	var missing *errNoBrowserCredential
 	if !asErr(err, &missing) {
-		t.Fatalf("error is %T, want *ErrNoBrowserCredential", err)
+		t.Fatalf("error is %T, want *errNoBrowserCredential", err)
 	}
 	if !strings.Contains(err.Error(), "aaaa.empty") {
 		t.Errorf("error does not name the profile it read: %v", err)
@@ -785,7 +785,7 @@ func TestALiveSessionStoreBeatsACleanShutdownOne(t *testing.T) {
 
 // encoding/json builds a syntax error by quoting the byte it choked on, and that byte came
 // out of a file holding credentials for every host the browsing session touched. The error
-// reaches the user through ErrNoBrowserCredential, which lists what it tried. Wrapping the
+// reaches the user through errNoBrowserCredential, which lists what it tried. Wrapping the
 // decoder's error with %w is the one path here that would put decoded bytes in a
 // diagnostic.
 func TestADecodeFailureDoesNotQuoteWhatItRead(t *testing.T) {

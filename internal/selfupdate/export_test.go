@@ -30,3 +30,22 @@ func ExecutableMagicFor(goos string) ([][]byte, bool) {
 	m, ok := executableMagic[goos]
 	return m, ok
 }
+
+// New, Replace and PlatformAsset are reached only from the test binary. They are hooks
+// rather than exported API because replace renames arbitrary bytes over a path with no
+// gate of its own: the magic-byte check that makes that safe lives in update, one call
+// site above it, so keeping the whole package behind Run is what makes the
+// check-then-replace ordering unbypassable by construction rather than by convention.
+var (
+	New           = newClient
+	Replace       = replace
+	PlatformAsset = platformAssetForHost
+)
+
+// Method expressions, so the test binary can drive the two steps of an update separately
+// without client or release being part of the package's API. A caller outside the package
+// cannot name either type, but type inference lets a test hold values of both.
+var (
+	Resolve        = (*client).resolve
+	DownloadBinary = (*client).downloadBinary
+)

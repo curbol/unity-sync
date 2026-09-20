@@ -75,6 +75,18 @@ func (c Class) String() string {
 	}
 }
 
+// Classes is every class, in the order a summary should list them: what a run has to do
+// first, then what it did, then what it could not.
+//
+// Exported because the summary is one list and printing it was another, spelled out as
+// string literals. String's default arm returns "unchanged", so an eighth class added
+// without updating both places either reported as a no-op or dropped out of the per-class
+// tally while still counting toward the total — a summary whose lines do not sum, with
+// nothing failing.
+func Classes() []Class {
+	return []Class{New, Changed, DownloadNow, CacheMissing, Adopted, Unchanged, Undownloadable}
+}
+
 // needsFetch reports whether a class means bytes must come off the network.
 func (c Class) needsFetch() bool {
 	switch c {
@@ -508,6 +520,16 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 	wg.Wait()
 
 	for _, res := range done {
+		// A goroutine already inside retry.Do when the pool was cancelled comes back with
+		// context.Canceled, which is the run's outcome rather than the asset's — the same
+		// thing NotAttempted records for the ones that never started. Counted as a failure
+		// it is printed as "failed: <name>: context canceled", so an expired session at
+		// asset 5 of 300 buries its one actionable line under a Concurrency-1 pile of
+		// them. The stall guard is the only other cancellation on this path and store
+		// renames that to ErrStalled, so nothing real is being swallowed here.
+		if poolCtx.Err() != nil && errors.Is(res.Err, context.Canceled) {
+			res.Err, res.NotAttempted = nil, true
+		}
 		switch {
 		case res.NotAttempted:
 			report.NotAttempted++

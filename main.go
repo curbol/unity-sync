@@ -352,16 +352,18 @@ func syncOrStatus(ctx context.Context, client syncer.Store, cfg config.Config,
 }
 
 func printReport(w io.Writer, rep syncer.Report, dry bool, libraryPath string) {
-	counts := map[string]int{}
+	counts := map[syncer.Class]int{}
 	for _, r := range rep.Results {
-		counts[r.Class.String()]++
+		counts[r.Class]++
 	}
 	verb := "sync"
 	if dry {
 		verb = "status (no changes made)"
 	}
 	fmt.Fprintf(w, "%s: %d owned, %d selected\n", verb, rep.Owned, len(rep.Results))
-	for _, class := range []string{"new", "changed", "download-now", "cache-missing", "adopted", "unchanged", "undownloadable"} {
+	// The order comes from syncer rather than a list spelled out here, so a class added
+	// there cannot go missing from the tally while still counting toward the total.
+	for _, class := range syncer.Classes() {
 		if n := counts[class]; n > 0 {
 			fmt.Fprintf(w, "  %-15s %d\n", class, n)
 		}

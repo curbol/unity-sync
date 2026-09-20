@@ -44,6 +44,16 @@ jobs:
       # committed, scrubbed fixtures.
       - run: go test -race ./...
 
+      # The mozlz4 decoder is the only hand-written binary parser here, and it runs over a
+      # file another program wrote. Every other test feeds it blocks the suite encoded
+      # itself, so they cover what a correct encoder emits rather than what a corrupt file
+      # holds; the seed corpus is committed, and this is the part that goes looking. Short
+      # on purpose — it is a per-build sweep, not a campaign.
+      - name: fuzz the session-store decoder
+        run: |
+          go test ./internal/session/ -run=XXX -fuzz=FuzzLZ4Block -fuzztime=20s
+          go test ./internal/session/ -run=XXX -fuzz=FuzzDecodeMozLZ4 -fuzztime=20s
+
   # The release ships binaries for platforms this repo's Linux job never executes, and the
   # checks that decide whether an update is safe to install select on the host: both the Go
   # signature table and install.sh's resolve to the running platform, so on Linux alone

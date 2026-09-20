@@ -30,15 +30,15 @@ const repo = "curbol/unity-sync"
 // is plainly not one of them.
 const maxArchiveBytes = 256 << 20
 
-// Client is the GitHub API surface, injectable so tests need no network.
-type Client struct {
+// client is the GitHub API surface, injectable so tests need no network.
+type client struct {
 	http    *http.Client
 	apiBase string
 	token   string
 }
 
-// New builds a client. A caller passing an empty base uses api.github.com.
-func New(apiBase, token string) *Client {
+// newClient builds a client. A caller passing an empty base uses api.github.com.
+func newClient(apiBase, token string) *client {
 	if apiBase == "" {
 		apiBase = "https://api.github.com"
 	}
@@ -48,7 +48,7 @@ func New(apiBase, token string) *Client {
 	// connections that most need it. The caller's context supplies cancellation.
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = 60 * time.Second
-	return &Client{
+	return &client{
 		// This client follows redirects: the asset endpoint 302s to a signed CDN URL.
 		http:    &http.Client{Transport: transport},
 		apiBase: strings.TrimSuffix(apiBase, "/"),
@@ -82,8 +82,8 @@ type release struct {
 	} `json:"assets"`
 }
 
-// PlatformAsset is the release archive name for the running platform.
-func PlatformAsset(version string) (string, error) {
+// platformAssetForHost is the release archive name for the running platform.
+func platformAssetForHost(version string) (string, error) {
 	return platformAsset(runtime.GOOS, runtime.GOARCH, version)
 }
 
@@ -125,7 +125,7 @@ func platformAsset(goos, goarch, version string) (string, error) {
 
 // sameHost refuses a URL that does not belong to the API this client was pointed at, so
 // a field in a response cannot redirect the credential somewhere else.
-func (c *Client) sameHost(raw string) error {
+func (c *client) sameHost(raw string) error {
 	want, err := url.Parse(c.apiBase)
 	if err != nil {
 		return err
@@ -140,7 +140,7 @@ func (c *Client) sameHost(raw string) error {
 	return nil
 }
 
-func (c *Client) get(ctx context.Context, url, accept string) (*http.Response, error) {
+func (c *client) get(ctx context.Context, url, accept string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -162,8 +162,8 @@ func (c *Client) get(ctx context.Context, url, accept string) (*http.Response, e
 	return resp, nil
 }
 
-// Resolve finds a release: the latest, or a specific version when one is named.
-func (c *Client) Resolve(ctx context.Context, version string) (release, error) {
+// resolve finds a release: the latest, or a specific version when one is named.
+func (c *client) resolve(ctx context.Context, version string) (release, error) {
 	url := c.apiBase + "/repos/" + repo + "/releases/latest"
 	if version != "" {
 		url = c.apiBase + "/repos/" + repo + "/releases/tags/v" + strings.TrimPrefix(version, "v")
@@ -183,10 +183,10 @@ func (c *Client) Resolve(ctx context.Context, version string) (release, error) {
 	return rel, nil
 }
 
-// DownloadBinary fetches the platform archive for a release and returns the binary
+// downloadBinary fetches the platform archive for a release and returns the binary
 // inside it.
-func (c *Client) DownloadBinary(ctx context.Context, rel release) ([]byte, error) {
-	want, err := PlatformAsset(strings.TrimPrefix(rel.TagName, "v"))
+func (c *client) downloadBinary(ctx context.Context, rel release) ([]byte, error) {
+	want, err := platformAssetForHost(strings.TrimPrefix(rel.TagName, "v"))
 	if err != nil {
 		return nil, err
 	}
@@ -286,9 +286,9 @@ func checkExecutable(binary []byte) error {
 	return fmt.Errorf("the release asset is not a %s executable", runtime.GOOS)
 }
 
-// Replace swaps the running executable for the given bytes, writing beside the target so
+// replace swaps the running executable for the given bytes, writing beside the target so
 // the rename is atomic and cannot leave a half-written binary on PATH.
-func Replace(targetPath string, binary []byte) error {
+func replace(targetPath string, binary []byte) error {
 	dir := filepath.Dir(targetPath)
 	tmp, err := os.CreateTemp(dir, ".unity-sync-update-*")
 	if err != nil {
@@ -300,7 +300,16 @@ func Replace(targetPath string, binary []byte) error {
 		os.Remove(name)
 		return err
 	}
-	if err := tmp.Chmod(0o755); err != nil {
+	// The mode the target already has wins, so an install the user locked down stays that
+	// way: chmod 700 on a shared machine, then `unity-sync update`, otherwise handed group
+	// and other read and execute back and reported success. The execute bit is forced on
+	// regardless, because a binary that is not executable is the one thing this must never
+	// leave on PATH; 0755 is the fallback when there is no target to read a mode from.
+	mode := os.FileMode(0o755)
+	if fi, statErr := os.Stat(targetPath); statErr == nil {
+		mode = fi.Mode().Perm() | 0o100
+	}
+	if err := tmp.Chmod(mode); err != nil {
 		tmp.Close()
 		os.Remove(name)
 		return err
@@ -378,17 +387,17 @@ func Run(ctx context.Context, w io.Writer, current, version string) error {
 	if self, err = filepath.EvalSymlinks(self); err != nil {
 		return err
 	}
-	return update(ctx, w, New("", token(ctx)), current, version, self)
+	return update(ctx, w, newClient("", token(ctx)), current, version, self)
 }
 
 // update is Run with the client and the binary it replaces supplied, which is the only
 // seam a test can drive: Run replaces whatever is running, and under `go test` that is the
 // test binary.
-func update(ctx context.Context, w io.Writer, c *Client, current, version, target string) error {
+func update(ctx context.Context, w io.Writer, c *client, current, version, target string) error {
 	if current == "dev" {
 		return fmt.Errorf("this is a dev build; install a release first")
 	}
-	rel, err := c.Resolve(ctx, version)
+	rel, err := c.resolve(ctx, version)
 	if err != nil {
 		return err
 	}
@@ -397,16 +406,16 @@ func update(ctx context.Context, w io.Writer, c *Client, current, version, targe
 		fmt.Fprintf(w, "already on %s\n", current)
 		return nil
 	}
-	binary, err := c.DownloadBinary(ctx, rel)
+	binary, err := c.downloadBinary(ctx, rel)
 	if err != nil {
 		return err
 	}
-	// Before Replace, not after: past that rename the working binary is already gone,
+	// Before replace, not after: past that rename the working binary is already gone,
 	// and leaving nothing usable on PATH is the one outcome an updater must never produce.
 	if err := checkExecutable(binary); err != nil {
 		return fmt.Errorf("refusing to install %s: %w", latest, err)
 	}
-	if err := Replace(target, binary); err != nil {
+	if err := replace(target, binary); err != nil {
 		return err
 	}
 	fmt.Fprintf(w, "updated %s -> %s\n", current, latest)

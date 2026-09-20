@@ -252,7 +252,7 @@ func fromSessionStore(raw []byte) (map[string]string, error) {
 		// The decoder's own error is dropped rather than wrapped. encoding/json builds a
 		// syntax error by quoting the offending byte, and that byte came out of a file
 		// holding credentials for every host the browsing session touched; this error
-		// then reaches the user through ErrNoBrowserCredential. Nothing unwraps it.
+		// then reaches the user through errNoBrowserCredential. Nothing unwraps it.
 		return nil, errNotSessionStoreJSON
 	}
 
@@ -347,7 +347,7 @@ func exists(path string) bool {
 func resolveBrowser(source string) (Resolved, error) {
 	candidates := storeCandidates(source)
 	if len(candidates) == 0 {
-		// Named, the way ErrNoBrowserCredential names what it read. This is the message a
+		// Named, the way errNoBrowserCredential names what it read. This is the message a
 		// user gets when their browser is not one of the roots swept, and without the list
 		// it reads as "you have no session" rather than "look somewhere else".
 		return Resolved{}, fmt.Errorf("no Firefox-family session store found for %q (looked under: %s)",
@@ -371,18 +371,18 @@ func resolveBrowser(source string) (Resolved, error) {
 		}
 		return Resolved{Header: join(pairs), Path: path}, nil
 	}
-	return Resolved{}, &ErrNoBrowserCredential{Source: source, Skipped: skipped}
+	return Resolved{}, &errNoBrowserCredential{Source: source, Skipped: skipped}
 }
 
-// ErrNoBrowserCredential means session stores were found and read but none held the
+// errNoBrowserCredential means session stores were found and read but none held the
 // credential. It lists what was tried, because the usual cause is that the browser has
 // never signed in during this browsing session rather than anything being misconfigured.
-type ErrNoBrowserCredential struct {
+type errNoBrowserCredential struct {
 	Source  string
 	Skipped []string
 }
 
-func (e *ErrNoBrowserCredential) Error() string {
+func (e *errNoBrowserCredential) Error() string {
 	return fmt.Sprintf("no %s cookie in any Firefox-family session store for %q: the browser keeps it "+
 		"for the life of a browsing session, so sign in to the Asset Store in that browser and "+
 		"try again (looked at: %s)", credentialCookie, e.Source, strings.Join(e.Skipped, "; "))

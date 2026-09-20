@@ -81,6 +81,14 @@ func lz4Decompress(src []byte, want int) ([]byte, error) {
 			if i+literals > len(src) {
 				return nil, errors.New("lz4: literal run runs past the end of the block")
 			}
+			// Bounded against want before the append, the way the match length below is.
+			// Without it the declared size is a ceiling on what is returned but not on
+			// what is allocated: a header declaring 100 bytes over a 5 MB block of
+			// literals grows dst 5 MB past its want-sized capacity, and only then does the
+			// closing length comparison refuse it.
+			if literals > want-len(dst) {
+				return nil, fmt.Errorf("lz4: literal run grows past the declared %d bytes", want)
+			}
 			dst = append(dst, src[i:i+literals]...)
 			i += literals
 		}

@@ -93,11 +93,11 @@ func TestDownloadFollowsTheAssetRedirect(t *testing.T) {
 	defer api.Close()
 
 	c := selfupdate.New(api.URL, "token")
-	rel, err := c.Resolve(context.Background(), "")
+	rel, err := selfupdate.Resolve(c, context.Background(), "")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	binary, err := c.DownloadBinary(context.Background(), rel)
+	binary, err := selfupdate.DownloadBinary(c, context.Background(), rel)
 	if err != nil {
 		t.Fatalf("DownloadBinary: %v — a client with the store's redirect ban fails exactly here", err)
 	}
@@ -370,11 +370,11 @@ func TestAnAssetURLOffTheAPIHostIsRefusedBeforeTheTokenIsSent(t *testing.T) {
 	defer api.Close()
 
 	c := selfupdate.New(api.URL, "super-secret")
-	rel, err := c.Resolve(context.Background(), "")
+	rel, err := selfupdate.Resolve(c, context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := c.DownloadBinary(context.Background(), rel); err == nil {
+	if _, err := selfupdate.DownloadBinary(c, context.Background(), rel); err == nil {
 		t.Fatal("DownloadBinary followed an asset URL onto another host")
 	}
 }
@@ -433,11 +433,11 @@ func TestTheGitHubTokenNeverReachesTheRedirectTarget(t *testing.T) {
 	}
 
 	c := selfupdate.New(apiBase, "secret-token")
-	rel, err := c.Resolve(context.Background(), "")
+	rel, err := selfupdate.Resolve(c, context.Background(), "")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if _, err := c.DownloadBinary(context.Background(), rel); err != nil {
+	if _, err := selfupdate.DownloadBinary(c, context.Background(), rel); err != nil {
 		t.Fatalf("DownloadBinary: %v", err)
 	}
 	if cdnAuth != "" {

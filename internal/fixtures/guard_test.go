@@ -74,7 +74,13 @@ func TestCommittedFixturesCarryNoAccountData(t *testing.T) {
 		// what the patterns below can find in one is down to which literals LZ4 happened
 		// to leave intact — and the suite builds every store it needs in memory through
 		// fixtures.MozLZ4, so a committed one is never legitimate whatever it holds.
-		if bytes.HasPrefix(raw, []byte("mozLz40\x00")) {
+		//
+		// testdata/fuzz is the exception: `go test -fuzz` writes a crasher there, and a
+		// crasher for FuzzDecodeMozLZ4 carries that magic by construction. Those bytes come
+		// from the fuzzer mutating a seed corpus defined in Go source, so there is no
+		// account data in them — but they are still scanned for it below.
+		inFuzzCorpus := strings.Contains(filepath.ToSlash(path), "/testdata/fuzz/")
+		if bytes.HasPrefix(raw, []byte("mozLz40\x00")) && !inFuzzCorpus {
 			t.Errorf("%s: is a Firefox session store, which carries the credentials of "+
 				"every host the browsing session touched", path)
 			return nil

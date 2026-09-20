@@ -57,7 +57,7 @@ func TestResolveSendsTheTokenAndCanPinAVersion(t *testing.T) {
 	defer srv.Close()
 
 	c := selfupdate.New(srv.URL, "secret-token")
-	if _, err := c.Resolve(context.Background(), "1.2.3"); err != nil {
+	if _, err := selfupdate.Resolve(c, context.Background(), "1.2.3"); err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
 	if seenAuth != "Bearer secret-token" {
@@ -79,11 +79,11 @@ func TestMissingPlatformAssetIsNamed(t *testing.T) {
 	defer srv.Close()
 
 	c := selfupdate.New(srv.URL, "t")
-	rel, err := c.Resolve(context.Background(), "")
+	rel, err := selfupdate.Resolve(c, context.Background(), "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = c.DownloadBinary(context.Background(), rel)
+	_, err = selfupdate.DownloadBinary(c, context.Background(), rel)
 	if err == nil || !strings.Contains(err.Error(), "no asset") {
 		t.Errorf("DownloadBinary = %v, want a complaint naming the missing asset", err)
 	}

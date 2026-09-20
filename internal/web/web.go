@@ -211,7 +211,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	page.Execute(w, data)
+	// The status line is already committed, so this cannot become an HTTP error — but it
+	// must not be silent either. template.Must runs Parse, not html/template's escape
+	// analysis, which is deferred to the first Execute: a template edit that leaves an
+	// action in an ambiguous context compiles, survives Must, and then serves 200 with an
+	// empty body. Without this the user sees a blank page and the terminal says nothing.
+	if err := page.Execute(w, data); err != nil {
+		fmt.Fprintln(os.Stderr, "select: rendering the page failed:", err)
+	}
 }
 
 func (h *Handler) save(w http.ResponseWriter, r *http.Request) {

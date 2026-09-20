@@ -28,7 +28,7 @@ enumeration, the lockfile, the cache layout, or the download guards.
 | --- | --- |
 | Owned-asset list | `POST /api/graphql/batch`, operation `SearchMyAssets` |
 | Single-product re-read | the same document with `ids: ["<id>"]` |
-| Package bytes | `GET /api/downloads/{productId}` |
+| Package bytes | `GET /api/downloads/{id}` |
 
 The GraphQL body is a batch: a JSON array of operations, answered by a positional array.
 

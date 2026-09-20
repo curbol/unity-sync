@@ -68,7 +68,7 @@ detect_platform() {
 
 latest_version() {
   VERSION=$(fetch "${API_BASE}/repos/${REPO}/releases/latest" \
-    | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/' || true)
+    | grep '"tag_name":' | sed -E 's/.*"tag_name": *"([^"]+)".*/\1/' || true)
   VERSION=${VERSION#v}
   [[ -n "$VERSION" ]] || { err "could not resolve the latest version from the GitHub API"; exit 1; }
   log "latest version: $VERSION"

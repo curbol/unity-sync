@@ -135,10 +135,9 @@ func Save(path string, m Manifest) error {
 		os.Remove(name)
 		return err
 	}
-	// Cleaned up like every other failure above. On Windows the rename fails outright
-	// when the destination is held open — an editor, an on-access scanner — and this one
-	// is written once per download, so the orphans pile up in a directory that is
-	// committed.
+	// Cleaned up like every other failure above. On Windows the rename fails outright when
+	// the destination is held open — an editor, an on-access scanner — and this file sits
+	// in a directory that is committed, so the temp must not be left in it.
 	if err := os.Rename(name, path); err != nil {
 		os.Remove(name)
 		return err

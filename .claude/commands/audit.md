@@ -340,8 +340,9 @@ anything about enumeration, the lockfile, the cache layout, or the download guar
     the early return that precedes every download and every save. Guard test:
     `internal/syncer/audit_test.go`.
 
-14. **Only `select` writes the manifest, and it accepts exactly one save.** `status`, `sync`, and `list` read it. A selection
-    that would empty a curated file is refused rather than saved.
+14. **Only `select` writes the manifest, and it accepts exactly one save.** `status`,
+    `sync`, and `list` read it. A selection that would empty a curated file is refused
+    rather than saved.
     *Violation shape:* a `manifest.Save` call reachable from any subcommand but `select`; a
     save path that bypasses the would-empty guard.
     *Check:* `grep -rn 'manifest\.Save' --include='*.go' .` should find exactly one
@@ -491,8 +492,9 @@ to get wrong here:
 - `store.searchOnce` and the error mapping. The batch is a JSON array answered
   positionally; check the indexing, the CSRF re-bootstrap and its single retry, and that
   each mapped error still matches the failure model table in `docs/design.md`.
-- `retry.Retryable` (`internal/retry/retry.go`), `retry.Permanent`, `Do`, and `backoff`. Which statuses retry, that a wrapped permanent error still unwraps for
-  `errors.Is`, and that the backoff respects context cancellation.
+- `retry.Retryable` (`internal/retry/retry.go`), `retry.Permanent`, `Do`, and `backoff`.
+  Which statuses retry, that a wrapped permanent error still unwraps for `errors.Is`, and
+  that the backoff respects context cancellation.
 - `build` and `fromEntry` (`internal/syncer/syncer.go`). Every owned asset gets
   an entry whether or not it is selected; the advertised half refreshes; the resolution half
   and the entry's key carry forward together so key and path cannot drift apart.
@@ -528,8 +530,9 @@ to get wrong here:
   `Load`, with `defaults` and `overlay` beneath it, plus `ResolveDir` and `expandHome`
   (all in `internal/config/config.go`). Flags arrive as `config.Flags`
   rather than being assigned by `main.go` after the chain ran, so that no source
-  can skip `expandHome`. An unset field at one level must not erase a value set at a lower-precedence
-  one. `Load` refuses a file carrying keys `fileConfig` does not decode, because
+  can skip `expandHome`. An unset field at one level must not erase a value set at a
+  lower-precedence one. `Load` refuses a file carrying keys `fileConfig` does not decode,
+  because
   `library-path` for `library_path` otherwise mirrors tens of gigabytes into the default
   directory with no diagnostic — which makes the example files checkable by feeding one in
   rather than by reading it. Confirm `config.example.toml` and `unity-sync.example.toml`

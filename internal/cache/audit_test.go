@@ -2,6 +2,8 @@ package cache_test
 
 import (
 	"bytes"
+	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -9,6 +11,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -77,7 +81,7 @@ func TestSweepWalksTheTreeAndSparesInFlightTemps(t *testing.T) {
 	os.Chtimes(stale, old, old)
 
 	cutoff := time.Now().Add(-time.Hour)
-	n, bytesFreed := cache.SweepTemps(root, cutoff)
+	n, bytesFreed := cache.SweepTemps(t.Context(), root, cutoff)
 	// A root-only scan would report zero here while leaving a multi-gigabyte orphan.
 	if n != 1 || bytesFreed != 100 {
 		t.Errorf("swept %d files / %d bytes, want 1 / 100", n, bytesFreed)
@@ -175,7 +179,7 @@ func TestRemoveStaleDeletesTheFileAndPrunesItsParents(t *testing.T) {
 // A library that does not exist yet is the first-run case, not an error: the sweep runs
 // before anything has been written.
 func TestSweepingAMissingRootIsNotAnError(t *testing.T) {
-	n, bytes := cache.SweepTemps(filepath.Join(t.TempDir(), "never-created"), time.Now())
+	n, bytes := cache.SweepTemps(t.Context(), filepath.Join(t.TempDir(), "never-created"), time.Now())
 	if n != 0 || bytes != 0 {
 		t.Errorf("swept %d files / %d bytes from a missing root", n, bytes)
 	}
@@ -190,11 +194,11 @@ func TestLocateSkipsAnExcludedFileWrittenNonCanonically(t *testing.T) {
 	rel := cache.RelPath("pub", "asset-1")
 	storeCommitted(t, root, "pub", "asset-1", pkg(t, "111", "9", 400))
 
-	if _, ok := cache.Scan(root).Find("111", "", rel); ok {
+	if _, ok := cache.Scan(t.Context(), root).Find("111", "", rel); ok {
 		t.Fatal("the canonical exclude did not skip the file")
 	}
 	for _, spelling := range []string{"./" + rel, "pub/./asset-1/asset-1.unitypackage"} {
-		if _, ok := cache.Scan(root).Find("111", "", spelling); ok {
+		if _, ok := cache.Scan(t.Context(), root).Find("111", "", spelling); ok {
 			t.Errorf("exclude %q did not skip the same file", spelling)
 		}
 	}
@@ -222,6 +226,14 @@ func TestPruningSurvivesHoweverTheRootWasSpelled(t *testing.T) {
 			}
 			return "." + string(filepath.Separator) + rel
 		},
+		// The working directory itself, which is the one spelling where a cleaned root is
+		// not a prefix of the paths joined under it: "." cleans to "." while
+		// Join(".", "pub/a") cleans to "pub/a", carrying no "./" for a prefix test to
+		// match. Every prune site is dead for `--library .` without this.
+		"dot": func(t *testing.T, base string) string {
+			t.Chdir(base)
+			return "."
+		},
 	}
 	for name, spell := range spellings {
 		t.Run(name, func(t *testing.T) {
@@ -246,11 +258,11 @@ func TestAnUnresolvableExclusionRefusesEveryCandidate(t *testing.T) {
 	root := t.TempDir()
 	storeCommitted(t, root, "pub", "asset-1", pkg(t, "111", "9", 400))
 
-	if _, ok := cache.Scan(root).Find("111", ""); !ok {
+	if _, ok := cache.Scan(t.Context(), root).Find("111", ""); !ok {
 		t.Fatal("the candidate is not findable at all")
 	}
 	for _, bad := range []string{"/etc/passwd", "../outside/x.unitypackage"} {
-		if _, ok := cache.Scan(root).Find("111", "", bad); ok {
+		if _, ok := cache.Scan(t.Context(), root).Find("111", "", bad); ok {
 			t.Errorf("exclusion %q was dropped and a candidate offered anyway", bad)
 		}
 	}
@@ -307,14 +319,14 @@ func TestATempStoreCreatedIsATempTheSweepAndScanRecognise(t *testing.T) {
 	}
 	// The adopt scan must not offer an uncommitted partial as something to adopt: a
 	// truncated body can clear the size floor with its descriptor intact.
-	if _, ok := cache.Scan(root).Find("115488", ""); ok {
+	if _, ok := cache.Scan(t.Context(), root).Find("115488", ""); ok {
 		t.Error("the adopt scan offered an uncommitted download temp as a candidate")
 	}
 	old := time.Unix(1600000000, 0)
 	if err := os.Chtimes(p.TempPath(), old, old); err != nil {
 		t.Fatal(err)
 	}
-	n, freed := cache.SweepTemps(root, time.Unix(1700000000, 0))
+	n, freed := cache.SweepTemps(t.Context(), root, time.Unix(1700000000, 0))
 	if n != 1 {
 		t.Fatalf("SweepTemps reclaimed %d, want 1: Store's temp name no longer matches what "+
 			"the sweep looks for, so abandoned downloads are never reclaimed", n)
@@ -438,7 +450,7 @@ func TestFindPrefersTheCopyAlreadyInPlaceWhateverItIsCalled(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ix := cache.Scan(root)
+	ix := cache.Scan(t.Context(), root)
 	for _, spelling := range []string{inPlace, "./" + inPlace, "pub-one//asset-1/asset-1.unitypackage"} {
 		got, ok := ix.Find("1", spelling)
 		if !ok {
@@ -487,5 +499,298 @@ func TestVerifyRefusesADirectory(t *testing.T) {
 	}
 	if cache.Verify(root, dir, fi.Size(), "") {
 		t.Errorf("Verify(%q) accepted a directory whose size happened to match", dir)
+	}
+}
+
+// Store and Canonical are the write gate and the read gate on the same path, and nothing
+// else holds them to the same alphabet. A segment Store accepts but Canonical refuses
+// creates a file no later run can resolve: Verify answers false, the entry becomes an
+// exclusion that refuses every adopt candidate, and the asset re-downloads in full every
+// run while the only output is a warning about a superseded copy.
+func TestEveryPathStoreCanWriteIsOneCanonicalAccepts(t *testing.T) {
+	for _, tc := range []struct{ name, publisher, asset string }{
+		{"ordinary names", "acme-tools", "quick-outline-115488"},
+		{"publisher id fallback", "publisher-1234", "quick-outline-115488"},
+		{"asset id fallback", "acme-tools", "115488"},
+		{"both fallbacks", "publisher-unknown", "115488"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := cache.Canonical(cache.RelPath(tc.publisher, tc.asset)); err != nil {
+				t.Errorf("Store would write %q, which Canonical refuses: %v",
+					cache.RelPath(tc.publisher, tc.asset), err)
+			}
+		})
+	}
+}
+
+func TestStoreRefusesASegmentCanonicalWouldNotResolve(t *testing.T) {
+	root := t.TempDir()
+	// A colon is legal in a Linux path and is the one character the two gates disagreed
+	// about, so it is what a product id carrying one would produce.
+	if _, err := cache.Store(root, "acme", "quick-outline-115:488", strings.NewReader("x")); err == nil {
+		t.Error("Store wrote a path Canonical refuses")
+	}
+	if entries, _ := os.ReadDir(root); len(entries) != 0 {
+		t.Errorf("the refused Store left %d entry/entries under the root", len(entries))
+	}
+}
+
+// The sweep walks the whole library, so its filename prefix is the only thing between it
+// and the user's own files — and a library pointed at a project directory holds the
+// lockfile's temps too. The positive control matters as much as the survivors: without
+// it this passes on a sweep that removes nothing at all.
+func TestTheSweepRemovesOnlyWhatItWrote(t *testing.T) {
+	root := t.TempDir()
+	// An abandoned download: Store leaves the bytes in a temp and Commit is never called.
+	if _, err := cache.Store(root, "pub", "asset-1", strings.NewReader("a partial body")); err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	keep := map[string]string{
+		"a committed package": filepath.Join(root, "pub", "asset-1", "asset-1.unitypackage"),
+		"an unrelated file":   filepath.Join(root, "pub", "asset-1", "notes.txt"),
+		"a dotfile":           filepath.Join(root, "pub", ".DS_Store"),
+	}
+	for what, p := range keep {
+		if err := os.WriteFile(p, []byte("keep me"), 0o644); err != nil {
+			t.Fatalf("writing %s: %v", what, err)
+		}
+	}
+
+	n, freed := cache.SweepTemps(t.Context(), root, time.Now().Add(time.Hour))
+	if n != 1 {
+		t.Errorf("swept %d files, want exactly the one abandoned temp", n)
+	}
+	if freed == 0 {
+		t.Error("freed 0 bytes for a temp that held some")
+	}
+	for what, p := range keep {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("the sweep removed %s (%s)", what, p)
+		}
+	}
+}
+
+// Commit is the one write here that deliberately lands on an occupied path: the occupant
+// is this asset's own superseded version. A Commit that refused it by symmetry with
+// Relocate would break every re-download while leaving this package's suite green.
+//
+// The mode is the destination's when there is one, so a library deliberately locked down
+// is not widened by a re-download, and 0644 otherwise — CreateTemp makes the temp 0600
+// and the rename would carry that over, leaving a downloaded package owner-only while an
+// adopted one keeps the 0644 it arrived with.
+func TestCommitReplacesThisAssetsSupersededCopyAndSettlesItsMode(t *testing.T) {
+	root := t.TempDir()
+	final := filepath.Join(root, "pub", "asset-1", "asset-1.unitypackage")
+
+	storeCommitted(t, root, "pub", "asset-1", []byte("old bytes"))
+	fi, err := os.Stat(final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode().Perm(); got != 0o644 {
+		t.Errorf("a freshly committed package is mode %v, want 0644", got)
+	}
+
+	if err := os.Chmod(final, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	storeCommitted(t, root, "pub", "asset-1", []byte("new bytes"))
+
+	got, err := os.ReadFile(final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != "new bytes" {
+		t.Errorf("committed file = %q, want the second commit to have replaced the first", got)
+	}
+	// Windows reports a different permission set, so only the Unix modes are asserted.
+	if fi, err := os.Stat(final); err == nil && runtime.GOOS != "windows" {
+		if mode := fi.Mode().Perm(); mode != 0o600 {
+			t.Errorf("mode = %v, want the destination's own 0600 preserved", mode)
+		}
+	}
+}
+
+// Every failure that removes the temp also unwinds the directories Store created for it.
+// Without that, an asset whose commit keeps failing leaves an empty <publisher>/<asset>/
+// behind on every attempt, in a tree quarry walks. The trigger here is the temp going
+// missing under Commit, which is what a second run sweeping with a stale clock does.
+func TestAFailedCommitUnwindsTheDirectoriesStoreCreated(t *testing.T) {
+	root := t.TempDir()
+	p, err := cache.Store(root, "pub", "asset-1", strings.NewReader("a body"))
+	if err != nil {
+		t.Fatalf("Store: %v", err)
+	}
+	if err := os.Remove(p.TempPath()); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Commit(); err == nil {
+		t.Fatal("Commit succeeded with no temp to rename")
+	}
+	for _, dir := range []string{
+		filepath.Join(root, "pub", "asset-1"),
+		filepath.Join(root, "pub"),
+	} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("%s survived a failed commit", dir)
+		}
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Errorf("the prune walked past the library root: %v", err)
+	}
+}
+
+// An entry that records a delivered id is saying the file's own descriptor claimed it.
+// A package carrying no descriptor cannot satisfy that, and passing it would verify on
+// size alone — which is exactly what an entry with no recorded id already does, so the
+// two cases have to stay apart.
+func TestVerifyFailsWhenARecordedDeliveredIdHasNoDescriptor(t *testing.T) {
+	root := t.TempDir()
+	var buf bytes.Buffer
+	zw := gzip.NewWriter(&buf)
+	zw.Write([]byte("a readable gzip stream with no store metadata"))
+	zw.Close()
+	body := buf.Bytes()
+
+	p := storeCommitted(t, root, "pub", "asset-1", body)
+	if !cache.Verify(root, p.RelPath, int64(len(body)), "") {
+		t.Fatal("an entry with no recorded delivered id must verify on size alone")
+	}
+	if cache.Verify(root, p.RelPath, int64(len(body)), "683375") {
+		t.Error("a package with no descriptor verified against a recorded delivered id")
+	}
+}
+
+// SameFile answers the question SamePath cannot on a case-insensitive filesystem, where
+// two spellings differing only in case name one file. That difference is observable only
+// on Windows and macOS, which CI runs; what every platform can check is that it answers
+// from the filesystem and refuses rather than guessing when either side is unsafe or
+// absent, because both callers are deciding whether to delete.
+func TestSameFileAnswersFromTheFilesystem(t *testing.T) {
+	root := t.TempDir()
+	one := storeCommitted(t, root, "pub", "asset-1", pkg(t, "1", "v1", 400))
+	two := storeCommitted(t, root, "pub", "asset-2", pkg(t, "2", "v1", 400))
+
+	cases := []struct {
+		name, a, b string
+		want       bool
+	}{
+		{"one file spelled two ways", one.RelPath, "./" + one.RelPath, true},
+		{"two different files", one.RelPath, two.RelPath, false},
+		{"a path with nothing on it", one.RelPath, cache.RelPath("pub", "absent"), false},
+		{"an unsafe path", one.RelPath, "../escape", false},
+		{"two unsafe paths are still not one file", "../escape", "../escape", false},
+		{"an empty path", one.RelPath, "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := cache.SameFile(root, tc.a, tc.b); got != tc.want {
+				t.Errorf("SameFile(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
+// Two spellings of one file, which is what Windows and macOS hand this package for free.
+// A symlinked alias reproduces the condition on a case-sensitive filesystem too: two
+// distinct names that the filesystem resolves to one file. Refusing that as an occupied
+// destination fails the adopt of a package already exactly where it belongs, forever and
+// on those platforms alone — Index.Find matches it with SameFile and then Relocate, the
+// one export that actually moves the file, refuses what Find just handed it.
+func TestRelocateOntoAnAliasOfItselfIsANoOp(t *testing.T) {
+	root := t.TempDir()
+	storeCommitted(t, root, "Pub", "asset-111", pkg(t, "111", "9", 400))
+	// Relative, and pointing at a sibling inside the library: an alias for a directory
+	// that is already there, which is all a case-insensitive filesystem is.
+	if err := os.Symlink("Pub", filepath.Join(root, "pub")); err != nil {
+		t.Skipf("this filesystem does not support symlinks: %v", err)
+	}
+	from, to := "Pub/asset-111/asset-111.unitypackage", "pub/asset-111/asset-111.unitypackage"
+	if cache.SamePath(from, to) {
+		t.Fatal("precondition: SamePath already collapses these, so there is nothing to show")
+	}
+	if !cache.SameFile(root, from, to) {
+		t.Fatal("precondition: the two spellings do not name one file")
+	}
+	if err := cache.Relocate(root, from, to); err != nil {
+		t.Errorf("Relocate refused a destination that is the source: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(from))); err != nil {
+		t.Errorf("the package was lost: %v", err)
+	}
+}
+
+// Canonical checks a spelling, and a spelling cannot answer this: every segment of
+// "link/victim" is an ordinary name, so the lexical confinement passes while the path
+// resolves straight out of the library. The value comes from the lockfile, which is
+// committed and hand-editable, and RemoveStale deletes what it is given.
+func TestARecordedPathCannotReachOutsideTheLibraryThroughASymlink(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "library")
+	outside := filepath.Join(base, "elsewhere")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	storeCommitted(t, root, "pub", "asset-111", pkg(t, "111", "9", 400))
+	victim := filepath.Join(outside, "victim.unitypackage")
+	if err := os.WriteFile(victim, pkg(t, "111", "9", 400), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Relative, so what these calls refuse is the escape itself rather than the simpler
+	// fact of an absolute link.
+	if err := os.Symlink(filepath.Join("..", "elsewhere"), filepath.Join(root, "link")); err != nil {
+		t.Skipf("this filesystem does not support symlinks: %v", err)
+	}
+	escaping := "link/victim.unitypackage"
+
+	if err := cache.RemoveStale(root, escaping); err == nil {
+		t.Error("RemoveStale followed a link out of the library")
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("RemoveStale deleted a file outside the library: %v", err)
+	}
+	if err := cache.Relocate(root, escaping, cache.RelPath("pub", "asset-222")); err == nil {
+		t.Error("Relocate moved a file in from outside the library")
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("Relocate moved a file outside the library: %v", err)
+	}
+	if cache.Verify(root, escaping, 400, "9") {
+		t.Error("Verify accepted a file outside the library as this asset's cached copy")
+	}
+	if _, _, err := cache.Hash(root, escaping); err == nil {
+		t.Error("Hash read a file outside the library")
+	}
+}
+
+// Both walks are where a large run spends its time, and main's handler has already taken
+// SIGINT's default action away, so a walk that ignores the context cannot be escalated out
+// of: the second and third Ctrl-C do nothing either.
+func TestBothWalksStopWhenTheContextEnds(t *testing.T) {
+	root := t.TempDir()
+	storeCommitted(t, root, "pub", "asset-111", pkg(t, "111", "9", 400))
+	partial, err := cache.Store(root, "pub", "asset-222", strings.NewReader("an abandoned partial"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, ok := cache.Scan(ctx, root).Find("111", ""); ok {
+		t.Error("Scan went on parsing headers after the run was told to stop")
+	}
+	if n, _ := cache.SweepTemps(ctx, root, time.Now().Add(time.Hour)); n != 0 {
+		t.Errorf("SweepTemps removed %d file(s) after the run was told to stop", n)
+	}
+	if _, err := os.Stat(partial.TempPath()); err != nil {
+		t.Errorf("the cancelled sweep deleted a temp anyway: %v", err)
+	}
+	// The positive control: with a live context the same calls do their work, so the
+	// assertions above cannot pass by the fixtures simply being wrong.
+	if _, ok := cache.Scan(t.Context(), root).Find("111", ""); !ok {
+		t.Error("Scan found nothing even with a live context")
+	}
+	if n, _ := cache.SweepTemps(t.Context(), root, time.Now().Add(time.Hour)); n != 1 {
+		t.Errorf("SweepTemps reclaimed %d temp(s) with a live context, want 1", n)
 	}
 }

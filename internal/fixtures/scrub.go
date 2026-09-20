@@ -7,6 +7,12 @@
 // testdata. A denylist would have to name each account-identifying field in advance, and
 // the only supported way to regenerate is to capture again from a signed-in session
 // against whatever the store returns that day.
+//
+// It also builds the synthetic payloads more than one suite needs: a .unitypackage
+// carrying the FEXTRA descriptor internal/unitypackage parses, and a Gecko session store
+// in the container internal/session decodes. Both encode a format this tool reads rather
+// than writes, so a hand-rolled copy per suite is a copy that stops matching the reader
+// with no compiler to say so.
 package fixtures
 
 import (
@@ -150,13 +156,13 @@ func parseSet(toks []string, i int) (fieldTree, int, error) {
 			return set, i + 1, nil
 		case "{":
 			return nil, 0, fmt.Errorf("selection set with no field before it")
-		case "@", ":", ".":
+		case "@", ":", ".", "#":
 			// Refused, not skipped. Each of these changes which response key a field
 			// answers to, and guessing wrong here widens what reaches a committed
 			// fixture. Teach this parser the construct before using it in the query.
 			return nil, 0, fmt.Errorf("the pinned query uses %q, which this parser does not "+
-				"understand; a directive, alias or fragment must be handled explicitly "+
-				"before it can appear in a document the scrub projects from", toks[i])
+				"understand; a directive, alias, fragment or comment must be handled "+
+				"explicitly before it can appear in a document the scrub projects from", toks[i])
 		}
 		name := toks[i]
 		i++
@@ -201,8 +207,10 @@ func tokenize(doc string) []string {
 		// Emitted rather than dropped as whitespace. A directive, an alias or a fragment
 		// spread would otherwise leave the field before it looking like a leaf, and a
 		// leaf's value is kept whole — so the scrub would silently widen, which is the
-		// one direction a scrubber must never fail in.
-		case r == '@' || r == ':' || r == '.':
+		// one direction a scrubber must never fail in. A comment is the same hazard from
+		// the other side: dropped as whitespace, every word after the '#' is read as a
+		// field name, so a line explaining which field not to ask for would add it.
+		case r == '@' || r == ':' || r == '.' || r == '#':
 			flush()
 			out = append(out, string(r))
 		default:

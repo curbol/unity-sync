@@ -368,6 +368,17 @@ func (c *Client) search(ctx context.Context, vars map[string]any) (searchResult,
 	return out, err
 }
 
+// classify decides whether a decoded-body verdict is worth another attempt, which only
+// the status can answer. A body shape that arrives under a 503 says the same thing an
+// HTML error page under a 503 says — the store is not answering yet — and marking it
+// permanent ends the run on a fault a second attempt would have cleared.
+func classify(status int, err error) error {
+	if retry.Retryable(status) {
+		return err
+	}
+	return retry.Permanent(err)
+}
+
 func (c *Client) searchOnce(ctx context.Context, vars map[string]any) (searchResult, error) {
 	body, err := json.Marshal([]map[string]any{{
 		"query":         SearchDocument,
@@ -424,13 +435,11 @@ func (c *Client) searchOnce(ctx context.Context, vars map[string]any) (searchRes
 		Errors []graphQLError `json:"errors"`
 	}
 	if err := json.Unmarshal(payload, &batch); err != nil {
-		if retry.Retryable(resp.StatusCode) {
-			return searchResult{}, fmt.Errorf("status %d with a non-JSON body: %w", resp.StatusCode, err)
-		}
-		return searchResult{}, retry.Permanent(fmt.Errorf("status %d with a non-JSON body: %w", resp.StatusCode, err))
+		return searchResult{}, classify(resp.StatusCode,
+			fmt.Errorf("status %d with a non-JSON body: %w", resp.StatusCode, err))
 	}
 	if len(batch) == 0 {
-		return searchResult{}, retry.Permanent(fmt.Errorf("empty GraphQL batch response"))
+		return searchResult{}, classify(resp.StatusCode, fmt.Errorf("empty GraphQL batch response"))
 	}
 	op := batch[0]
 	if len(op.Errors) > 0 {
@@ -440,17 +449,14 @@ func (c *Client) searchOnce(ctx context.Context, vars map[string]any) (searchRes
 		if resp.StatusCode == http.StatusInternalServerError && op.Errors[0].Message == "" {
 			return searchResult{}, retry.Permanent(ErrExpiredSession)
 		}
-		err := fmt.Errorf("store returned %s: %q", op.Errors[0].ErrorCode, op.Errors[0].Message)
 		// Only the empty-message shape is the session verdict. A server error that
 		// bothered to say what went wrong is still a server error, and the ordinary
 		// backoff applies.
-		if retry.Retryable(resp.StatusCode) {
-			return searchResult{}, err
-		}
-		return searchResult{}, retry.Permanent(err)
+		return searchResult{}, classify(resp.StatusCode,
+			fmt.Errorf("store returned %s: %q", op.Errors[0].ErrorCode, op.Errors[0].Message))
 	}
 	if op.Data.Search == nil {
-		return searchResult{}, retry.Permanent(fmt.Errorf("response carries neither data nor errors"))
+		return searchResult{}, classify(resp.StatusCode, fmt.Errorf("response carries neither data nor errors"))
 	}
 	return *op.Data.Search, nil
 }

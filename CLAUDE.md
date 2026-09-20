@@ -39,7 +39,9 @@ each with a package doc comment stating its contract:
 - `config` — user settings by precedence: defaults → `config.toml` → env → flags.
 - `session` — builds the Cookie header from a Firefox-family session store, a pasted curl
   file, or a `cookies.txt`, and asserts the `LS` cookie is present before any request. The
-  source is identified by reading it, not by configuration. `mozlz4.go` decodes Gecko's
+  source is identified by reading it, not by configuration. Both the running browser's
+  `recovery.jsonlz4` and the `sessionstore.jsonlz4` a clean exit leaves behind are
+  searched, live files first across every root. `mozlz4.go` decodes Gecko's
   compressed session store; the jar it holds spans every host the browsing session touched,
   so it is filtered to `unity.com` before anything leaves the package.
 - `retry` — backoff policy. `retry.Permanent` lets a caller stop on a body-based verdict
@@ -48,8 +50,10 @@ each with a package doc comment stating its contract:
 - `store` — the Asset Store client and the response-level download guards.
 - `cache` — the local mirror. Two-phase writes (`Store` → `Commit`/`Discard`), adopt by
   scan, relocate on rename, temp sweep, root confinement. `Canonical`/`SamePath` are the
-  only correct way to compare a lockfile-recorded path against a derived one.
-- `lockfile` — `unity-sync.lock.json`, advertised fields kept apart from resolution fields.
+  only correct way to compare a lockfile-recorded path against a derived one, and
+  `SameFile` is what pairs with them where the filesystem ignores case.
+- `lockfile` — `unity-sync.lock.json`, advertised fields kept apart from the embedded
+  `Resolution`, which is one type so its two write paths cannot drift.
 - `manifest` — `unity-sync.toml`, the committed allowlist keyed by asset id.
 - `syncer` — orchestration, the pure `classify`, and the semantic download guards.
 - `humanize` — byte sizes for people, clamped: the count comes from the store.
@@ -62,7 +66,10 @@ each with a package doc comment stating its contract:
 - **`LS` is the credential.** Not the NextAuth session token, which neither endpoint
   consults. Its absence is reported before any request, because the store answers a
   missing `LS` with an opaque 500. It is absent from `cookies.sqlite` but present in a
-  Gecko session store, which is what makes the browser source possible.
+  Gecko session store, which is what makes the browser source possible. A pasted curl
+  command is unquoted the way the shell it was copied for quoted it — POSIX, ANSI-C
+  `$'…'`, and the Windows cmd form with its `^"` wrapper and caret escapes — because
+  matching one quote style drops the credential from the others.
 - **No cookie value is ever logged**, and a session store is filtered to the `unity.com`
   family inside `internal/session`. That file carries credentials for every host the
   browsing session touched.
@@ -81,22 +88,50 @@ each with a package doc comment stating its contract:
   The API calls carry small JSON and are bounded end to end instead.
 - **`resolvedVersionId` is the diff key**, not the advertised `version.id`. The advertised
   value refreshes every run; pairing a refreshed id with an unresolved entry's file would
-  mark it current forever.
+  mark it current forever. Two entries for one asset id are refused at load — by the
+  manifest as well as the lockfile: a rename re-keys an entry, so a merge can leave both,
+  and lookups walk the map — the run would pick between them at random and drop the one it
+  did not pick.
 - **A derived slug is always a usable directory name.** `PublisherSlug` carries no id
   suffix, so it is the one segment that can come out a bare word: a publisher whose name
   folds to a Windows device name (`con`, `aux`, `com1`…) falls back to the id, and
   `cache.safeSegment` refuses one that arrives any other way. `MkdirAll` fails on those
   names, so without this the asset fails on Windows and nowhere else.
+- **A run stops classifying when its context ends.** The pass that hashes, relocates and
+  deletes is where a large run spends its time, and `main`'s signal handler has already
+  disabled SIGINT's default action, so an uninterruptible pass cannot be escalated out of
+  either. It breaks rather than returns, so the tail still records what was resolved;
+  `cache.Scan` and `cache.SweepTemps` stop mid-walk for the same reason.
 - **A recorded `cachePath` is compared with `cache.SamePath`, never `==`.** That file is
   committed and hand-editable, so two spellings name one file; comparing them raw makes a
   run delete the package it just downloaded as a superseded copy. `cache.Canonical` works
   in slash space and refuses a backslash or a colon: Windows' `filepath.Clean` lifts a
   volume prefix out before resolving `..` and restores it after, so `Z:../../x` cleans to
-  itself and escapes the root on that platform alone.
+  itself and escapes the root on that platform alone. Spelling is not the whole answer
+  where the filesystem ignores case, so every delete or move asks `cache.SameFile` too —
+  `cache.Relocate` included, where an occupant that is the source under its other spelling
+  is a no-op rather than the refusal that would fail the adopt on those platforms forever.
+- **Confinement of a recorded path is the filesystem's, not the string's.** `Canonical`
+  settles a spelling, and a path whose every segment is an ordinary name still leaves the
+  library when one of them is a symlink. Every operation on a lockfile-supplied path opens,
+  moves or removes through `os.Root` (`cache.rooted`), which resolves inside the root at
+  the syscall level; `resolve` stays lexical and is only for the callers that want the name
+  rather than the file.
+- **The lockfile is rewritten as each asset resolves, in every pass.** Not only the
+  downloads: the classification pass relocates and deletes whole packages, so a run that
+  adopts and fetches nothing would otherwise ride on one closing write. Lose it and the
+  library has moved while the record names the old path with a digest that no longer
+  matches, which the next run reads as `Unchanged` and carries forward.
 - **Nothing unverified reaches a real cache path.** `cache.Store` does not rename;
-  `Commit` does, after the syncer's guards pass.
+  `Commit` does, after the syncer's guards pass. `Store` also refuses a path `Canonical`
+  would not resolve, so the write gate cannot be weaker than the read gate.
+- **A delisted asset already in the library is adopted, not reported missing.** A disabled
+  product answers 404, so it is the one class where a download cannot make up the
+  difference and the lockfile is not the only thing that knows the bytes are here.
 - **A failed download fails its asset, not the run**, and a pulled asset does not make the
-  run exit non-zero.
+  run exit non-zero. Assets a cancelled pool never reached are counted apart from the ones
+  that failed and summarised in one line, so an expired session does not bury its own
+  diagnostic under a cancellation per remaining asset; they still exit non-zero.
 - **The select page is served only to a browser on this machine.** The bind address is
   refused unless it names one address, because `Host` is client-supplied and a wildcard
   bind has nothing to check it against. Every request's `Host` is then checked against the
@@ -109,11 +144,13 @@ each with a package doc comment stating its contract:
   refuses an owned set that is empty, and one that shares no id with what was enabled: both
   are what a wrong-org session looks like, and the select page's own would-empty guard is
   compared against a set `Reconcile` has already rewritten.
-- **An update installs nothing that is not a native binary.** The zip reader verifies each
-  entry's CRC; a magic-byte check catches the other failure, a release that shipped an
-  error page or the wrong artifact under the right name. It runs *before* the rename, in
-  `selfupdate` and in `install.sh` alike, because past that point the working binary is
-  gone and leaving nothing usable on PATH is the one outcome an updater must never produce.
+- **An update installs nothing that is not a native binary**, and it sends the GitHub
+  token only to the API host it was pointed at, never to a URL a response named. The zip
+  reader verifies each entry's CRC; a magic-byte check catches the other failure, a release
+  that shipped an error page or the wrong artifact under the right name. It runs *before*
+  the rename, in `selfupdate` and in `install.sh` alike, because past that point the
+  working binary is gone and leaving nothing usable on PATH is the one outcome an updater
+  must never produce.
 - **No account data in the repo.** Sessions and raw captures stay out; the
   `internal/fixtures` guard test fails the build if any reaches *any* `testdata/`, package
   local ones included. The scrub is an allowlist projected from `store.SearchDocument`, so

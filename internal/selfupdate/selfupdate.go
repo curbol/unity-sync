@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,11 @@ import (
 )
 
 const repo = "curbol/unity-sync"
+
+// maxArchiveBytes bounds a release asset. The published zips are single-digit megabytes,
+// so this leaves room to grow by an order of magnitude and still refuses an artifact that
+// is plainly not one of them.
+const maxArchiveBytes = 256 << 20
 
 // Client is the GitHub API surface, injectable so tests need no network.
 type Client struct {
@@ -117,6 +123,23 @@ func platformAsset(goos, goarch, version string) (string, error) {
 	return fmt.Sprintf("unity-sync-%s-%s-%s.zip", version, os_, arch), nil
 }
 
+// sameHost refuses a URL that does not belong to the API this client was pointed at, so
+// a field in a response cannot redirect the credential somewhere else.
+func (c *Client) sameHost(raw string) error {
+	want, err := url.Parse(c.apiBase)
+	if err != nil {
+		return err
+	}
+	got, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("release asset URL %q is unparseable: %w", raw, err)
+	}
+	if got.Scheme != want.Scheme || got.Host != want.Host {
+		return fmt.Errorf("release asset URL %q is not on %s", raw, c.apiBase)
+	}
+	return nil
+}
+
 func (c *Client) get(ctx context.Context, url, accept string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
@@ -177,15 +200,28 @@ func (c *Client) DownloadBinary(ctx context.Context, rel release) ([]byte, error
 	if assetURL == "" {
 		return nil, fmt.Errorf("release %s has no asset %s", rel.TagName, want)
 	}
+	// The URL comes out of the release JSON, and get attaches the user's token to
+	// whatever it is handed. Go drops the Authorization header on a redirect to another
+	// host, so the signed CDN never sees it — but that only covers the second hop, and
+	// this is the first.
+	if err := c.sameHost(assetURL); err != nil {
+		return nil, err
+	}
 	// The asset API answers with a 302 to a signed CDN URL; this client follows it.
 	resp, err := c.get(ctx, assetURL, "application/octet-stream")
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	archive, err := io.ReadAll(resp.Body)
+	// Bounded: a release that shipped the wrong artifact under the right name would
+	// otherwise be buffered whole, and an update that is OOM-killed is a worse way to
+	// find that out than an error naming the size.
+	archive, err := io.ReadAll(io.LimitReader(resp.Body, maxArchiveBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if int64(len(archive)) > maxArchiveBytes {
+		return nil, fmt.Errorf("release asset %s is larger than %d bytes", want, maxArchiveBytes)
 	}
 	return binaryFromZip(archive)
 }
@@ -205,7 +241,17 @@ func binaryFromZip(archive []byte) ([]byte, error) {
 			return nil, err
 		}
 		defer rc.Close()
-		return io.ReadAll(rc)
+		// The declared size is the archive's claim about itself, so the read is bounded
+		// rather than trusted: a small zip can declare an entry that expands to more
+		// memory than the machine has.
+		binary, err := io.ReadAll(io.LimitReader(rc, maxArchiveBytes+1))
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(binary)) > maxArchiveBytes {
+			return nil, fmt.Errorf("the binary in the release asset is larger than %d bytes", maxArchiveBytes)
+		}
+		return binary, nil
 	}
 	return nil, fmt.Errorf("release asset contains no unity-sync binary")
 }
@@ -324,7 +370,7 @@ func replaceAside(newPath, targetPath string, direct error) error {
 // The token is opportunistic: get omits the Authorization header when it is empty, and
 // GitHub serves a public repository's releases and assets anonymously. Requiring one here
 // failed the update for every user who installed a release binary and never set one.
-func Run(ctx context.Context, current, version string) error {
+func Run(ctx context.Context, w io.Writer, current, version string) error {
 	self, err := os.Executable()
 	if err != nil {
 		return err
@@ -332,13 +378,13 @@ func Run(ctx context.Context, current, version string) error {
 	if self, err = filepath.EvalSymlinks(self); err != nil {
 		return err
 	}
-	return update(ctx, New("", token(ctx)), current, version, self)
+	return update(ctx, w, New("", token(ctx)), current, version, self)
 }
 
 // update is Run with the client and the binary it replaces supplied, which is the only
 // seam a test can drive: Run replaces whatever is running, and under `go test` that is the
 // test binary.
-func update(ctx context.Context, c *Client, current, version, target string) error {
+func update(ctx context.Context, w io.Writer, c *Client, current, version, target string) error {
 	if current == "dev" {
 		return fmt.Errorf("this is a dev build; install a release first")
 	}
@@ -348,7 +394,7 @@ func update(ctx context.Context, c *Client, current, version, target string) err
 	}
 	latest := strings.TrimPrefix(rel.TagName, "v")
 	if latest == current {
-		fmt.Printf("already on %s\n", current)
+		fmt.Fprintf(w, "already on %s\n", current)
 		return nil
 	}
 	binary, err := c.DownloadBinary(ctx, rel)
@@ -363,6 +409,6 @@ func update(ctx context.Context, c *Client, current, version, target string) err
 	if err := Replace(target, binary); err != nil {
 		return err
 	}
-	fmt.Printf("updated %s -> %s\n", current, latest)
+	fmt.Fprintf(w, "updated %s -> %s\n", current, latest)
 	return nil
 }

@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,9 +10,16 @@ import (
 	"strings"
 )
 
-// sessionStoreName is the file Gecko rewrites periodically with the live session,
-// including the cookies for every host visited during it.
+// sessionStoreName is the file Gecko rewrites periodically while it is running, with
+// the live session and the cookies for every host visited during it.
 const sessionStoreName = "recovery.jsonlz4"
+
+// cleanShutdownStoreName is where Gecko puts the session when it exits cleanly, deleting
+// the recovery pair as it goes. Looking only for recovery.jsonlz4 therefore reports "no
+// session" for a user who signed in and then quit the browser, on a machine whose
+// profile holds the jar — and LS is a server-side session, so closing the browser does
+// not invalidate it.
+const cleanShutdownStoreName = "sessionstore.jsonlz4"
 
 // BrowserKeyword asks Resolve to find a signed-in Gecko profile instead of reading a file.
 const BrowserKeyword = "browser"
@@ -89,16 +97,25 @@ func geckoRootsFor(goos, home string) []string {
 // session: on the machine this was built against, the `Default=1` profile has no
 // sessionstore-backups directory at all. Reading only the flag finds an empty profile and
 // reports no session on a machine where there plainly is one.
+//
+// The flag still beats file order, which is the only thing left to rank by. installs.ini
+// can be absent, or can name a profile carrying no session, and two profiles holding a
+// credential each — two Unity accounts, the browser closed so both files are resting — are
+// then separated by which section happens to come first. The flag is what the user chose.
 func profileDirs(root string) []string {
 	preferred := installDefaults(root)
-	var rest []string
+	var flagged, rest []string
 	for _, e := range iniEntries(filepath.Join(root, "profiles.ini"), "Path") {
 		full := e.under(root)
-		if !contains(preferred, full) {
+		switch {
+		case contains(preferred, full):
+		case e.preferred:
+			flagged = append(flagged, full)
+		default:
 			rest = append(rest, full)
 		}
 	}
-	return append(preferred, rest...)
+	return append(append(preferred, flagged...), rest...)
 }
 
 // installDefaults reads installs.ini, which records the profile each installation of the
@@ -122,6 +139,11 @@ type iniEntry struct {
 	// does not exist, so the profile is silently skipped and a signed-in browser reports
 	// no session.
 	relative bool
+
+	// preferred mirrors profiles.ini's Default flag, which marks the profile the Profile
+	// Manager opens. It ranks below installs.ini, which records what is actually running,
+	// and above nothing but file order.
+	preferred bool
 }
 
 // under resolves an entry against the browser root. An absolute value is honoured whatever
@@ -169,6 +191,10 @@ func iniEntries(path, key string) []iniEntry {
 			pending.value = v
 		case strings.EqualFold(k, "IsRelative"):
 			pending.relative = v != "0"
+		case strings.EqualFold(k, "Default"):
+			// Only ever a flag here: the case above claims this key first when Default is
+			// the value being read, which is how installs.ini names a path with it.
+			pending.preferred = v == "1"
 		}
 	}
 	flush()
@@ -202,6 +228,10 @@ type sessionStore struct {
 	Cookies []storeCookie `json:"cookies"`
 }
 
+// errNotSessionStoreJSON means the block decompressed but is not the document this
+// parses. It carries nothing read out of the file.
+var errNotSessionStoreJSON = errors.New("session store is not the JSON this expects")
+
 // fromSessionStore reads a Gecko session store and keeps only the store's own cookies.
 //
 // Everything else in the file is discarded before it can reach a caller. The jar spans
@@ -215,7 +245,11 @@ func fromSessionStore(raw []byte) (map[string]string, error) {
 	}
 	var store sessionStore
 	if err := json.Unmarshal(decoded, &store); err != nil {
-		return nil, fmt.Errorf("session store is not the JSON this expects: %w", err)
+		// The decoder's own error is dropped rather than wrapped. encoding/json builds a
+		// syntax error by quoting the offending byte, and that byte came out of a file
+		// holding credentials for every host the browsing session touched; this error
+		// then reaches the user through ErrNoBrowserCredential. Nothing unwraps it.
+		return nil, errNotSessionStoreJSON
 	}
 
 	pairs := map[string]string{}
@@ -262,29 +296,43 @@ func searchedRoots(source string) []string {
 // identifies a file by its contents instead.
 func storeCandidates(source string) []string {
 	if source == BrowserKeyword {
-		var out []string
+		var live, resting []string
 		for _, root := range geckoRoots() {
-			out = append(out, storesUnder(root)...)
+			l, r := storesUnder(root)
+			live, resting = append(live, l...), append(resting, r...)
 		}
-		return out
+		// Every live jar first, across all roots, before any clean-shutdown one. A
+		// profile signed in right now beats a profile whose last clean exit happened to
+		// write a session, whichever browser they belong to: resolveBrowser takes the
+		// first candidate carrying LS, and a resting file's credential can be old.
+		return append(live, resting...)
 	}
-	return storesUnder(source)
+	live, resting := storesUnder(source)
+	return append(live, resting...)
 }
 
-// storesUnder finds the session stores beneath a browser root or a single profile.
-func storesUnder(dir string) []string {
-	var out []string
-	direct := filepath.Join(dir, "sessionstore-backups", sessionStoreName)
-	if _, err := os.Stat(direct); err == nil {
-		out = append(out, direct)
-	}
-	for _, p := range profileDirs(dir) {
-		candidate := filepath.Join(p, "sessionstore-backups", sessionStoreName)
-		if _, err := os.Stat(candidate); err == nil && !contains(out, candidate) {
-			out = append(out, candidate)
+// storesUnder finds the session stores beneath a browser root or a single profile,
+// keeping the ones a running browser maintains apart from the ones it leaves behind on
+// a clean exit. A profile has one or the other, never both at once.
+func storesUnder(dir string) (live, resting []string) {
+	collect := func(profile string) {
+		if c := filepath.Join(profile, "sessionstore-backups", sessionStoreName); exists(c) && !contains(live, c) {
+			live = append(live, c)
+		}
+		if c := filepath.Join(profile, cleanShutdownStoreName); exists(c) && !contains(resting, c) {
+			resting = append(resting, c)
 		}
 	}
-	return out
+	collect(dir)
+	for _, p := range profileDirs(dir) {
+		collect(p)
+	}
+	return live, resting
+}
+
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // resolveBrowser returns the Cookie header from the first session store that carries the

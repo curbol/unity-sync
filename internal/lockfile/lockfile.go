@@ -27,23 +27,14 @@ type Publisher struct {
 	Name string `json:"name"`
 }
 
-// Entry is one owned asset. Every owned asset gets one, whether or not it is selected,
-// because the file is the record of what is *owned*, not of what happens to be mirrored.
-type Entry struct {
-	// AssetID is the store product id. It is deliberately not called productId: the API
-	// has a field of that exact name holding a different, unusable value, and this is
-	// the one place a reader compares the two documents side by side.
-	AssetID string `json:"assetId"`
-
-	// Advertised half, refreshed on every run for every owned asset.
-	Name           string    `json:"name"`
-	State          string    `json:"state"`
-	Publisher      Publisher `json:"publisher"`
-	Version        Version   `json:"version"`
-	AdvertisedSize int64     `json:"advertisedSize"`
-
-	// Resolution half, rewritten only when a run resolves this asset.
-	//
+// Resolution describes the file on disk. It is rewritten only when a run actually
+// resolves that asset, and is otherwise carried forward verbatim.
+//
+// It is one type rather than eight fields spelled out wherever an entry is built,
+// because the carry-forward branch and the resolved branch have to stay in step: a
+// field added to one and missed in the other is silently dropped from every entry a
+// run does not resolve, which on a no-op run is the whole committed file.
+type Resolution struct {
 	// Tracked means "bytes have been mirrored at some point", not "selected right now":
 	// an asset stays tracked after it is disabled in the manifest, because the file is
 	// still there.
@@ -73,6 +64,27 @@ type Entry struct {
 	StoreFilename string `json:"storeFilename,omitempty"`
 }
 
+// Entry is one owned asset. Every owned asset gets one, whether or not it is selected,
+// because the file is the record of what is *owned*, not of what happens to be mirrored.
+type Entry struct {
+	// AssetID is the store product id. It is deliberately not called productId: the API
+	// has a field of that exact name holding a different, unusable value, and this is
+	// the one place a reader compares the two documents side by side.
+	AssetID string `json:"assetId"`
+
+	// Advertised half, refreshed on every run for every owned asset.
+	Name           string    `json:"name"`
+	State          string    `json:"state"`
+	Publisher      Publisher `json:"publisher"`
+	Version        Version   `json:"version"`
+	AdvertisedSize int64     `json:"advertisedSize"`
+
+	// Embedded last on purpose: encoding/json emits an embedded struct's fields at the
+	// embedded field's own index position, so the resolution half keeps the byte
+	// placement it had when these were eight fields declared here.
+	Resolution
+}
+
 // Lockfile is the whole document.
 type Lockfile struct {
 	Assets map[string]Entry `json:"assets"`
@@ -97,8 +109,43 @@ func Load(path string) (Lockfile, error) {
 	if lf.Assets == nil {
 		lf.Assets = map[string]Entry{}
 	}
+	if err := lf.checkUnique(); err != nil {
+		return Lockfile{}, fmt.Errorf("%s: %w", path, err)
+	}
 	return lf, nil
 }
+
+// checkUnique refuses two entries for one product. A run never writes such a file — the
+// key is derived from the id — but this one is committed, and a rename changes an entry's
+// key by construction, so a merge that keeps both sides of one leaves a duplicate. Since
+// FindByAssetID walks a map, the run would then pick between them at random: the same
+// checkout classifies the asset Unchanged on one run and Changed on the next, re-fetching
+// gigabytes on a coin flip, and the entry not picked is dropped without a word.
+func (lf Lockfile) checkUnique() error {
+	seen := map[string]string{}
+	for key, e := range lf.Assets {
+		if e.AssetID == "" {
+			continue
+		}
+		if first, dup := seen[e.AssetID]; dup {
+			a, b := key, first
+			if a > b {
+				a, b = b, a
+			}
+			return fmt.Errorf("entries %q and %q both record asset %s; "+
+				"delete whichever is stale, most likely the one whose key no longer matches its name",
+				a, b, e.AssetID)
+		}
+		seen[e.AssetID] = key
+	}
+	return nil
+}
+
+// TempPrefix marks a lockfile write in flight. It is exported because a test in another
+// package watches the directory for these to prove two saves never overlap, and a
+// literal copied over there goes stale silently: the watcher then sees nothing, finds
+// no overlap, and passes forever without observing a single write.
+const TempPrefix = ".unity-sync-lock-"
 
 // Save writes the lockfile atomically. encoding/json sorts map keys, so the output is
 // stable across runs and a diff shows only what actually changed.
@@ -108,7 +155,7 @@ func Save(path string, lf Lockfile) error {
 		return err
 	}
 	raw = append(raw, '\n')
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".unity-sync-lock-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), TempPrefix+"*")
 	if err != nil {
 		return err
 	}

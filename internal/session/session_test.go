@@ -94,14 +94,13 @@ func TestDiscoverPrefersSessionCurl(t *testing.T) {
 }
 
 // Every spelling a real browser's "Copy as cURL" produces has to yield the same header.
-// The release ships Windows binaries and the README sends those users to DevTools, where
-// the copy is double-quoted — a form no other test in the tree exercises, so tightening
-// either regex would break every Windows paste with the suite green.
+// The release ships Windows binaries and the README sends those users to DevTools with no
+// platform caveat, so a form that is only produced there is still a form every Windows
+// user pastes — and one the credential is dropped from reads as a session with no LS.
 func TestEveryCurlPasteSpellingYieldsTheSameHeader(t *testing.T) {
 	const cookie = "_csrf=stale; LS=the-credential; DS=abc"
 	for _, tc := range []struct{ name, body string }{
 		{"single-quoted", `curl 'https://assetstore.unity.com/' -H 'Cookie: ` + cookie + `'`},
-		// Windows: cmd and PowerShell both copy with double quotes.
 		{"double-quoted", `curl "https://assetstore.unity.com/" -H "Cookie: ` + cookie + `"`},
 		{"long-flag", `curl 'https://assetstore.unity.com/' --header 'Cookie: ` + cookie + `'`},
 		{"long-flag double-quoted", `curl "https://assetstore.unity.com/" --header "Cookie: ` + cookie + `"`},
@@ -110,6 +109,16 @@ func TestEveryCurlPasteSpellingYieldsTheSameHeader(t *testing.T) {
 		// curl.exe is what a Windows paste names, so the structural check cannot key on
 		// the literal "curl ".
 		{"curl.exe", `curl.exe "https://assetstore.unity.com/" -H "Cookie: ` + cookie + `"`},
+		// The cmd form: every argument wrapped in ^", which escapes the quote so cmd
+		// never counts itself as inside one and goes on stripping carets to the closing
+		// ^". Matching a bare " finds no Cookie argument anywhere in this.
+		{"cmd caret-wrapped", "curl ^\"https://assetstore.unity.com/^\" ^\n  -H ^\"Cookie: " + cookie + "^\"\n"},
+		{"cmd caret-wrapped curl.exe", "curl.exe ^\"https://assetstore.unity.com/^\" ^\n  -H ^\"Cookie: " + cookie + "^\"\n"},
+		// PowerShell continues a line with a backtick rather than a caret.
+		{"powershell", "curl.exe `\n  \"https://assetstore.unity.com/\" `\n  -H \"Cookie: " + cookie + "\"\n"},
+		{"posix continuation", "curl 'https://assetstore.unity.com/' \\\n  -H 'Cookie: " + cookie + "'\n"},
+		// ANSI-C quoting is what a POSIX copy switches to when a value holds a quote.
+		{"ansi-c quoted", `curl 'https://assetstore.unity.com/' -H $'Cookie: ` + cookie + `'`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, _, err := session.ResolveFrom(write(t, "session.curl", tc.body))

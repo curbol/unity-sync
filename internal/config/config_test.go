@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -231,7 +232,9 @@ func TestNoHomeAndNoXDGRefusesRatherThanPickingARelativeLibrary(t *testing.T) {
 func TestAnUnreadableConfigIsAnErrorRatherThanNoConfig(t *testing.T) {
 	dir := t.TempDir()
 	// --config pointed at the file rather than the directory holding it, which the flag's
-	// own help text ("user config dir") invites. Statting <file>/config.toml is ENOTDIR.
+	// own help text ("user config dir") invites. Load asks whether dir is a directory
+	// rather than reading the errno from statting through it, because Windows answers that
+	// with ERROR_PATH_NOT_FOUND, which errors.Is reads as fs.ErrNotExist.
 	notADir := filepath.Join(dir, "config.toml")
 	if err := os.WriteFile(notADir, []byte("library_path = \"/mnt/big\"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -240,6 +243,12 @@ func TestAnUnreadableConfigIsAnErrorRatherThanNoConfig(t *testing.T) {
 		t.Error("Load treated an unreadable config dir as an absent config")
 	}
 
+	// Windows has no unreadable-by-owner case to make: a file written 0000 there carries
+	// FILE_ATTRIBUTE_READONLY, which blocks writes and deletes but not reads, and
+	// os.Geteuid returns -1 so the root skip below never fires either.
+	if runtime.GOOS == "windows" {
+		return
+	}
 	if os.Geteuid() == 0 {
 		t.Skip("root reads a 0000 file regardless")
 	}
@@ -290,4 +299,52 @@ func UncommentSettings(raw []byte) []byte {
 		}
 	}
 	return []byte(strings.Join(out, "\n"))
+}
+
+// The chain is defaults, file, environment, flags, and nothing pins the last step against
+// the one before it: every precedence test either sets the environment or passes flags,
+// never both. Swapping the two blocks in Load makes UNITY_SYNC_LIBRARY beat --library,
+// contradicts the README, and passes the whole suite.
+func TestFlagsBeatTheEnvironment(t *testing.T) {
+	isolate(t)
+	t.Setenv("UNITY_SYNC_LIBRARY", "/from/env/lib")
+	t.Setenv("UNITY_SYNC_SESSION", "/from/env.curl")
+
+	c, err := config.Load(t.TempDir(), config.Flags{
+		LibraryPath:   "/from/flag/lib",
+		SessionSource: "/from/flag.curl",
+		Concurrency:   9,
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.LibraryPath != "/from/flag/lib" {
+		t.Errorf("LibraryPath = %q, want the flag to beat the environment", c.LibraryPath)
+	}
+	if c.SessionSource != "/from/flag.curl" {
+		t.Errorf("SessionSource = %q, want the flag to beat the environment", c.SessionSource)
+	}
+	if c.Concurrency != 9 {
+		t.Errorf("Concurrency = %d, want the flag value", c.Concurrency)
+	}
+}
+
+// PowerShell's own tab completion produces `~\lib`, and nothing expands a tilde that came
+// out of a config file, an environment variable, or an argument to a native executable.
+// Matching only "~/" leaves the Windows spelling alone and the run mirrors tens of
+// gigabytes into a directory literally named "~". On Linux a backslash is an ordinary
+// filename character, so the same input has to survive untouched.
+func TestATildeExpandsForEverySeparatorThePlatformHas(t *testing.T) {
+	home := isolate(t)
+	c, err := config.Load(t.TempDir(), config.Flags{LibraryPath: `~\packages`})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	want := `~\packages`
+	if os.IsPathSeparator('\\') {
+		want = filepath.Join(home, "packages")
+	}
+	if c.LibraryPath != want {
+		t.Errorf("LibraryPath = %q, want %q", c.LibraryPath, want)
+	}
 }

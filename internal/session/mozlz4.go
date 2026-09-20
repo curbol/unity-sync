@@ -104,15 +104,21 @@ func lz4Decompress(src []byte, want int) ([]byte, error) {
 		}
 		length += 4 // the minimum match, which the encoder subtracts
 
+		// Refused before the copy, not after it. readLength stops its 255-chain once the
+		// running total passes want, but the byte that ends the chain is added first, so a
+		// single match can legitimately return a length near want — and appending it before
+		// checking grows dst to roughly twice the size the header declared, past the
+		// ceiling decodeMozLZ4 applies precisely so that a corrupt header cannot turn into
+		// a large allocation. A ~1 MB block can reach it.
+		if length > want-len(dst) {
+			return nil, fmt.Errorf("lz4: output grew past the declared %d bytes", want)
+		}
 		// Copied one byte at a time on purpose: a match may overlap the region it is
 		// copying from, which is how the format encodes a repeating run, and a bulk copy
 		// would read the pre-overlap bytes instead of the ones just written.
 		start := len(dst) - offset
 		for n := 0; n < length; n++ {
 			dst = append(dst, dst[start+n])
-		}
-		if len(dst) > want {
-			return nil, fmt.Errorf("lz4: output grew past the declared %d bytes", want)
 		}
 	}
 

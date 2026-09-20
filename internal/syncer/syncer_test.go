@@ -2,9 +2,7 @@ package syncer
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +14,7 @@ import (
 	"time"
 
 	"github.com/curbol/unity-sync/internal/cache"
+	"github.com/curbol/unity-sync/internal/fixtures"
 	"github.com/curbol/unity-sync/internal/lockfile"
 	"github.com/curbol/unity-sync/internal/manifest"
 	"github.com/curbol/unity-sync/internal/model"
@@ -96,20 +95,7 @@ func (f *fakeStore) Fetch(_ context.Context, id string) (*store.Download, error)
 // pkg builds a package carrying a descriptor, padded to size.
 func pkg(t *testing.T, productID, versionID string, size int) []byte {
 	t.Helper()
-	d := []byte(`{"id":"` + productID + `","version_id":"` + versionID + `"}`)
-	extra := []byte{'A', '$', 0, 0}
-	binary.LittleEndian.PutUint16(extra[2:4], uint16(len(d)))
-	extra = append(extra, d...)
-	var buf bytes.Buffer
-	zw := gzip.NewWriter(&buf)
-	zw.Header.Extra = extra
-	zw.Write(bytes.Repeat([]byte("x"), 32))
-	zw.Close()
-	out := buf.Bytes()
-	for len(out) < size {
-		out = append(out, 0)
-	}
-	return out
+	return fixtures.Package(productID, versionID, size)
 }
 
 func asset(id, name string, versionID string, size int64) model.Asset {
@@ -147,15 +133,12 @@ func place(t *testing.T, root, publisherSlug, assetSlug string, body []byte) *ca
 // asset whose bytes are mirrored and whose resolution half points at them.
 func tracked(assetID, name, versionID string, p *cache.Pending) lockfile.Entry {
 	return lockfile.Entry{
-		AssetID:            assetID,
-		Name:               name,
-		Version:            lockfile.Version{ID: versionID},
-		Tracked:            true,
-		ResolvedVersionID:  versionID,
-		DeliveredVersionID: versionID,
-		SizeBytes:          p.Size,
-		SHA256:             p.SHA256,
-		CachePath:          p.RelPath,
+		AssetID: assetID, Name: name, Version: lockfile.Version{ID: versionID},
+		Resolution: lockfile.Resolution{
+			Tracked: true, ResolvedVersionID: versionID,
+			DeliveredVersionID: versionID, SizeBytes: p.Size,
+			SHA256: p.SHA256, CachePath: p.RelPath,
+		},
 	}
 }
 
@@ -171,6 +154,10 @@ func opts(root string, sel map[string]bool) Options {
 	return Options{
 		LibraryRoot: root, Selected: sel, Concurrency: 2,
 		Now: func() time.Time { return time.Unix(1700000000, 0).UTC() },
+		// The same attempt budget Run would install, without its two-second backoff:
+		// left unset, every test whose asset fails once pays that in wall time, and the
+		// bill grows with each failure case added.
+		Retry: retryPolicyWithAttempts(2),
 	}
 }
 
@@ -180,7 +167,11 @@ func TestClassifyCoversEveryClass(t *testing.T) {
 	yes := func() bool { return true }
 	no := func() bool { return false }
 	live := asset("1", "A", "v2", 1000)
-	tracked := lockfile.Entry{Tracked: true, ResolvedVersionID: "v2", CachePath: "p"}
+	tracked := lockfile.Entry{
+		Resolution: lockfile.Resolution{
+			Tracked: true, ResolvedVersionID: "v2", CachePath: "p",
+		},
+	}
 
 	cases := []struct {
 		name      string
@@ -193,12 +184,20 @@ func TestClassifyCoversEveryClass(t *testing.T) {
 	}{
 		{"unchanged", live, tracked, true, yes, no, Unchanged},
 		{"new", live, lockfile.Entry{}, false, no, no, New},
-		{"changed", live, lockfile.Entry{Tracked: true, ResolvedVersionID: "v1", CachePath: "p"}, true, yes, no, Changed},
-		{"download-now", live, lockfile.Entry{Tracked: false}, true, no, no, DownloadNow},
+		{"changed", live, lockfile.Entry{
+			Resolution: lockfile.Resolution{
+				Tracked: true, ResolvedVersionID: "v1", CachePath: "p",
+			},
+		}, true, yes, no, Changed},
+		{"download-now", live, lockfile.Entry{
+			Resolution: lockfile.Resolution{
+				Tracked: false,
+			},
+		}, true, no, no, DownloadNow},
 		{"cache-missing", live, tracked, true, no, no, CacheMissing},
 		{"adopted with no record", live, lockfile.Entry{}, false, no, yes, Adopted},
 		{"adopted when a record exists but nothing was mirrored", live,
-			lockfile.Entry{Tracked: false}, true, no, yes, Adopted},
+			lockfile.Entry{Resolution: lockfile.Resolution{Tracked: false}}, true, no, yes, Adopted},
 		{"undownloadable", model.Asset{ID: "1", State: model.StateDisabled}, lockfile.Entry{}, false, no, no, Undownloadable},
 		{"disabled but already mirrored stays usable",
 			model.Asset{ID: "1", State: model.StateDisabled, Version: model.Version{ID: "v2"}},
@@ -248,10 +247,12 @@ func TestOnlyGlobPreservesOutOfScopeRecordsAndKeepsTheDiffKey(t *testing.T) {
 
 	prior := lockfile.New()
 	prior.Assets["out-of-scope-2"] = lockfile.Entry{
-		AssetID: "2", Name: "Out of scope", Tracked: true,
-		ResolvedVersionID: "v1", DeliveredVersionID: "v1",
-		SHA256: "old-sha", CachePath: "pub-one/out-of-scope-2/out-of-scope-2.unitypackage",
-		SizeBytes: 400, Version: lockfile.Version{ID: "v1"},
+		AssetID: "2", Name: "Out of scope", Version: lockfile.Version{ID: "v1"},
+		Resolution: lockfile.Resolution{
+			Tracked: true, ResolvedVersionID: "v1",
+			DeliveredVersionID: "v1", SHA256: "old-sha",
+			CachePath: "pub-one/out-of-scope-2/out-of-scope-2.unitypackage", SizeBytes: 400,
+		},
 	}
 
 	fs := &fakeStore{owned: []model.Asset{inScope, outScope}, bodies: map[string][]byte{"1": pkg(t, "1", "v2", 500)}}
@@ -298,10 +299,12 @@ func TestRenamedAssetIsRecognisedByIdAndRekeyedOnce(t *testing.T) {
 
 	prior := lockfile.New()
 	prior.Assets["old-name-1"] = lockfile.Entry{
-		AssetID: "1", Name: "Old Name", Tracked: true,
-		ResolvedVersionID: "v1", DeliveredVersionID: "v1",
-		SizeBytes: p.Size, SHA256: p.SHA256, CachePath: p.RelPath,
-		Version: lockfile.Version{ID: "v1"},
+		AssetID: "1", Name: "Old Name", Version: lockfile.Version{ID: "v1"},
+		Resolution: lockfile.Resolution{
+			Tracked: true, ResolvedVersionID: "v1",
+			DeliveredVersionID: "v1", SizeBytes: p.Size,
+			SHA256: p.SHA256, CachePath: p.RelPath,
+		},
 	}
 
 	fs := &fakeStore{owned: []model.Asset{renamed}}
@@ -353,8 +356,10 @@ func TestOwnershipDropIsReportedNotJustRemoved(t *testing.T) {
 	prior := lockfile.New()
 	prior.Assets["kept-1"] = lockfile.Entry{AssetID: "1", Name: "Kept", Version: lockfile.Version{ID: "v1"}}
 	prior.Assets["gone-2"] = lockfile.Entry{
-		AssetID: "2", Name: "Refunded", Tracked: true,
-		CachePath: "pub-one/gone-2/gone-2.unitypackage", SizeBytes: 900,
+		AssetID: "2", Name: "Refunded",
+		Resolution: lockfile.Resolution{
+			Tracked: true, CachePath: "pub-one/gone-2/gone-2.unitypackage", SizeBytes: 900,
+		},
 	}
 	fs := &fakeStore{owned: []model.Asset{kept}, bodies: map[string][]byte{"1": pkg(t, "1", "v1", 500)}}
 
@@ -520,4 +525,18 @@ func keys(lf lockfile.Lockfile) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+// manyAssets builds n owned assets and their package bodies, which is the setup every
+// pool test needs and five of them used to spell out identically.
+func manyAssets(t *testing.T, n int) ([]model.Asset, map[string][]byte) {
+	t.Helper()
+	var owned []model.Asset
+	bodies := map[string][]byte{}
+	for i := range n {
+		id := fmt.Sprint(i)
+		owned = append(owned, asset(id, "Asset "+id, "v1", 500))
+		bodies[id] = pkg(t, id, "v1", 500)
+	}
+	return owned, bodies
 }

@@ -10,7 +10,6 @@ import (
 	"io"
 	"path"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -33,6 +32,16 @@ const sweepGrace = time.Minute
 // set, and the lockfile lives in someone's project.
 var ErrEmptyLibrary = errors.New("the store reported no owned assets while the lockfile holds entries; " +
 	"refusing to treat that as the truth (check which Unity organisation the session belongs to)")
+
+// scanLibrary and verifyDeep are indirected so a test can count the calls. What has to
+// hold about these two is their cost, not their result, and a counter is the only thing
+// that notices: a scan per adopt probe is quadratic exactly when adoption matters most,
+// and a second deep verify of the same file doubles the cost of re-hashing 75 GB. Both
+// regressions leave every assertion about outcomes green.
+var (
+	scanLibrary = cache.Scan
+	verifyDeep  = cache.VerifyDeep
+)
 
 // Class is one asset's outcome for this run.
 type Class int
@@ -83,9 +92,16 @@ func classify(a model.Asset, prior lockfile.Entry, hasPrior bool, cacheOK, adopt
 
 	if !a.State.Downloadable() {
 		// A copy already mirrored stays usable after the store delists the asset; only
-		// one we do not have is a problem worth reporting.
+		// one we do not have is a problem worth reporting. The lockfile is not the only
+		// thing that knows we have it — a deleted lockfile, or a mirror made on another
+		// machine, leaves the bytes on disk with nothing pointing at them — and this is
+		// the one class where a download can never make up the difference, so the scan
+		// is asked before the asset is called unavailable.
 		if resolved && cacheOK() {
 			return Unchanged
+		}
+		if adoptable() {
+			return Adopted
 		}
 		return Undownloadable
 	}
@@ -150,6 +166,12 @@ type Result struct {
 	Class   Class
 	Err     error
 	Warning string
+
+	// NotAttempted means the pool was already cancelled when this asset's turn came, so
+	// nothing was tried. It is kept apart from Err because the cause is the run's, not
+	// the asset's: one expired session would otherwise name every remaining asset as a
+	// failure of its own and bury the one line the user can act on.
+	NotAttempted bool
 }
 
 // Report is what a run produced.
@@ -169,24 +191,22 @@ type Report struct {
 	// every future run forever.
 	Retryable int
 	Permanent int
+
+	// NotAttempted counts assets the pool was cancelled before reaching. Nothing about
+	// them is known, so they are summarised rather than named — but the run did not do
+	// what it was asked, so they still keep the exit status non-zero.
+	NotAttempted int
 }
 
 // Failed reports whether the run should exit non-zero.
-func (r Report) Failed() bool { return r.Retryable > 0 }
-
-// resolution is what a successful fetch or adoption produced.
-type resolution struct {
-	cachePath          string
-	sha                string
-	size               int64
-	resolvedVersionID  string
-	deliveredVersionID string
-	downloadedAt       string
-	storeFilename      string
-}
+func (r Report) Failed() bool { return r.Retryable > 0 || r.NotAttempted > 0 }
 
 // Run executes a sync, or a status when DryRun. It returns the report even alongside an
 // error, so a caller can show what did happen.
+//
+// prior must hold at most one entry per asset id. lockfile.Load enforces that; a caller
+// building one by hand and leaving two entries for one asset gets one of them at random,
+// because entries are found by walking the map.
 func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string, opts Options) (Report, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -224,18 +244,37 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		// The cutoff is backdated because started is captured before enumeration, which is
 		// several round trips. A concurrent run whose transfer has stalled has not touched
 		// its temp since before this run began, and sweeping it kills a live download.
-		n, freed := cache.SweepTemps(opts.LibraryRoot, started.Add(-sweepGrace))
+		n, freed := cache.SweepTemps(ctx, opts.LibraryRoot, started.Add(-sweepGrace))
 		report.Swept = n
 		if n > 0 {
 			opts.Progress(fmt.Sprintf("reclaimed %d abandoned download(s), %s", n, humanize.Bytes(freed)))
 		}
 	}
 
-	resolutions := map[string]resolution{}
+	resolutions := map[string]lockfile.Resolution{}
 	// priorPaths remembers where each asset's bytes used to live, so a download that lands
 	// somewhere else can clean up after itself.
 	priorPaths := map[string]string{}
 	var mu sync.Mutex
+
+	// persist records one resolved asset and rewrites the lockfile, both under mu. The two
+	// steps are one critical section rather than two statements a later edit can separate:
+	// with the write outside the lock, two goroutines reach the rename in the order
+	// opposite to how they built their snapshots, and the older one wins — losing exactly
+	// the record this write exists to keep.
+	//
+	// Every pass that mutates the library calls it, not only the downloads. The
+	// classification pass relocates and deletes whole packages before anything is
+	// persisted, so a run that adopts and fetches nothing would otherwise ride entirely on
+	// the closing save: lose that one write and the library has moved while the lockfile
+	// still describes where the file used to be, with a digest that no longer matches the
+	// bytes at the path it names. Nothing but --verify ever looks again.
+	persist := func(assetID string, r lockfile.Resolution) error {
+		mu.Lock()
+		defer mu.Unlock()
+		resolutions[assetID] = r
+		return lockfile.Save(lockPath, build(owned, prior, resolutions, nil))
+	}
 
 	// One scan of the library serves every adopt probe below, built on first use and only
 	// from this loop, which is sequential. Scanning eagerly would make the ordinary run —
@@ -244,14 +283,31 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 	var library *cache.Index
 	scan := func() *cache.Index {
 		if library == nil {
-			library = cache.Scan(opts.LibraryRoot)
+			library = scanLibrary(ctx, opts.LibraryRoot)
 		}
 		return library
 	}
 
 	// Classify everything selected, then fetch what needs fetching.
 	var pending []Result
-	for _, a := range owned {
+	for i, a := range owned {
+		// This pass hashes, relocates and deletes whole packages, and under --verify it
+		// re-reads the entire library, so it is minutes of work on a large mirror.
+		// Without this check a run told to stop keeps going — and keeps mutating — while
+		// main's signal handler has already taken SIGINT's default action away, so the
+		// second and third Ctrl-C do nothing either.
+		//
+		// Break rather than return: the tail still builds and saves the lockfile, so the
+		// adoptions and relocations already performed are recorded rather than left on
+		// disk with nothing pointing at them.
+		if ctx.Err() != nil {
+			for _, rest := range owned[i:] {
+				if selected(rest, opts) {
+					report.NotAttempted++
+				}
+			}
+			break
+		}
 		if !selected(a, opts) {
 			continue
 		}
@@ -266,13 +322,12 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 			case prev.CachePath == "":
 				return false
 			case opts.FullVerify:
-				return cache.VerifyDeep(opts.LibraryRoot, prev.CachePath, prev.SHA256)
+				return verifyDeep(opts.LibraryRoot, prev.CachePath, prev.SHA256)
 			default:
 				return cache.Verify(opts.LibraryRoot, prev.CachePath, prev.SizeBytes, prev.DeliveredVersionID)
 			}
 		})
 		var found cache.Candidate
-		var foundOK bool
 		// excludeRel is set when a recorded file exists but failed verification. Adoption
 		// must not reach for that same file: a truncation or a mid-file flip leaves the
 		// descriptor intact and can clear the size floor, so the scan would re-adopt the
@@ -286,18 +341,17 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 			if hasPrev && prev.Tracked && prev.CachePath != "" && !cacheOK() {
 				excludeRel = prev.CachePath
 			}
-			found, foundOK = scan().Find(a.ID, derived, excludeRel)
-			if !foundOK {
+			c, ok := scan().Find(a.ID, derived, excludeRel)
+			// The size floor is the same one a download must clear: without it, a
+			// truncated package left in the library enters through the one door that
+			// skips the download path and is then hashed and recorded as truth. found is
+			// assigned only once all three gates pass, which is the precondition the
+			// adopt call site reads it under.
+			if !ok || belowFloor(c.Size, a.AdvertisedSize) || c.Metadata.VersionID != a.Version.ID {
 				return false
 			}
-			// The same floor a download must clear. Without it, a truncated package
-			// left in the library enters through the one door that skips the download
-			// path and is then hashed and recorded as truth.
-			if belowFloor(found.Size, a.AdvertisedSize) {
-				foundOK = false
-				return false
-			}
-			return found.Metadata.VersionID == a.Version.ID
+			found = c
+			return true
 		}
 
 		if hasPrev && prev.Tracked {
@@ -320,10 +374,12 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 				// superseded by what just landed at the derived path, and nothing else
 				// will ever mention it again — the summary names only assets that left
 				// the account, so an orphan here is one the tool made and never reports.
-				if w := removeSuperseded(opts.LibraryRoot, prev.CachePath, r.cachePath); w != "" {
-					res.Warning = w
+				res.Warning = joinWarning(res.Warning,
+					removeSuperseded(opts.LibraryRoot, prev.CachePath, r.CachePath))
+				if err := persist(a.ID, r); err != nil {
+					res.Warning = joinWarning(res.Warning,
+						fmt.Sprintf("the adoption is on disk but could not be recorded: %v", err))
 				}
-				resolutions[a.ID] = r
 			}
 		case Unchanged:
 			// Keep the prior resolution, but move it if the slug changed under it.
@@ -331,9 +387,12 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 				if err := cache.Relocate(opts.LibraryRoot, prev.CachePath, derived); err != nil {
 					res.Warning = err.Error()
 				} else {
-					r := fromEntry(prev)
-					r.cachePath = derived
-					resolutions[a.ID] = r
+					r := prev.Resolution
+					r.CachePath = derived
+					if err := persist(a.ID, r); err != nil {
+						res.Warning = joinWarning(res.Warning,
+							fmt.Sprintf("the package moved but the move could not be recorded: %v", err))
+					}
 				}
 			}
 		}
@@ -362,19 +421,6 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		sem  = make(chan struct{}, opts.Concurrency)
 		done = make([]Result, len(pending))
 	)
-	// persist records one resolved asset and rewrites the lockfile, both under mu.
-	// Persisting per download is what keeps a run that dies at asset 90 of 100 from
-	// discarding the 89 it already fetched, and the two steps are one critical section
-	// rather than two statements a later edit can separate: with the write outside the
-	// lock, two goroutines reach the rename in the order opposite to how they built their
-	// snapshots, and the older one wins — losing exactly the record this write exists to
-	// keep.
-	persist := func(assetID string, r resolution) error {
-		mu.Lock()
-		defer mu.Unlock()
-		resolutions[assetID] = r
-		return lockfile.Save(lockPath, build(owned, prior, resolutions, nil))
-	}
 	for i, res := range pending {
 		wg.Add(1)
 		go func(i int, res Result) {
@@ -382,13 +428,13 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			if poolCtx.Err() != nil {
-				res.Err = poolCtx.Err()
+				res.NotAttempted = true
 				done[i] = res
 				return
 			}
 			opts.Progress(fmt.Sprintf("fetching %s (%s)", res.Asset.Name, humanize.Bytes(res.Asset.AdvertisedSize)))
 			var (
-				r        resolution
+				r        lockfile.Resolution
 				warning  string
 				resolved bool
 			)
@@ -418,9 +464,8 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 				// A rename that also bumped the version downloads to the new derived
 				// path, so the prior directory would otherwise be left holding a
 				// superseded copy of the same asset.
-				if w := removeSuperseded(opts.LibraryRoot, priorPaths[res.Asset.ID], r.cachePath); w != "" {
-					res.Warning = strings.TrimSpace(res.Warning + " (" + w + ")")
-				}
+				res.Warning = joinWarning(res.Warning,
+					removeSuperseded(opts.LibraryRoot, priorPaths[res.Asset.ID], r.CachePath))
 				if err := persist(res.Asset.ID, r); err != nil {
 					res.Err = fmt.Errorf("persisting progress: %w", err)
 				}
@@ -434,12 +479,13 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 	wg.Wait()
 
 	for _, res := range done {
-		if res.Err != nil {
-			if errors.Is(res.Err, store.ErrNotDownloadable) {
-				report.Permanent++
-			} else {
-				report.Retryable++
-			}
+		switch {
+		case res.NotAttempted:
+			report.NotAttempted++
+		case errors.Is(res.Err, store.ErrNotDownloadable):
+			report.Permanent++
+		case res.Err != nil:
+			report.Retryable++
 		}
 		report.Results = append(report.Results, res)
 	}
@@ -453,43 +499,45 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 
 // adopt records a package already on disk, relocating it to where the layout puts it so
 // the cache does not drift and quarry's facets stay right.
-func adopt(opts Options, a model.Asset, found cache.Candidate, derived, damagedRel string) (resolution, error) {
+func adopt(opts Options, a model.Asset, found cache.Candidate, derived, damagedRel string) (lockfile.Resolution, error) {
 	// Relocate refuses an occupied destination, which is what stops it certifying bytes
 	// nothing checked. The one occupant that must not stop it is this asset's own recorded
 	// copy after it failed verification: a download would rename straight over that file,
 	// so a verified copy of the same package may replace it too. Without this the good copy
 	// can never move in, nothing is resolved, and every later run repeats the refusal.
-	if damagedRel != "" && cache.SamePath(damagedRel, derived) {
+	if damagedRel != "" &&
+		(cache.SamePath(damagedRel, derived) || cache.SameFile(opts.LibraryRoot, damagedRel, derived)) {
 		if err := cache.RemoveStale(opts.LibraryRoot, damagedRel); err != nil {
-			return resolution{}, err
+			return lockfile.Resolution{}, err
 		}
 	}
 	if err := cache.Relocate(opts.LibraryRoot, found.RelPath, derived); err != nil {
-		return resolution{}, err
+		return lockfile.Resolution{}, err
 	}
 	sha, size, err := cache.Hash(opts.LibraryRoot, derived)
 	if err != nil {
-		return resolution{}, err
+		return lockfile.Resolution{}, err
 	}
-	return resolution{
-		cachePath: derived,
-		sha:       sha,
-		size:      size,
+	return lockfile.Resolution{
+		Tracked:   true,
+		CachePath: derived,
+		SHA256:    sha,
+		SizeBytes: size,
 		// The bytes are verified to be this version, so the diff key is known even
 		// though nothing was fetched. Leaving it empty would make every adopted asset
 		// classify Changed on the next run and re-download.
-		resolvedVersionID:  a.Version.ID,
-		deliveredVersionID: found.Metadata.VersionID,
+		ResolvedVersionID:  a.Version.ID,
+		DeliveredVersionID: found.Metadata.VersionID,
 	}, nil
 }
 
 // download fetches one asset and runs every semantic guard against the temp file before
 // committing it. The bool reports whether anything was stored: a republish discovered
 // mid-transfer is a warning, not a failure, and resolves nothing this run.
-func download(ctx context.Context, s Store, opts Options, a model.Asset) (resolution, string, bool, error) {
+func download(ctx context.Context, s Store, opts Options, a model.Asset) (lockfile.Resolution, string, bool, error) {
 	dl, err := s.Fetch(ctx, a.ID)
 	if err != nil {
-		return resolution{}, "", false, err
+		return lockfile.Resolution{}, "", false, err
 	}
 	defer dl.Body.Close()
 
@@ -504,17 +552,17 @@ func download(ctx context.Context, s Store, opts Options, a model.Asset) (resolu
 	}
 	pending, err := cache.Store(opts.LibraryRoot, a.PublisherSlug(), a.Slug(), body)
 	if err != nil {
-		return resolution{}, "", false, err
+		return lockfile.Resolution{}, "", false, err
 	}
 
 	meta, metaErr := unitypackage.ReadFile(pending.TempPath())
 	switch {
 	case metaErr != nil && !errors.Is(metaErr, unitypackage.ErrNoMetadata):
 		pending.Discard()
-		return resolution{}, "", false, retry.Permanent(fmt.Errorf("%s: %w", a.Name, metaErr))
+		return lockfile.Resolution{}, "", false, retry.Permanent(fmt.Errorf("%s: %w", a.Name, metaErr))
 	case metaErr == nil && meta.ID != a.ID:
 		pending.Discard()
-		return resolution{}, "", false, retry.Permanent(
+		return lockfile.Resolution{}, "", false, retry.Permanent(
 			fmt.Errorf("%s: the store served product %s, not %s", a.Name, meta.ID, a.ID))
 	}
 
@@ -535,37 +583,34 @@ func download(ctx context.Context, s Store, opts Options, a model.Asset) (resolu
 		// advertised size out from under us. One re-read of this product settles it.
 		if republished(ctx, s, a) {
 			pending.Discard()
-			return resolution{}, fmt.Sprintf(
+			return lockfile.Resolution{}, fmt.Sprintf(
 				"%s: republished mid-download; nothing stored, the next run will fetch the new build",
 				a.Name), false, nil
 		}
 		pending.Discard()
-		return resolution{}, "", false, fmt.Errorf("%s: received %d bytes against an advertised %d; body ended early",
+		return lockfile.Resolution{}, "", false, fmt.Errorf("%s: received %d bytes against an advertised %d; body ended early",
 			a.Name, pending.Size, a.AdvertisedSize)
 	}
 	if a.AdvertisedSize > 0 && (pending.Size > a.AdvertisedSize || pending.Size < a.AdvertisedSize-64) {
 		// A package can both be served at a different version than advertised and land
 		// outside the window, and the version notice is the one the lockfile's two ids
 		// need explaining.
-		size := fmt.Sprintf("%s: received %d bytes, advertised %d", a.Name, pending.Size, a.AdvertisedSize)
-		if warning == "" {
-			warning = size
-		} else {
-			warning += "; " + size
-		}
+		warning = joinWarning(warning,
+			fmt.Sprintf("%s: received %d bytes, advertised %d", a.Name, pending.Size, a.AdvertisedSize))
 	}
 
 	if err := pending.Commit(); err != nil {
-		return resolution{}, warning, false, err
+		return lockfile.Resolution{}, warning, false, err
 	}
-	return resolution{
-		cachePath:          pending.RelPath,
-		sha:                pending.SHA256,
-		size:               pending.Size,
-		resolvedVersionID:  a.Version.ID,
-		deliveredVersionID: meta.VersionID,
-		downloadedAt:       opts.Now().UTC().Format(time.RFC3339),
-		storeFilename:      dl.Filename,
+	return lockfile.Resolution{
+		Tracked:            true,
+		CachePath:          pending.RelPath,
+		SHA256:             pending.SHA256,
+		SizeBytes:          pending.Size,
+		ResolvedVersionID:  a.Version.ID,
+		DeliveredVersionID: meta.VersionID,
+		DownloadedAt:       opts.Now().UTC().Format(time.RFC3339),
+		StoreFilename:      dl.Filename,
 	}, warning, true, nil
 }
 
@@ -577,13 +622,30 @@ func download(ctx context.Context, s Store, opts Options, a model.Asset) (resolu
 // "pub/a/a.unitypackage" name one file. Comparing them raw makes the run delete the copy
 // it just wrote and then record a digest for a path with nothing on it.
 func removeSuperseded(root, old, current string) string {
-	if old == "" || cache.SamePath(old, current) {
+	// SameFile as well as SamePath: on a case-insensitive filesystem two spellings that
+	// differ only in case are one file, which no canonical form collapses, and this is
+	// about to delete.
+	if old == "" || cache.SamePath(old, current) || cache.SameFile(root, old, current) {
 		return ""
 	}
 	if err := cache.RemoveStale(root, old); err != nil {
 		return fmt.Sprintf("could not remove the superseded copy at %s: %v", old, err)
 	}
 	return ""
+}
+
+// joinWarning collects an asset's warnings into the single field Result carries. One asset
+// can legitimately produce several: a version mismatch, a size outside the tight window,
+// and a superseded copy that would not delete.
+func joinWarning(existing, add string) string {
+	switch {
+	case add == "":
+		return existing
+	case existing == "":
+		return add
+	default:
+		return existing + "; " + add
+	}
 }
 
 // belowFloor is the hard short-body rule. The tolerance is absolute because the gap it
@@ -614,14 +676,27 @@ func republished(ctx context.Context, s Store, a model.Asset) bool {
 
 // build produces the new lockfile: every owned asset gets an entry, advertised fields are
 // refreshed, and any resolution this run did not touch is carried forward verbatim.
-func build(owned []model.Asset, prior lockfile.Lockfile, resolutions map[string]resolution,
+func build(owned []model.Asset, prior lockfile.Lockfile, resolutions map[string]lockfile.Resolution,
 	report *Report) lockfile.Lockfile {
 
 	out := lockfile.New()
+	// Indexed once. FindByAssetID walks the whole map, this called it twice per owned
+	// asset, and the pool rebuilds the lockfile after every single download — so a
+	// three-thousand-asset account paid two full map walks per asset per save, inside the
+	// critical section. Indexing also means one lookup decides both the entry and its
+	// key, which two separate walks over a hand-merged duplicate could answer differently.
+	type priorEntry struct {
+		key   string
+		entry lockfile.Entry
+	}
+	index := make(map[string]priorEntry, len(prior.Assets))
+	for k, e := range prior.Assets {
+		index[e.AssetID] = priorEntry{key: k, entry: e}
+	}
 	kept := map[string]bool{}
 
 	for _, a := range owned {
-		_, prev, hasPrev := prior.FindByAssetID(a.ID)
+		prev, hasPrev := index[a.ID]
 		if hasPrev {
 			kept[a.ID] = true
 		}
@@ -633,33 +708,19 @@ func build(owned []model.Asset, prior lockfile.Lockfile, resolutions map[string]
 			Version:        lockfile.Version{ID: a.Version.ID, Name: a.Version.Name, PublishedDate: a.Version.PublishedDate},
 			AdvertisedSize: a.AdvertisedSize,
 		}
-		if r, ok := resolutions[a.ID]; ok {
-			e.Tracked = true
-			e.ResolvedVersionID = r.resolvedVersionID
-			e.DeliveredVersionID = r.deliveredVersionID
-			e.SizeBytes = r.size
-			e.SHA256 = r.sha
-			e.CachePath = r.cachePath
-			e.DownloadedAt = r.downloadedAt
-			e.StoreFilename = r.storeFilename
-		} else if hasPrev {
-			e.Tracked = prev.Tracked
-			e.ResolvedVersionID = prev.ResolvedVersionID
-			e.DeliveredVersionID = prev.DeliveredVersionID
-			e.SizeBytes = prev.SizeBytes
-			e.SHA256 = prev.SHA256
-			e.CachePath = prev.CachePath
-			e.DownloadedAt = prev.DownloadedAt
-			e.StoreFilename = prev.StoreFilename
+		r, resolvedNow := resolutions[a.ID]
+		switch {
+		case resolvedNow:
+			e.Resolution = r
+		case hasPrev:
+			e.Resolution = prev.entry.Resolution
 		}
 
 		// An asset the run did not resolve keeps its prior key, so the key and the
 		// cachePath cannot drift apart between runs.
 		key := a.Slug()
-		if _, resolvedNow := resolutions[a.ID]; !resolvedNow && hasPrev {
-			if prevKey, _, ok := prior.FindByAssetID(a.ID); ok {
-				key = prevKey
-			}
+		if !resolvedNow && hasPrev {
+			key = prev.key
 		}
 		out.Assets[key] = e
 	}
@@ -680,18 +741,6 @@ func build(owned []model.Asset, prior lockfile.Lockfile, resolutions map[string]
 		})
 	}
 	return out
-}
-
-func fromEntry(e lockfile.Entry) resolution {
-	return resolution{
-		cachePath:          e.CachePath,
-		sha:                e.SHA256,
-		size:               e.SizeBytes,
-		resolvedVersionID:  e.ResolvedVersionID,
-		deliveredVersionID: e.DeliveredVersionID,
-		downloadedAt:       e.DownloadedAt,
-		storeFilename:      e.StoreFilename,
-	}
 }
 
 func selected(a model.Asset, opts Options) bool {

@@ -44,11 +44,17 @@ jobs:
       # committed, scrubbed fixtures.
       - run: go test -race ./...
 
-  # The release ships Windows binaries, so the path handling the lockfile's cachePath
-  # depends on, the Gecko profile roots, and the rename that replaces a running executable
-  # are all shipped code on a platform the Linux job never executes.
-  windows:
-    runs-on: windows-latest
+  # The release ships binaries for platforms this repo's Linux job never executes, and the
+  # checks that decide whether an update is safe to install select on the host: both the Go
+  # signature table and install.sh's resolve to the running platform, so on Linux alone
+  # only the ELF arm is ever exercised. The Gecko profile roots and the rename that
+  # replaces a running executable are per-platform for the same reason.
+  cross:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0

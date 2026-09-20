@@ -117,7 +117,7 @@ func run(args []string) (int, error) {
 		if fs.NArg() > 1 {
 			return 1, fmt.Errorf("update takes at most one version, got %d arguments", fs.NArg())
 		}
-		if err := selfupdate.Run(ctx, version, fs.Arg(0)); err != nil {
+		if err := selfupdate.Run(ctx, stdout, version, fs.Arg(0)); err != nil {
 			return 1, err
 		}
 		return 0, nil
@@ -125,6 +125,15 @@ func run(args []string) (int, error) {
 	if fs.NArg() > 0 {
 		return 1, fmt.Errorf("%s takes no positional arguments (got %q); to limit assets use --only %s",
 			cmd, fs.Arg(0), fs.Arg(0))
+	}
+	// Beside the other input checks rather than at the point of use: --addr depends on
+	// neither the session nor the store, and refusing it later means reading the user's
+	// session file and spending a request to the live store before saying the address was
+	// never going to be served.
+	if cmd == "select" {
+		if err := checkLoopback(*addr); err != nil {
+			return 2, err
+		}
 	}
 
 	configDir := config.ResolveDir(*cfgDir)
@@ -165,9 +174,6 @@ func run(args []string) (int, error) {
 	}
 
 	if cmd == "select" {
-		if err := checkLoopback(*addr); err != nil {
-			return 2, err
-		}
 		// Bound here rather than inside selectAssets: a port already in use is worth
 		// finding out about before a run spends a full enumeration discovering it.
 		ln, err := net.Listen("tcp", *addr)
@@ -284,9 +290,6 @@ func selectAssets(ctx context.Context, client enumerator, manifestPath string, l
 	if err != nil {
 		return err
 	}
-	for _, e := range dropped {
-		fmt.Fprintf(os.Stderr, "no longer owned, dropping from the manifest: %s (%s)\n", e.Name, e.ID)
-	}
 	chosen, err := web.Serve(ctx, ln, owned, m.EnabledIDs())
 	if err != nil {
 		return err
@@ -294,6 +297,12 @@ func selectAssets(ctx context.Context, client enumerator, manifestPath string, l
 	m.SetEnabled(chosen)
 	if err := manifest.Save(manifestPath, m); err != nil {
 		return err
+	}
+	// After the save, because Reconcile only rewrote the copy in memory: a run that ends
+	// at the page — a closed tab, an interrupt — leaves every dropped entry in the file,
+	// and announcing the drop before the write makes that a false statement.
+	for _, e := range dropped {
+		fmt.Fprintf(os.Stderr, "no longer owned, dropped from the manifest: %s (%s)\n", e.Name, e.ID)
 	}
 	fmt.Fprintf(stdout, "saved %d selected asset(s) to %s\n", len(chosen), manifestPath)
 	return nil
@@ -370,6 +379,12 @@ func printReport(w io.Writer, rep syncer.Report, dry bool, libraryPath string) {
 		if r.Err != nil {
 			fmt.Fprintf(w, "failed: %s: %v\n", r.Asset.Name, r.Err)
 		}
+	}
+	// One line, not one per asset. An expired session cancels the pool with hundreds of
+	// assets still queued, and naming each as its own failure buries the one line that
+	// says what went wrong.
+	if rep.NotAttempted > 0 {
+		fmt.Fprintf(w, "not attempted: %d asset(s), because the run stopped early\n", rep.NotAttempted)
 	}
 	// A tally of one among hundreds of owned assets does not tell the user which package
 	// the store stopped serving, and that is the only thing they can act on.

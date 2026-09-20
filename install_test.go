@@ -201,8 +201,18 @@ func TestInstallerRefusesANonExecutableAsset(t *testing.T) {
 	if err == nil {
 		t.Fatalf("a non-executable asset installed successfully:\n%s", out)
 	}
-	if !strings.Contains(out, "not a") || !strings.Contains(out, "executable") {
-		t.Errorf("the asset was refused for some reason other than not being a binary:\n%s", out)
+	want := map[string]string{
+		"linux":  "ERROR: the downloaded file is not a Linux executable",
+		"darwin": "ERROR: the downloaded file is not a macOS executable",
+	}[runtime.GOOS]
+	if want == "" {
+		t.Skipf("no check_executable arm for %s", runtime.GOOS)
+	}
+	// The whole line, so this cannot pass on the other platform's arm or on some
+	// unrelated failure that happens to contain the words.
+	if !strings.Contains(out, want) {
+		t.Errorf("the asset was refused for some reason other than not being a %s binary:\n%s",
+			runtime.GOOS, out)
 	}
 	got, readErr := os.ReadFile(installed)
 	if readErr != nil {
@@ -283,7 +293,43 @@ func releasePlatforms(t *testing.T) []releasePlatform {
 	if len(out) == 0 {
 		t.Fatal("no platforms parsed from release.yml")
 	}
+	assertReleaseNaming(t, string(raw))
 	return out
+}
+
+// assertReleaseNaming holds the other half of the contract: the platform list decides the
+// labels, but the archive name and the binary inside it are decided one line further down,
+// and both consumers build those themselves. Reading only the labels means renaming the
+// zip or the binary leaves every test here green, the tag cuts, the release publishes —
+// and then `unity-sync update` cannot find its own asset and `curl | bash` cannot unzip
+// one. Asserted from both readers, because each derives the name independently.
+func assertReleaseNaming(t *testing.T, raw string) {
+	t.Helper()
+	for _, want := range []string{
+		`zip "unity-sync-${VERSION}-${label}.zip" "$bin"`,
+		`bin="unity-sync"`,
+		`bin="unity-sync.exe"`,
+		`-X main.version=`,
+	} {
+		if !strings.Contains(raw, want) {
+			t.Errorf("release.yml no longer contains %s; the name or the version stamp this "+
+				"suite derives is not the one it ships", want)
+		}
+	}
+}
+
+// The linker ignores -X for a symbol it cannot find: no error, no vet complaint, no test
+// failure. Rename or move main.version and every release ships printing "dev", which is
+// also the value selfupdate refuses to update from — so the documented upgrade path is
+// dead for everyone on that release, discoverable only after the tag exists.
+//
+// The reference below is the compile-time half of the contract; releasePlatforms asserts
+// the workflow still stamps it.
+func TestTheReleaseStampsTheVersionVariableThisBinaryPrints(t *testing.T) {
+	if version == "" {
+		t.Fatal("main.version is empty")
+	}
+	releasePlatforms(t)
 }
 
 // unameStub puts a uname on PATH that answers for the given platform, so the installer's

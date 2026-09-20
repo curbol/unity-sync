@@ -1,9 +1,12 @@
 package selfupdate_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -131,13 +134,19 @@ func TestAnUpdateWorksWithNoGitHubCredential(t *testing.T) {
 	if err := os.WriteFile(target, []byte("old binary"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	err := selfupdate.Update(context.Background(), selfupdate.New(srv.URL, ""), "0.1.0", "", target)
+	var said bytes.Buffer
+	err := selfupdate.Update(context.Background(), &said, selfupdate.New(srv.URL, ""), "0.1.0", "", target)
 	if err != nil {
 		t.Fatalf("update with no GitHub credential: %v", err)
 	}
 	got, err := os.ReadFile(target)
 	if err != nil || string(got) != nativeBinary(t, "fresh binary") {
 		t.Fatalf("target holds %q, %v; want the downloaded binary", got, err)
+	}
+	// Written to the caller's writer rather than straight to os.Stdout, which is what lets
+	// the command layer capture it the way it captures every other subcommand's output.
+	if !strings.Contains(said.String(), "0.1.0 -> 9.9.9") {
+		t.Errorf("the update said %q, which does not name the versions it moved between", said.String())
 	}
 	for _, seen := range sawAuth {
 		if seen != "" {
@@ -155,9 +164,21 @@ func TestPlatformAssetNamesMatchWhatTheReleaseWorkflowPublishes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// Cut to the bash array first, the way install_test.go does. Run over the whole file
+	// the pattern would keep matching if the matrix moved somewhere else, as long as some
+	// unrelated "a/b/c" string remained — so the test would pass against text that is no
+	// longer the contract.
+	_, rest, ok := strings.Cut(string(raw), "platforms=(")
+	if !ok {
+		t.Fatal("release.yml has no platforms=( ... ) list; this guard no longer reads what the workflow builds")
+	}
+	block, _, ok := strings.Cut(rest, ")")
+	if !ok {
+		t.Fatal("release.yml's platforms list is unterminated")
+	}
 	// The platforms array holds "goos/goarch/label" strings, one per line.
 	re := regexp.MustCompile(`"([a-z0-9]+)/([a-z0-9]+)/([a-z0-9-]+)"`)
-	matches := re.FindAllStringSubmatch(string(raw), -1)
+	matches := re.FindAllStringSubmatch(block, -1)
 	if len(matches) == 0 {
 		t.Fatal("no platform triples found in release.yml; this test can no longer see the contract")
 	}
@@ -241,7 +262,13 @@ func TestReplaceAsideRecoversTheBinaryWhenTheSwapFails(t *testing.T) {
 		selfupdate.ForceImageLocked(t)
 		dir := t.TempDir()
 		target := filepath.Join(dir, "unity-sync")
-		if err := os.WriteFile(target, []byte("old binary"), 0o755); err != nil {
+		// runningImageIsLocked is consulted only inside the error branch of the direct
+		// rename, and a plain writable file is renamed over successfully on Windows too —
+		// so a file target never reaches replaceAside, and this subtest passed with the
+		// whole aside dance deleted. A non-empty directory is a destination os.Rename
+		// refuses everywhere while still being renameable itself, which is exactly the
+		// shape Windows presents for a running image.
+		if err := os.MkdirAll(filepath.Join(target, "occupied"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 		if err := selfupdate.Replace(target, []byte("new binary")); err != nil {
@@ -298,7 +325,7 @@ func TestAnAssetThatIsNotAnExecutableIsRefusedBeforeTheSwap(t *testing.T) {
 		if err := os.WriteFile(target, []byte(nativeBinary(t, "the working one")), 0o755); err != nil {
 			t.Fatal(err)
 		}
-		err := selfupdate.Update(context.Background(), selfupdate.New(srv.URL, ""), "0.1.0", "", target)
+		err := selfupdate.Update(context.Background(), io.Discard, selfupdate.New(srv.URL, ""), "0.1.0", "", target)
 		srv.Close()
 
 		if err == nil {
@@ -315,5 +342,104 @@ func TestAnAssetThatIsNotAnExecutableIsRefusedBeforeTheSwap(t *testing.T) {
 		if string(got) != nativeBinary(t, "the working one") {
 			t.Errorf("the working binary was replaced by %q", got)
 		}
+	}
+}
+
+// The asset URL is a field in a response, and get attaches the user's GitHub token to
+// whatever URL it is given. Go strips Authorization on a redirect to another host, which
+// covers the hop to the signed CDN — but nothing covers the first request, so the host
+// has to be checked before it is made.
+func TestAnAssetURLOffTheAPIHostIsRefusedBeforeTheTokenIsSent(t *testing.T) {
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("the client sent %s %s with Authorization %q",
+			r.Method, r.URL, r.Header.Get("Authorization"))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer elsewhere.Close()
+
+	assetName, err := selfupdate.PlatformAsset("9.9.9")
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"tag_name":"v9.9.9","assets":[{"name":%q,"url":%q}]}`,
+			assetName, elsewhere.URL+"/evil.zip")
+	}))
+	defer api.Close()
+
+	c := selfupdate.New(api.URL, "super-secret")
+	rel, err := c.Resolve(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.DownloadBinary(context.Background(), rel); err == nil {
+		t.Fatal("DownloadBinary followed an asset URL onto another host")
+	}
+}
+
+// docs/design.md and DownloadBinary both lean on "Go strips the Authorization header on a
+// redirect to another host" to cover the hop to the signed CDN; sameHost only covers the
+// first request. Nothing asserted the strip, and the redirect test structurally could not:
+// shouldCopyHeaderOnRedirect compares hostnames with the port removed, and two httptest
+// servers are both on 127.0.0.1, so Go forwards the header there.
+//
+// The regression this pins is moving the auth out of get() and into a Transport wrapper,
+// which is the natural shape for adding a retry or a rate-limit backoff. A RoundTripper
+// runs per hop, so the user's token would then reach the CDN on every update.
+func TestTheGitHubTokenNeverReachesTheRedirectTarget(t *testing.T) {
+	archive := zipWithBinary(t, "#!/bin/true\n")
+	var cdnAuth string
+	cdn := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cdnAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Write(archive)
+	}))
+	defer cdn.Close()
+
+	var apiBase string
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/releases/latest"):
+			name, err := selfupdate.PlatformAsset("9.9.9")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := r.Header.Get("Authorization"); got != "Bearer secret-token" {
+				t.Errorf("the API host did not get the token: %q", got)
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"tag_name": "v9.9.9",
+				"assets":   []map[string]string{{"name": name, "url": apiBase + "/assets/2"}},
+			})
+		case r.URL.Path == "/assets/2":
+			if got := r.Header.Get("Authorization"); got != "Bearer secret-token" {
+				t.Errorf("the asset request on the API host did not get the token: %q", got)
+			}
+			// A different hostname, which is what makes the strip observable: both
+			// servers on 127.0.0.1 are the same host to Go and the header is forwarded.
+			http.Redirect(w, r, cdn.URL+"/signed", http.StatusFound)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer api.Close()
+
+	// Same address, spelled by a name the CDN does not share.
+	apiBase = strings.Replace(api.URL, "127.0.0.1", "localhost", 1)
+	if apiBase == api.URL {
+		t.Skip("httptest did not bind 127.0.0.1; this needs two spellings of one address")
+	}
+
+	c := selfupdate.New(apiBase, "secret-token")
+	rel, err := c.Resolve(context.Background(), "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if _, err := c.DownloadBinary(context.Background(), rel); err != nil {
+		t.Fatalf("DownloadBinary: %v", err)
+	}
+	if cdnAuth != "" {
+		t.Errorf("the GitHub token reached the redirect target: %q", cdnAuth)
 	}
 }

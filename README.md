@@ -77,8 +77,9 @@ unity-sync status     # no paste, no expiry to babysit
 ```
 
 It reads only the `unity.com` cookies out of the session store and discards the rest of the
-file. You do not need to keep an Asset Store tab open; the cookie lasts as long as the
-browsing session does. `--session browser` does the same thing for one run, and the run
+file. You do not need to keep an Asset Store tab open, or even to leave the browser
+running: the cookie lasts as long as the browsing session does, and a browser that exited
+cleanly leaves the session in a file unity-sync also looks for. `--session browser` does the same thing for one run, and the run
 prints which profile it read.
 
 Chromium-family browsers keep session cookies somewhere else entirely, encrypted, so they
@@ -98,8 +99,9 @@ A Netscape `cookies.txt` export works too, as long as your exporter keeps HttpOn
 `session_source` in `config.toml`, or just save it as `session.curl` or `cookies.txt` in
 the config dir, where unity-sync looks by default.
 
-`--session` also takes a browser profile directory or a `recovery.jsonlz4` straight, which
-covers a Gecko browser this does not know where to look for. Whatever you point it at,
+`--session` also takes a browser profile directory, or a `recovery.jsonlz4` or
+`sessionstore.jsonlz4` straight, which covers a Gecko browser this does not know where to
+look for. Whatever you point it at,
 unity-sync works out what the file is by reading it.
 
 If the session has no `LS` cookie, unity-sync says so before making any request, because

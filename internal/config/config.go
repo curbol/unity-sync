@@ -103,10 +103,19 @@ func defaults() Config {
 // differently from the others.
 func Load(dir string, f Flags) (Config, error) {
 	c := defaults()
+	// Asked of the directory itself, because the errno from statting through it does not
+	// answer the same way everywhere: Windows reports a path that runs through a regular
+	// file as ERROR_PATH_NOT_FOUND, which errors.Is reads as fs.ErrNotExist, so the check
+	// below cannot tell "--config named the file" from "there is no config here" on the
+	// one platform where the flag's own wording ("user config dir") invites the mistake.
+	// A dir that does not exist at all still falls through, which is the absent case.
+	if fi, err := os.Stat(dir); err == nil && !fi.IsDir() {
+		return Config{}, fmt.Errorf("%s is not a directory: --config names the directory "+
+			"holding config.toml, not the file itself", dir)
+	}
 	path := filepath.Join(dir, "config.toml")
-	// Only a genuinely absent file is skipped. A permission error, or a --config that
-	// named the file instead of the directory holding it, otherwise looks exactly like
-	// "no config here": library_path is dropped and the run mirrors tens of gigabytes
+	// Only a genuinely absent file is skipped. A permission error otherwise looks exactly
+	// like "no config here": library_path is dropped and the run mirrors tens of gigabytes
 	// into the default directory with no diagnostic, which is what the undecoded-key
 	// check below exists to prevent.
 	if _, err := os.Stat(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
@@ -170,10 +179,18 @@ func overlay(c *Config, fc fileConfig) {
 	}
 }
 
+// expandHome resolves a leading "~", which no shell expands when the value came out of
+// an environment variable, a config file, or PowerShell's own tab completion.
+//
+// The separator is tested with os.IsPathSeparator rather than against "/", because the
+// native spelling on Windows is `~\lib` and that is what tab completion there produces.
+// Matching only "~/" leaves it alone, and the run then mirrors tens of gigabytes into a
+// directory literally named "~". On Linux a backslash is an ordinary filename character
+// and IsPathSeparator says so, so nothing changes there.
 func expandHome(p string) string {
-	if p == "~" || strings.HasPrefix(p, "~/") {
+	if p == "~" || (len(p) > 1 && p[0] == '~' && os.IsPathSeparator(p[1])) {
 		if home, err := os.UserHomeDir(); err == nil {
-			return filepath.Join(home, strings.TrimPrefix(p, "~"))
+			return filepath.Join(home, p[1:])
 		}
 	}
 	return p

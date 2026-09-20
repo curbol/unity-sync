@@ -11,6 +11,7 @@
 package cache
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -105,9 +106,66 @@ func SamePath(a, b string) bool {
 	return ca == cb
 }
 
-// resolve turns a lockfile-supplied relative path into an absolute one, refusing
-// anything that would leave the library root. These values arrive from a file that is
-// committed and travels between machines, so they are validated rather than trusted.
+// SameFile reports whether two cache-relative paths name one file on disk.
+//
+// SamePath cannot answer that everywhere. It compares canonical spellings, and on the
+// two case-insensitive filesystems this ships to — Windows, and macOS as it is usually
+// configured — "Pub/a.unitypackage" and "pub/a.unitypackage" are one file that SamePath
+// calls two. The callers are deciding whether to delete or move, so the difference is a
+// run removing the package it just wrote as though it were a superseded copy.
+//
+// It answers false when either path is unsafe or absent, so a caller pairs it with
+// SamePath rather than replacing it: SamePath settles the spelling without touching the
+// disk, and this settles what only the filesystem knows.
+func SameFile(root, a, b string) bool {
+	fa, err := statRel(root, a)
+	if err != nil {
+		return false
+	}
+	fb, err := statRel(root, b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(fa, fb)
+}
+
+func statRel(root, rel string) (os.FileInfo, error) {
+	r, name, err := rooted(root, rel)
+	if err != nil {
+		return nil, err
+	}
+	defer r.Close()
+	return r.Stat(name)
+}
+
+// rooted opens the library as an os.Root and resolves rel inside it, returning the name to
+// hand the root's own methods.
+//
+// Canonical checks a spelling, and a spelling cannot see the whole question: a path whose
+// every segment is an ordinary name still leaves the tree when one of those segments is a
+// symlink, because a link is followed like any other directory. These values arrive from
+// the lockfile, which is committed, hand-editable and read on other machines, and
+// RemoveStale deletes what it is given — so the confinement has to be the filesystem's
+// rather than the string's, and it has to be enforced by the same syscall that acts, which
+// is what leaves no window between the check and the use.
+func rooted(root, rel string) (*os.Root, string, error) {
+	clean, err := Canonical(rel)
+	if err != nil {
+		return nil, "", err
+	}
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return nil, "", err
+	}
+	return r, filepath.FromSlash(clean), nil
+}
+
+// resolve joins a cache-relative path onto the root for the callers that need the name
+// rather than the file: a map key, or the directory pruning walks up from.
+//
+// It confines the spelling and nothing more. Every operation on a recorded path — opening
+// it, moving it, removing it — goes through rooted instead, because a lexically confined
+// path can still resolve through a link that leaves the library.
 func resolve(root, rel string) (string, error) {
 	clean, err := Canonical(rel)
 	if err != nil {
@@ -141,6 +199,14 @@ func Store(root, publisherSlug, assetSlug string, r io.Reader) (*Pending, error)
 		return nil, err
 	}
 	rel := RelPath(publisherSlug, assetSlug)
+	// The write gate has to be no weaker than the read gate. safeSegment refuses a
+	// separator and a device name; Canonical additionally refuses a colon, so a segment
+	// carrying one is a path this can create on Linux and macOS and no later run can
+	// resolve — the entry verifies false, the exclusion it becomes refuses every adopt
+	// candidate, and the asset re-downloads in full on every run with no error saying why.
+	if _, err := Canonical(rel); err != nil {
+		return nil, err
+	}
 	dir := filepath.Join(root, publisherSlug, assetSlug)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
@@ -182,12 +248,37 @@ func Store(root, publisherSlug, assetSlug string, r io.Reader) (*Pending, error)
 }
 
 // Commit renames the pending bytes into place.
+//
+// It is the one write here that deliberately lands on an occupied path: the occupant is
+// this asset's own superseded version, and refusing it the way Relocate does would make
+// every re-download fail.
 func (p *Pending) Commit() error {
+	// CreateTemp makes the file 0600 and the rename carries that over, so a downloaded
+	// package would be owner-only inside a 0755 tree while an adopted one keeps the 0644
+	// it arrived with — one asset changing mode depending on how it got here. An
+	// existing destination's mode wins, so a library deliberately locked down stays so.
+	mode := os.FileMode(0o644)
+	if fi, err := os.Stat(p.final); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	if err := os.Chmod(p.tempPath, mode); err != nil {
+		return p.abandon(err)
+	}
 	if err := os.Rename(p.tempPath, p.final); err != nil {
-		os.Remove(p.tempPath)
-		return err
+		// Unwound like every other failure that removes the temp. A rename can fail with
+		// the destination held open — an editor, an on-access scanner — and without this
+		// the empty <publisher>/<asset>/ Store created stays in the tree quarry walks.
+		return p.abandon(err)
 	}
 	return nil
+}
+
+// abandon drops the temp and the directories Store made for it, returning the error that
+// caused it.
+func (p *Pending) abandon(err error) error {
+	os.Remove(p.tempPath)
+	pruneEmptyParents(p.root, filepath.Dir(p.tempPath))
+	return err
 }
 
 // Discard removes the pending bytes, and the directories Store created for them if the
@@ -210,11 +301,12 @@ func (p *Pending) Discard() error {
 // An entry with no delivered id is verified on size alone. Requiring a metadata match
 // there would make a package that simply has no descriptor re-download on every run.
 func Verify(root, rel string, wantSize int64, wantDeliveredID string) bool {
-	full, err := resolve(root, rel)
+	r, name, err := rooted(root, rel)
 	if err != nil {
 		return false
 	}
-	fi, err := os.Stat(full)
+	defer r.Close()
+	fi, err := r.Stat(name)
 	// IsDir as well as size: a hand-edited cachePath missing its filename segment names
 	// the asset's own directory, which always exists once a run has written there.
 	if err != nil || fi.IsDir() || fi.Size() != wantSize {
@@ -223,7 +315,12 @@ func Verify(root, rel string, wantSize int64, wantDeliveredID string) bool {
 	if wantDeliveredID == "" {
 		return true
 	}
-	m, err := unitypackage.ReadFile(full)
+	f, err := r.Open(name)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	m, err := unitypackage.Read(f)
 	if err != nil {
 		return false
 	}
@@ -242,11 +339,12 @@ func VerifyDeep(root, rel, wantSHA string) bool {
 // Hash returns a cached file's digest and size, for adopting a file the tool did not
 // download itself.
 func Hash(root, rel string) (string, int64, error) {
-	full, err := resolve(root, rel)
+	r, name, err := rooted(root, rel)
 	if err != nil {
 		return "", 0, err
 	}
-	f, err := os.Open(full)
+	defer r.Close()
+	f, err := r.Open(name)
 	if err != nil {
 		return "", 0, err
 	}
@@ -288,9 +386,16 @@ type Index struct {
 // Nothing here fails. An unreadable subtree, a file whose header will not parse, or a root
 // that does not exist yet on a first run simply yields no candidate, and the caller falls
 // back to a download, where the full set of guards applies.
-func Scan(root string) *Index {
+func Scan(ctx context.Context, root string) *Index {
 	ix := &Index{root: root, byProduct: map[string][]Candidate{}}
 	filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		// A header parse per package over a 75 GB library is long enough that a run
+		// cancelled here would otherwise go on reading for minutes after being told to
+		// stop. A short index is safe: a candidate the walk never reached is one the
+		// caller falls back to downloading, where the full set of guards applies.
+		if ctx.Err() != nil {
+			return filepath.SkipAll
+		}
 		if err != nil || d.IsDir() {
 			return nil
 		}
@@ -330,7 +435,18 @@ func (ix *Index) Find(productID, preferRel string, excludeRel ...string) (Candid
 	// hand-editable and travels between machines, so "./pub/a/a.unitypackage" has to skip
 	// the same file "pub/a/a.unitypackage" names. Missing the match would re-offer a file
 	// that just failed verification as a candidate to adopt.
+	r, err := os.OpenRoot(ix.root)
+	if err != nil {
+		return Candidate{}, false
+	}
+	defer r.Close()
+
 	skip := map[string]bool{}
+	// Two spellings of one file can differ in more than punctuation: on a
+	// case-insensitive filesystem they differ in case, which no canonical form
+	// collapses. The identity the filesystem reports is checked alongside the string,
+	// for the exclusions that name a file actually on disk.
+	var skipIDs []os.FileInfo
 	for _, e := range excludeRel {
 		if e == "" {
 			continue
@@ -344,6 +460,9 @@ func (ix *Index) Find(productID, preferRel string, excludeRel ...string) (Candid
 			return Candidate{}, false
 		}
 		skip[full] = true
+		if fi, err := r.Stat(filepath.FromSlash(path.Clean(e))); err == nil {
+			skipIDs = append(skipIDs, fi)
+		}
 	}
 	var found []Candidate
 	for _, c := range ix.byProduct[productID] {
@@ -354,7 +473,8 @@ func (ix *Index) Find(productID, preferRel string, excludeRel ...string) (Candid
 		// Re-checked against the filesystem, because a run relocates and removes packages
 		// while it classifies: the scan is a snapshot, and handing back a path that has
 		// since moved would fail an adopt that a re-scan would have completed.
-		if _, err := os.Stat(full); err != nil {
+		fi, err := r.Stat(filepath.FromSlash(path.Clean(c.RelPath)))
+		if err != nil || sameAsAny(fi, skipIDs) {
 			continue
 		}
 		found = append(found, c)
@@ -367,11 +487,20 @@ func (ix *Index) Find(productID, preferRel string, excludeRel ...string) (Candid
 	// would silently lose "the copy already in place wins" and get a relocation conflict
 	// where an adopt was really a no-op.
 	for _, c := range found {
-		if SamePath(c.RelPath, preferRel) {
+		if SamePath(c.RelPath, preferRel) || SameFile(ix.root, c.RelPath, preferRel) {
 			return c, true
 		}
 	}
 	return found[0], true
+}
+
+func sameAsAny(fi os.FileInfo, others []os.FileInfo) bool {
+	for _, o := range others {
+		if os.SameFile(fi, o) {
+			return true
+		}
+	}
+	return false
 }
 
 // Relocate moves a package to where the current layout puts it, creating parents and
@@ -380,50 +509,67 @@ func (ix *Index) Find(productID, preferRel string, excludeRel ...string) (Candid
 // It is a no-op when the file is already there, and it refuses a destination holding a
 // different file rather than renaming over it: the caller records the digest of whatever
 // ends up at that path, so a silent overwrite would certify the wrong bytes.
+//
+// "Already there" is a question about files, not about spellings. Windows and macOS as it
+// is usually configured ignore case, so a recorded "Pub/a.unitypackage" and a derived
+// "pub/a.unitypackage" are one file that no canonical form collapses — and refusing that
+// as an occupied destination fails the adopt of a package already exactly where it
+// belongs, on those platforms alone and identically on every later run.
 func Relocate(root, fromRel, toRel string) error {
-	from, err := resolve(root, fromRel)
+	from, err := Canonical(fromRel)
 	if err != nil {
 		return err
 	}
-	to, err := resolve(root, toRel)
+	to, err := Canonical(toRel)
 	if err != nil {
 		return err
 	}
 	if from == to {
 		return nil
 	}
-	if _, err := os.Stat(to); err == nil {
+	r, err := os.OpenRoot(root)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+	fromName, toName := filepath.FromSlash(from), filepath.FromSlash(to)
+
+	switch dst, statErr := r.Stat(toName); {
+	case statErr == nil:
+		if src, err := r.Stat(fromName); err == nil && os.SameFile(src, dst) {
+			return nil
+		}
 		return fmt.Errorf("refusing to move %s onto %s: destination already holds a file", fromRel, toRel)
-	} else if !os.IsNotExist(err) {
+	case !os.IsNotExist(statErr):
+		return statErr
+	}
+	if dir := filepath.Dir(toName); dir != "." {
+		if err := r.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	if err := r.Rename(fromName, toName); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(to), 0o755); err != nil {
-		return err
-	}
-	if err := os.Rename(from, to); err != nil {
-		return err
-	}
-	pruneEmptyParents(root, filepath.Dir(from))
+	pruneEmptyParents(root, filepath.Dir(filepath.Join(root, fromName)))
 	return nil
 }
 
 // pruneEmptyParents removes directories the move emptied, walking up but never past the
 // library root.
+//
+// Confinement is filepath.Rel, not a string prefix. The root arrives however the user
+// spelled it, while every path it is compared against has been through resolve, which
+// joins and cleans — so a prefix test has to reproduce that cleaning, and gets at least
+// one spelling wrong every time. A bare "." cleans to ".", but Join(".", "pub/a") cleans
+// to "pub/a", which carries no "./" for the prefix to match: every prune site is
+// silently dead for `--library .`. Rel cleans both sides itself and answers the same for
+// ".", "./lib", "lib/", "/" and a drive root alike.
 func pruneEmptyParents(root, dir string) {
-	// Cleaned, because every path this compares against came through resolve, which
-	// joins and cleans. A root of "./lib" or "lib/" would otherwise match nothing and
-	// silently prune nothing.
-	root = filepath.Clean(root)
-	// Clean strips a trailing separator from every path except a filesystem root, where
-	// it is part of the value. Appending one unconditionally would make the prefix "//"
-	// or `D:\\` for such a root, which nothing under it matches, so a library at the top
-	// of a drive would silently never prune.
-	prefix := root
-	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
-		prefix += string(filepath.Separator)
-	}
 	for {
-		if dir == root || !strings.HasPrefix(dir, prefix) {
+		rel, err := filepath.Rel(root, dir)
+		if err != nil || rel == "." || rel == ".." ||
+			strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 			return
 		}
 		entries, err := os.ReadDir(dir)
@@ -445,10 +591,15 @@ func pruneEmptyParents(root, dir string) {
 // Nothing here fails: a subtree that cannot be read, or a root that does not exist yet on
 // a first run, is skipped. One unreadable directory must not stop a 75 GB mirror over a
 // housekeeping pass.
-func SweepTemps(root string, olderThan time.Time) (int, int64) {
+func SweepTemps(ctx context.Context, root string, olderThan time.Time) (int, int64) {
 	var count int
 	var bytes int64
 	filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		// Housekeeping, so a cancelled run stops here rather than finishing a walk of the
+		// whole library first. Whatever is left is swept by the next run.
+		if ctx.Err() != nil {
+			return filepath.SkipAll
+		}
 		if err != nil {
 			return nil
 		}
@@ -473,16 +624,21 @@ func SweepTemps(root string, olderThan time.Time) (int, int64) {
 // called with a path the lockfile itself recorded, never with a file the tool did not
 // write.
 func RemoveStale(root, rel string) error {
-	full, err := resolve(root, rel)
+	r, name, err := rooted(root, rel)
 	if err != nil {
-		return err
-	}
-	if err := os.Remove(full); err != nil {
+		// A library that is not there yet has nothing to remove; anything else is real.
 		if os.IsNotExist(err) {
 			return nil
 		}
 		return err
 	}
-	pruneEmptyParents(root, filepath.Dir(full))
+	defer r.Close()
+	if err := r.Remove(name); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	pruneEmptyParents(root, filepath.Dir(filepath.Join(root, name)))
 	return nil
 }

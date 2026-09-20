@@ -2,9 +2,7 @@ package main
 
 import (
 	"bytes"
-	"compress/gzip"
 	"context"
-	"encoding/binary"
 	"io"
 	"net"
 	"os"
@@ -13,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/curbol/unity-sync/internal/config"
+	"github.com/curbol/unity-sync/internal/fixtures"
 	"github.com/curbol/unity-sync/internal/lockfile"
 	"github.com/curbol/unity-sync/internal/manifest"
 	"github.com/curbol/unity-sync/internal/model"
@@ -123,8 +122,9 @@ func TestListNeedsNoSession(t *testing.T) {
 	}
 	lf := lockfile.New()
 	lf.Assets["quick-outline-115488"] = lockfile.Entry{
-		AssetID: "115488", Name: "Quick Outline", Tracked: true,
-		Version: lockfile.Version{ID: "683375", Name: "1.1"},
+		AssetID: "115488", Name: "Quick Outline",
+		Version:    lockfile.Version{ID: "683375", Name: "1.1"},
+		Resolution: lockfile.Resolution{Tracked: true},
 	}
 	lf.Assets["owned-only-999"] = lockfile.Entry{
 		AssetID: "999", Name: "Owned But Not Mirrored",
@@ -174,20 +174,7 @@ func (f *fakeStore) Fetch(_ context.Context, id string) (*store.Download, error)
 
 func testPackage(t *testing.T, productID, versionID string, size int) []byte {
 	t.Helper()
-	d := []byte(`{"id":"` + productID + `","version_id":"` + versionID + `"}`)
-	extra := []byte{'A', '$', 0, 0}
-	binary.LittleEndian.PutUint16(extra[2:4], uint16(len(d)))
-	extra = append(extra, d...)
-	var buf bytes.Buffer
-	zw := gzip.NewWriter(&buf)
-	zw.Header.Extra = extra
-	zw.Write(bytes.Repeat([]byte("x"), 32))
-	zw.Close()
-	out := buf.Bytes()
-	for len(out) < size {
-		out = append(out, 0)
-	}
-	return out
+	return fixtures.Package(productID, versionID, size)
 }
 
 func ownedAsset(id, name, versionID string, size int64) model.Asset {

@@ -170,6 +170,10 @@ func TestTheQueryParserRefusesConstructsItCannotProject(t *testing.T) {
 		`query Q { searchMyAssets { mainImage @include(if: $x) { icon75 } } }`,
 		`query Q { searchMyAssets { icon: icon75 } }`,
 		`query Q { searchMyAssets { ...rowFields } }`,
+		// A comment dropped as whitespace puts every word after the '#' into the
+		// allowlist as a sibling field, so a line explaining which field not to ask for
+		// is exactly what adds it.
+		"query Q { searchMyAssets {\n  # currentVersion also carries orderId\n  total\n} }",
 	} {
 		if _, err := fixtures.ParseSelectionSets(doc); err == nil {
 			t.Errorf("the parser accepted %q; every field under it would be kept whole", doc)

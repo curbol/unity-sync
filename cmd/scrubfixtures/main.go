@@ -36,6 +36,7 @@ func run(from, to string) error {
 	if err := os.MkdirAll(to, 0o755); err != nil {
 		return err
 	}
+	written := map[string]bool{}
 	for _, src := range matches {
 		raw, err := os.ReadFile(src)
 		if err != nil {
@@ -49,7 +50,25 @@ func run(from, to string) error {
 		if err := os.WriteFile(dst, clean, 0o644); err != nil {
 			return err
 		}
+		written[filepath.Base(dst)] = true
 		fmt.Printf("wrote %s (%d bytes)\n", dst, len(clean))
+	}
+	// A page the new capture does not have is a page the old one did. Left in place it is
+	// served as that page by the next test run, so an account that shrank from three pages
+	// to two fails the suite with the enumeration's rows-versus-total complaint, which
+	// has nothing to do with pagination.
+	stale, err := filepath.Glob(filepath.Join(to, "*.json"))
+	if err != nil {
+		return err
+	}
+	for _, f := range stale {
+		if written[filepath.Base(f)] {
+			continue
+		}
+		if err := os.Remove(f); err != nil {
+			return err
+		}
+		fmt.Printf("removed %s (no longer captured)\n", f)
 	}
 	return nil
 }

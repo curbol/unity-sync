@@ -3,33 +3,19 @@ package cache_test
 import (
 	"bytes"
 	"compress/gzip"
-	"encoding/binary"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/curbol/unity-sync/internal/cache"
+	"github.com/curbol/unity-sync/internal/fixtures"
 )
 
 // pkg builds a gzip stream carrying the store's descriptor, padded to size.
 func pkg(t *testing.T, productID, versionID string, size int) []byte {
 	t.Helper()
-	descriptor := []byte(`{"id":"` + productID + `","version_id":"` + versionID + `"}`)
-	extra := []byte{'A', '$', 0, 0}
-	binary.LittleEndian.PutUint16(extra[2:4], uint16(len(descriptor)))
-	extra = append(extra, descriptor...)
-
-	var buf bytes.Buffer
-	zw := gzip.NewWriter(&buf)
-	zw.Header.Extra = extra
-	zw.Write(bytes.Repeat([]byte("x"), 64))
-	zw.Close()
-	out := buf.Bytes()
-	for len(out) < size {
-		out = append(out, 0)
-	}
-	return out
+	return fixtures.Package(productID, versionID, size)
 }
 
 func storeCommitted(t *testing.T, root, pub, asset string, body []byte) *cache.Pending {
@@ -52,23 +38,6 @@ func TestLayoutIsThreeSegmentsSoQuarryGetsBothFacets(t *testing.T) {
 	}
 	if n := strings.Count(got, "/"); n != 2 {
 		t.Errorf("path has %d separators, want 2: quarry fills its pack facet only from a third segment", n+1)
-	}
-}
-
-func TestDiscardRemovesTheTempAndLeavesNoFile(t *testing.T) {
-	root := t.TempDir()
-	p, err := cache.Store(root, "pub", "asset-1", bytes.NewReader(pkg(t, "1", "2", 300)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := p.Discard(); err != nil {
-		t.Fatalf("Discard: %v", err)
-	}
-	if _, err := os.Stat(p.TempPath()); !os.IsNotExist(err) {
-		t.Error("Discard left the temp file behind")
-	}
-	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(p.RelPath))); !os.IsNotExist(err) {
-		t.Error("Discard left a file at the real path")
 	}
 }
 
@@ -147,24 +116,12 @@ func TestLocateFindsAPackageByItsOwnIdAndIgnoresTemps(t *testing.T) {
 	os.MkdirAll(tempDir, 0o755)
 	os.WriteFile(filepath.Join(tempDir, ".unity-sync-dl-999"), pkg(t, "333", "9", 400), 0o644)
 
-	got, ok := cache.Scan(root).Find("222", "")
+	got, ok := cache.Scan(t.Context(), root).Find("222", "")
 	if !ok || !strings.Contains(got.RelPath, "asset-2") {
 		t.Errorf("Locate(222) = %+v, %v", got, ok)
 	}
-	if _, ok := cache.Scan(root).Find("333", ""); ok {
+	if _, ok := cache.Scan(t.Context(), root).Find("333", ""); ok {
 		t.Error("Locate adopted an abandoned download temp")
-	}
-}
-
-func TestLocatePrefersTheFileAlreadyAtTheDerivedPath(t *testing.T) {
-	root := t.TempDir()
-	derived := cache.RelPath("pub", "asset-1")
-	storeCommitted(t, root, "pub", "asset-1", pkg(t, "111", "9", 400))
-	storeCommitted(t, root, "old-pub", "old-asset", pkg(t, "111", "9", 400))
-
-	got, ok := cache.Scan(root).Find("111", derived)
-	if !ok || got.RelPath != derived {
-		t.Errorf("Locate = %q, want the copy already at %q", got.RelPath, derived)
 	}
 }
 

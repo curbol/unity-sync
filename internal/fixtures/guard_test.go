@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -39,6 +40,7 @@ var forbiddenPatterns = []struct {
 func TestCommittedFixturesCarryNoAccountData(t *testing.T) {
 	root := filepath.Join("..", "..")
 	seen := 0
+	dirs := map[string]bool{}
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -53,6 +55,7 @@ func TestCommittedFixturesCarryNoAccountData(t *testing.T) {
 			return nil
 		}
 		seen++
+		dirs[filepath.ToSlash(filepath.Dir(path))] = true
 		raw, err := os.ReadFile(path)
 		if err != nil {
 			return err
@@ -77,8 +80,65 @@ func TestCommittedFixturesCarryNoAccountData(t *testing.T) {
 		t.Fatal("no fixtures found; the guard would pass vacuously")
 	}
 	// The walk is over the whole repo, so a mistake in the testdata filter would silently
-	// narrow it to nothing much. Both known testdata directories have to be in the count.
-	if seen < 5 {
-		t.Errorf("walked only %d file(s); both testdata directories should be covered", seen)
+	// narrow it to the top-level directory. Counted by shape rather than by number: there
+	// happen to be two today, and inlining internal/store's golden query into its own test
+	// file is a reasonable change that would take one away — which must not read as the
+	// filter having broken. What has to hold is that a testdata directory nested inside a
+	// package is reached at all when one exists.
+	var nested, top bool
+	for d := range dirs {
+		if strings.Contains(filepath.ToSlash(d), "/internal/") {
+			nested = true
+		} else {
+			top = true
+		}
 	}
+	if !top {
+		t.Errorf("walked %d file(s) in %v; the top-level testdata directory went unchecked",
+			seen, sortedKeys(dirs))
+	}
+	if !nested && packageLocalTestdataExists(t) {
+		t.Errorf("walked %d file(s) in %v; a package-local testdata directory exists but the "+
+			"filter no longer reaches it", seen, sortedKeys(dirs))
+	}
+}
+
+func sortedKeys(m map[string]bool) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// packageLocalTestdataExists reports whether any package under internal/ keeps its own
+// testdata directory. It is what keeps the nested-directory assertion honest in both
+// directions: required while one exists, silent once none does.
+func packageLocalTestdataExists(t *testing.T) bool {
+	t.Helper()
+	var found bool
+	// Compared against the walk root itself, not against a directory name. The root is the
+	// relative "../..", so filepath.Dir of the top-level testdata is "../.." and its Base
+	// is ".." — never the repository's name, whatever the checkout is called. Matching on
+	// the name counted the top-level directory as package-local, and only the lexical walk
+	// order (internal sorts before testdata) hid it.
+	root := filepath.Join("..", "..")
+	err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+		if err != nil || !d.IsDir() {
+			return nil
+		}
+		if d.Name() == ".git" {
+			return filepath.SkipDir
+		}
+		if d.Name() == "testdata" && filepath.Dir(p) != root {
+			found = true
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("scanning for package-local testdata: %v", err)
+	}
+	return found
 }

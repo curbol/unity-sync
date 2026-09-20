@@ -13,7 +13,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 )
@@ -103,19 +102,149 @@ func parse(content string) (map[string]string, error) {
 	return fromCookiesTxt(content)
 }
 
-// A cookie value can itself contain the opposite quote character, so each outer-quote
-// style gets its own pattern; RE2 has no backreferences.
-var (
-	curlSingle = regexp.MustCompile(`(?i)(?:-H|--header)\s+'Cookie:\s*([^']*)'`)
-	curlDouble = regexp.MustCompile(`(?i)(?:-H|--header)\s+"Cookie:\s*([^"]*)"`)
+// quoting states for curlArguments, named for the shell construct each one is inside.
+const (
+	bare = iota
+	singleQuoted
+	doubleQuoted
+	ansiCQuoted
 )
+
+// curlArguments splits a pasted curl command into its arguments, undoing the quoting
+// the shell it was copied for applies.
+//
+// DevTools writes the command for that shell, so the Cookie argument arrives in one of
+// four spellings: POSIX single quotes, ANSI-C $'…' when a value holds a quote, plain
+// double quotes, and on Windows the cmd form, which wraps every argument in ^" and
+// prefixes ^ to each character cmd would otherwise eat — including the one inside %^7B
+// that stops variable expansion. Matching one quote style with a pattern drops the other
+// three, and dropping the Cookie argument drops exactly the credential.
+//
+// A value is never unescaped in a context that does not escape: inside POSIX single
+// quotes every byte is literal, so a cookie value containing ^ survives as itself.
+func curlArguments(content string) []string {
+	var (
+		args []string
+		cur  strings.Builder
+		// caret records that the open double-quoted run began as ^", which escapes the
+		// quote itself: cmd therefore never counts itself as inside quotes and keeps
+		// stripping carets through the value, and only the program's own argument parser
+		// sees the quote as a delimiter.
+		started, caret bool
+		state          = bare
+	)
+	flush := func() {
+		if started {
+			args = append(args, cur.String())
+			cur.Reset()
+			started = false
+		}
+	}
+	literal := func(b byte) {
+		cur.WriteByte(b)
+		started = true
+	}
+	for i := 0; i < len(content); i++ {
+		c := content[i]
+		next := byte(0)
+		if i+1 < len(content) {
+			next = content[i+1]
+		}
+		switch state {
+		case singleQuoted:
+			if c == '\'' {
+				state = bare
+				continue
+			}
+			literal(c)
+		case ansiCQuoted, doubleQuoted:
+			closer := byte('\'')
+			if state == doubleQuoted {
+				closer = '"'
+			}
+			switch {
+			case c == closer:
+				state, caret = bare, false
+			case c == '\\' && next != 0:
+				i++
+				literal(next)
+			case caret && c == '^' && next == '^':
+				i++
+				literal('^')
+			case caret && c == '^':
+				// A prefix on the byte after it, which keeps its normal meaning — so the
+				// closing ^" ends the run rather than contributing a caret.
+			default:
+				literal(c)
+			}
+		default:
+			switch {
+			case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+				flush()
+			case c == '\'':
+				state, started = singleQuoted, true
+			case c == '"':
+				state, started = doubleQuoted, true
+			case c == '$' && next == '\'':
+				state, started = ansiCQuoted, true
+				i++
+			case c == '^' && next == '"':
+				state, started, caret = doubleQuoted, true, true
+				i++
+			case c == '^' && next == '^':
+				// cmd escapes a literal caret by doubling it.
+				i++
+				literal('^')
+			case c == '^' || c == '`':
+				// A line continuation, or a prefix on the byte after it, which keeps its
+				// normal meaning. Dropping the marker covers both.
+			case c == '\\':
+				if next == '\n' || next == '\r' {
+					continue
+				}
+				if next != 0 {
+					i++
+					literal(next)
+				}
+			default:
+				literal(c)
+			}
+		}
+	}
+	flush()
+	return args
+}
+
+// cookieArgument returns the value of a Cookie header argument in a pasted curl command.
+func cookieArgument(content string) (string, bool) {
+	args := curlArguments(content)
+	for i, a := range args {
+		if !strings.EqualFold(a, "-H") && !strings.EqualFold(a, "--header") {
+			continue
+		}
+		if i+1 >= len(args) {
+			continue
+		}
+		if v, ok := cutHeader(args[i+1], "Cookie"); ok {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+func cutHeader(arg, name string) (string, bool) {
+	if len(arg) <= len(name) || !strings.EqualFold(arg[:len(name)], name) || arg[len(name)] != ':' {
+		return "", false
+	}
+	return strings.TrimSpace(arg[len(name)+1:]), true
+}
 
 // isCurlPaste distinguishes a pasted command from a cookies.txt by structure, not by the
 // word "curl" appearing somewhere: exported cookie files often carry a header comment
 // mentioning curl, and treating that as a command sends it to a parser that can only
 // fail.
 func isCurlPaste(content string) bool {
-	if curlSingle.MatchString(content) || curlDouble.MatchString(content) {
+	if _, ok := cookieArgument(content); ok {
 		return true
 	}
 	for _, line := range strings.Split(content, "\n") {
@@ -123,19 +252,24 @@ func isCurlPaste(content string) bool {
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		return strings.HasPrefix(line, "curl ")
+		// A Windows paste names curl.exe, and the cmd form puts a caret against the
+		// first argument's quote, so neither the program name nor the separator can be
+		// matched as a literal prefix.
+		first := strings.FieldsFunc(line, func(r rune) bool {
+			return r == ' ' || r == '\t' || r == '^' || r == '"' || r == '\''
+		})
+		if len(first) == 0 {
+			return false
+		}
+		base := strings.ToLower(filepath.Base(first[0]))
+		return base == "curl" || base == "curl.exe"
 	}
 	return false
 }
 
 func fromCurl(content string) (map[string]string, error) {
-	var header string
-	switch {
-	case curlSingle.MatchString(content):
-		header = curlSingle.FindStringSubmatch(content)[1]
-	case curlDouble.MatchString(content):
-		header = curlDouble.FindStringSubmatch(content)[1]
-	default:
+	header, ok := cookieArgument(content)
+	if !ok {
 		return nil, fmt.Errorf("no Cookie header in the pasted curl command")
 	}
 	pairs := map[string]string{}

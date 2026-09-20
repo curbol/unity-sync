@@ -9,7 +9,10 @@ import (
 // unclamped unit index panics past the end of the table, and one caller formats inside a
 // download goroutine where that takes the whole run down rather than one asset.
 func TestBytesNeverPanicsOnAValueTheStoreCouldSend(t *testing.T) {
-	for _, n := range []int64{0, 1, 999, 1000, 23 << 30, 999_999_999_999_999, 1_000_000_000_000_000, 1<<63 - 1} {
+	for _, n := range []int64{
+		-1, -1 << 62, 0, 1, 999, 1000, 23 << 30,
+		999_999_999_999_999, 1_000_000_000_000_000, 1<<63 - 1,
+	} {
 		got := Bytes(n)
 		if got == "" {
 			t.Errorf("Bytes(%d) = %q", n, got)

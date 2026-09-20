@@ -1,13 +1,18 @@
 package web_test
 
 import (
+	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/curbol/unity-sync/internal/model"
 	"github.com/curbol/unity-sync/internal/web"
 )
 
@@ -97,5 +102,137 @@ func TestTheWaysABrowserAddressesThisPageAreAccepted(t *testing.T) {
 					tc.bound, host, rec.Code)
 			}
 		}
+	}
+}
+
+// The save is delivered on a buffered channel and the handler writes "Saved …" after it,
+// so an interrupt arriving in that window leaves Serve with both select cases ready — and
+// Go picks between ready cases at random. Dropping the save there is the same outcome the
+// one-save rule exists to prevent: the browser is told the selection was kept while the
+// manifest holds nothing.
+func TestASaveAlreadyAcceptedSurvivesAnInterrupt(t *testing.T) {
+	assets := []model.Asset{{ID: "1", Name: "One"}, {ID: "2", Name: "Two"}}
+	for i := 0; i < 50; i++ {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		h := web.NewHandler(assets, map[string]bool{"1": true}, ln.Addr())
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// Deliver the save and cancel together, which is the window the two cases race in.
+		web.Deliver(h, web.Selection{"2": true})
+		cancel()
+
+		sel, err := web.ServeWith(ctx, ln, h)
+		ln.Close()
+		if err != nil {
+			t.Fatalf("round %d: an accepted save was discarded: %v", i, err)
+		}
+		if !sel["2"] {
+			t.Fatalf("round %d: Serve returned %v, want the accepted selection", i, sel)
+		}
+	}
+}
+
+// acceptSignal closes seen on the first accepted connection, which is the closest a test
+// can get to "the handler has the request in hand".
+type acceptSignal struct {
+	net.Listener
+	once sync.Once
+	seen chan struct{}
+}
+
+func (l *acceptSignal) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err == nil {
+		l.once.Do(func() { close(l.seen) })
+	}
+	return c, err
+}
+
+// The sibling test covers a save already on the channel when the context ends. This is the
+// window one step earlier: the interrupt lands while the handler is still reading the POST
+// body off the socket. Serve takes the ctx.Done branch and finds nothing queued, then its
+// deferred Shutdown waits for that handler — which goes on to pass the token check, send
+// the selection, and answer "Saved …" to the browser.
+//
+// Returning the interrupt there tells the user their selection was kept while the manifest
+// holds the old one, which is the outcome the whole one-save rule exists to prevent.
+func TestASaveAcceptedWhileTheInterruptLandsIsStillReturned(t *testing.T) {
+	for round := range 5 {
+		base, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		ln := &acceptSignal{Listener: base, seen: make(chan struct{})}
+		h := web.NewHandler(assets(), map[string]bool{"115488": true}, base.Addr())
+
+		// The token comes from the rendered page, the way a browser's would.
+		rec := httptest.NewRecorder()
+		get := httptest.NewRequest(http.MethodGet, "/", nil)
+		get.Host = base.Addr().String()
+		h.ServeHTTP(rec, get)
+		form := url.Values{"token": {tokenFrom(t, rec.Body.String())}, "asset": {"115488"}}.Encode()
+
+		ctx, cancel := context.WithCancel(context.Background())
+		type result struct {
+			sel web.Selection
+			err error
+		}
+		served := make(chan result, 1)
+		go func() {
+			sel, err := web.ServeWith(ctx, ln, h)
+			served <- result{sel, err}
+		}()
+
+		// A body delivered in two parts with a declared length, so ParseForm blocks for
+		// the rest and the handler is demonstrably mid-request when the interrupt lands.
+		pr, pw := io.Pipe()
+		req, err := http.NewRequest(http.MethodPost, "http://"+base.Addr().String()+"/", pr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.ContentLength = int64(len(form))
+		postBody := make(chan string, 1)
+		go func() {
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				postBody <- "ERR: " + err.Error()
+				return
+			}
+			b, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			postBody <- resp.Status + " | " + string(b)
+		}()
+
+		<-ln.seen
+		cut := len(form) - 3
+		pw.Write([]byte(form[:cut]))
+		// Long enough for the server to have read the request line and headers and called
+		// the handler, which then blocks in ParseForm waiting for the declared remainder.
+		// Interrupting before that leaves the connection idle, and Shutdown closes an idle
+		// connection rather than waiting for it — a different case from the one under test.
+		time.Sleep(50 * time.Millisecond)
+		cancel()
+		// Long enough for Serve to have taken the ctx.Done branch and found nothing.
+		time.Sleep(25 * time.Millisecond)
+		pw.Write([]byte(form[cut:]))
+		pw.Close()
+
+		select {
+		case got := <-served:
+			if got.err != nil {
+				t.Fatalf("round %d: Serve returned %v while the page was answered %q",
+					round, got.err, <-postBody)
+			}
+			if !got.sel["115488"] {
+				t.Fatalf("round %d: selection = %v, want the accepted save", round, got.sel)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("round %d: Serve never returned", round)
+		}
+		base.Close()
 	}
 }

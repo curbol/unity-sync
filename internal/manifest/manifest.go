@@ -75,10 +75,24 @@ func Load(path string) (Manifest, error) {
 		}
 		return Manifest{}, fmt.Errorf("%s: unknown key(s): %s", path, strings.Join(keys, ", "))
 	}
+	// Two entries for one asset are refused for the same reason the lockfile refuses
+	// them. This file is committed and hand-edited, and select re-keys nothing, so the
+	// way a duplicate arrives is a merge that kept both sides. The two readers then
+	// disagree: EnabledIDs takes true from whichever block has it, so sync mirrors the
+	// asset, while Reconcile keeps the last block in file order, so the select page
+	// renders it unchecked. Saving from that page collapses the pair to disabled and
+	// the asset silently stops being mirrored.
+	seen := map[string]bool{}
 	for i, e := range m.Assets {
 		if e.ID == "" {
 			return Manifest{}, fmt.Errorf("%s: [[asset]] #%d has no id", path, i+1)
 		}
+		if seen[e.ID] {
+			return Manifest{}, fmt.Errorf("%s: two [[asset]] entries record asset %s; "+
+				"delete whichever is stale, most likely the one whose enabled flag is not "+
+				"the one you meant", path, e.ID)
+		}
+		seen[e.ID] = true
 	}
 	return m, nil
 }

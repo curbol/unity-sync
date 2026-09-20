@@ -117,7 +117,7 @@ func TestNonJSONSuccessIsAnError(t *testing.T) {
 func TestClientSendsTheHeadersTheStoreNeeds(t *testing.T) {
 	var got http.Header
 	var body string
-	c, _ := serve(t, csrfRouter(func(w http.ResponseWriter, r *http.Request) {
+	c, srv := serve(t, csrfRouter(func(w http.ResponseWriter, r *http.Request) {
 		got = r.Header.Clone()
 		raw, _ := io.ReadAll(r.Body)
 		body = string(raw)
@@ -136,6 +136,18 @@ func TestClientSendsTheHeadersTheStoreNeeds(t *testing.T) {
 		"Accept-Encoding":  "identity",
 		"User-Agent":       "unity-sync/test",
 		"X-Csrf-Token":     "issued-token",
+		"Accept":           "application/json",
+		"Content-Type":     "application/json;charset=UTF-8",
+		"X-Source":         "storefront",
+		"Operations":       "SearchMyAssets",
+	} {
+		if got.Get(header) != want {
+			t.Errorf("%s = %q, want %q", header, got.Get(header), want)
+		}
+	}
+	for header, want := range map[string]string{
+		"Origin":  srv.URL,
+		"Referer": srv.URL + "/",
 	} {
 		if got.Get(header) != want {
 			t.Errorf("%s = %q, want %q", header, got.Get(header), want)
@@ -179,7 +191,10 @@ func TestFetchGuardsTheResponseBeforeAnyBytesAreKept(t *testing.T) {
 			io.WriteString(w, "<html>")
 		}, nil, "Content-Type"},
 		{"redirect to sign-in", func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("Location", "https://api.unity.com/v1/oauth2/authorize")
+			// Relative, and so answered by this same server: an absolute Location makes a
+			// regression in the redirect guard reach the network before it fails, which
+			// turns a deterministic failure into whatever DNS returns.
+			w.Header().Set("Location", "/v1/oauth2/authorize")
 			w.WriteHeader(http.StatusFound)
 		}, store.ErrExpiredSession, ""},
 		{"pulled asset", func(w http.ResponseWriter, r *http.Request) {
@@ -354,6 +369,62 @@ func TestAServerErrorThatExplainsItselfStillRetries(t *testing.T) {
 	}
 }
 
+// The same rule for the body shapes that carry no message to classify by. A gateway in
+// front of the store can answer a 503 with something that parses as a batch and says
+// nothing — an empty array, or an operation with neither data nor errors — and deciding
+// permanence from the shape alone ends the run on a fault the next attempt would clear.
+// The outage would then be fatal or survivable depending on the content type of the error
+// page, which is not a distinction the store makes.
+func TestABodyShapeWithNoMessageIsStillJudgedByItsStatus(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"empty batch", `[]`},
+		{"neither data nor errors", `[{"data":{}}]`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls int
+			c, _ := serve(t, csrfRouter(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				w.Header().Set("Content-Type", "application/json")
+				if calls == 1 {
+					w.WriteHeader(http.StatusServiceUnavailable)
+					io.WriteString(w, tc.body)
+					return
+				}
+				io.WriteString(w, `[{"data":{"searchMyAssets":{"total":0,"results":[]}}}]`)
+			}))
+			if err := c.Bootstrap(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := c.Enumerate(context.Background()); err != nil {
+				t.Fatalf("Enumerate = %v, want the second attempt to succeed", err)
+			}
+			if calls < 2 {
+				t.Errorf("made %d calls, want the 503 to be retried", calls)
+			}
+		})
+	}
+}
+
+// The other half: the same shapes under a 200 are the store contradicting itself, and no
+// number of attempts fixes that.
+func TestABodyShapeWithNoMessageUnderA200IsNotRetried(t *testing.T) {
+	var calls int
+	c, _ := serve(t, csrfRouter(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		io.WriteString(w, `[]`)
+	}))
+	if err := c.Bootstrap(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Enumerate(context.Background()); err == nil {
+		t.Fatal("an empty batch under a 200 was accepted")
+	}
+	if calls != 1 {
+		t.Errorf("the store was called %d times for a 200, want 1", calls)
+	}
+}
+
 // The token can expire between the bootstrap and the call that uses it, so one mismatch is
 // worth a re-bootstrap and a second try. A server that always mismatches still reports
 // ErrCSRF, which is what the other test pins; this one pins the recovery.
@@ -381,8 +452,13 @@ func TestATransientCSRFMismatchRecoversOnce(t *testing.T) {
 	if _, err := c.Enumerate(context.Background()); err != nil {
 		t.Fatalf("Enumerate = %v, want the retry after a re-bootstrap to succeed", err)
 	}
-	if issued < 2 {
-		t.Errorf("bootstrap ran %d times, want a re-bootstrap after the mismatch", issued)
+	// Exact, not a floor. `issued < 2` passes just as happily on a client that
+	// re-bootstraps on every attempt, so deleting the !csrfRetried guard — which is what
+	// makes it "exactly one more go" — would leave this green while doubling the request
+	// count against a store that persistently mismatches.
+	if issued != 2 || posts != 2 {
+		t.Errorf("bootstrap ran %d times and posted %d times, want exactly one re-bootstrap "+
+			"and one retry (2, 2)", issued, posts)
 	}
 }
 
@@ -447,7 +523,7 @@ func TestPermanentDownloadStatusesAreNotRetried(t *testing.T) {
 			c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
 				calls++
 				if tc.status == http.StatusFound {
-					w.Header().Set("Location", "https://id.unity.com/oauth2/authorize")
+					w.Header().Set("Location", "/oauth2/authorize")
 				}
 				w.WriteHeader(tc.status)
 			})
@@ -694,5 +770,136 @@ func TestAStalledApiResponseFailsTheCall(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("Enumerate never returned; a stalled API body still hangs the run")
+	}
+}
+
+// The bootstrap route is the one request whose headers nothing else asserts, and it is
+// sent before the token exists — so the session cookie is all it carries. Dropping it
+// still yields a _csrf, because the route issues one to anybody, and the token adopted
+// would then have been issued against an anonymous context.
+func TestTheBootstrapCarriesTheSessionCookie(t *testing.T) {
+	var got http.Header
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/packages" {
+			got = r.Header.Clone()
+			http.SetCookie(w, &http.Cookie{Name: "_csrf", Value: "issued-token", Path: "/"})
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	})
+	if err := c.Bootstrap(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if cookie := got.Get("Cookie"); !strings.Contains(cookie, "LS=cred") {
+		t.Errorf("bootstrap Cookie %q does not carry the credential", cookie)
+	}
+	if got.Get("User-Agent") != "unity-sync/test" {
+		t.Errorf("bootstrap User-Agent = %q", got.Get("User-Agent"))
+	}
+}
+
+// Fetch has five paths that reject a response, and each has to consume and close the body
+// before returning. A return that skips it leaks one connection per rejected asset, which
+// on a library holding many delisted ones is a steady climb in open sockets with nothing
+// failing. Reuse is the only observable: the server sees one remote address rather than
+// one per attempt.
+//
+// What this pins is that the body is dealt with at all, not which helper does it: the
+// bodies here are small, and Go's own Close consumes a small body itself. The cap in
+// drain is what keeps that from reading a large one.
+func TestARejectedDownloadReturnsItsConnectionToThePool(t *testing.T) {
+	var addrs []string
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		addrs = append(addrs, r.RemoteAddr)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		io.WriteString(w, "<html>sign in</html>")
+	})
+	for i := 0; i < 3; i++ {
+		if _, err := c.Fetch(context.Background(), "115488"); err == nil {
+			t.Fatal("Fetch accepted an HTML body as a package")
+		}
+	}
+	if len(addrs) != 3 {
+		t.Fatalf("server saw %d requests, want 3", len(addrs))
+	}
+	for _, a := range addrs[1:] {
+		if a != addrs[0] {
+			t.Errorf("connections were not reused (%v); a rejection left its body undrained", addrs)
+			break
+		}
+	}
+}
+
+// Bootstrap is the tool's first network call, made before any output, and it carries a
+// per-call deadline for the same reason searchOnce does. Without it a server that sets the
+// cookie, flushes its headers and then goes quiet without closing leaves Bootstrap
+// succeeding — resp.Cookies() has what it needs — and then blocking forever inside the
+// deferred drain. The process hangs with nothing on stdout and nothing to interrupt.
+//
+// The response-header timeout does not cover this: the headers did arrive.
+func TestAStalledBootstrapFailsTheCall(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		http.SetCookie(w, &http.Cookie{Name: "_csrf", Value: "issued-token", Path: "/"})
+		w.WriteHeader(http.StatusNotFound)
+		w.(http.Flusher).Flush()
+		<-release
+	}, store.WithRequestTimeout(150*time.Millisecond))
+
+	done := make(chan error, 1)
+	go func() { done <- c.Bootstrap(context.Background()) }()
+	select {
+	case <-done:
+		// Either verdict is fine: the cookie did arrive, so returning nil is correct.
+		// What matters is that it returned at all.
+	case <-time.After(5 * time.Second):
+		t.Fatal("Bootstrap never returned against a response that never finished")
+	}
+}
+
+// The re-bootstrap can itself fail, and that arm is what turns "csrf token mismatch" —
+// which sends the user looking at their session — into a message naming the route that
+// stopped issuing tokens. Two regressions hide here: returning the bootstrap error
+// instead of the wrapped one silently breaks errors.Is(err, ErrCSRF) for every caller,
+// and dropping the retry.Permanent turns one bootstrap outage into a full backoff
+// schedule against a route that just proved it is not issuing.
+func TestAFailedReBootstrapStillReportsACSRFMismatch(t *testing.T) {
+	var issued, posts int
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/packages" {
+			issued++
+			// The first bootstrap works; the re-bootstrap gets nothing.
+			if issued == 1 {
+				http.SetCookie(w, &http.Cookie{Name: "_csrf", Value: "issued-token", Path: "/"})
+			}
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		posts++
+		w.WriteHeader(http.StatusBadRequest)
+		io.WriteString(w, "csrf token mismatch")
+	})
+	if err := c.Bootstrap(context.Background()); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+
+	_, err := c.Enumerate(context.Background())
+	if err == nil {
+		t.Fatal("Enumerate succeeded against a store that always mismatches")
+	}
+	if !errors.Is(err, store.ErrCSRF) {
+		t.Errorf("err = %v, want it to still unwrap to ErrCSRF", err)
+	}
+	if !strings.Contains(err.Error(), "re-bootstrap") {
+		t.Errorf("err = %q, does not say the re-bootstrap is what failed", err)
+	}
+	// Permanent, so the backoff schedule does not run against a route that just answered
+	// without a token: one post, one re-bootstrap attempt, and no second pass.
+	if issued != 2 || posts != 1 {
+		t.Errorf("bootstrap ran %d times and posted %d times, want (2, 1): one attempt, "+
+			"one failed re-bootstrap, and no retry after it", issued, posts)
 	}
 }

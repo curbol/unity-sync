@@ -51,6 +51,14 @@ measured, 156 of 169 cookie hosts had no tab open anywhere in the session, and
 lasts as long as the browsing session. And the file is rewritten **periodically**, not on
 every cookie change, so it lags a sign-in by seconds.
 
+That file exists only while the browser is running. On a clean exit Gecko deletes the
+recovery pair and writes the session to `sessionstore.jsonlz4` at the profile root
+instead, so a scan that looks only for `recovery.jsonlz4` answers "no session found" for a
+user who signed in and then quit — and the credential is a server-side session, still
+good. Both names are searched, with every profile's live file offered ahead of any
+profile's resting one, across all roots: the first candidate carrying `LS` wins, and a
+resting file's credential can have expired while the browser that wrote it was closed.
+
 Profiles are looked for under each browser's own root and under the sandboxed layouts too
 — the snap that `apt install firefox` gives Ubuntu, and the Flatpak `~/.var/app` roots —
 since a list that names only the unsandboxed path reports "no session" on the most common
@@ -60,6 +68,16 @@ The supported sources are therefore a session store, a pasted curl command, and 
 `cookies.txt` export. Which one a path is gets decided by reading it: a session store is
 identified by its `mozLz40\0` magic, a curl paste by its structure. Chromium keeps session
 cookies in an encrypted SQLite database instead, so it is out of scope.
+
+A paste is written for the shell it was copied on, and the reader has to undo that rather
+than match one spelling. POSIX single quotes are literal; `$'…'` appears when a value holds
+a quote; and on Windows the cmd form wraps every argument in `^"`, which escapes the quote
+so cmd never counts itself as inside one and goes on stripping carets right through the
+value — including the extra one in `%^7B` that stops a percent starting a variable
+expansion. Reading only the quote style drops the Windows forms entirely, and reading the
+value as written hands the store a credential with carets in it, which comes back as the
+same opaque 500 a missing `LS` does. A value is never unescaped where the shell does not
+escape, so a cookie that genuinely contains a caret survives as itself.
 
 The session store is read narrowly on purpose. It holds credentials for every host the
 session touched, so `internal/session` filters to the `unity.com` family before anything
@@ -147,6 +165,15 @@ tolerated warning.
 `status` is steps 1-7 with `DryRun`, which also gates every mutating step: a dry run sweeps
 nothing, moves nothing, and writes nothing.
 
+Steps 6 and 7 are interruptible, which matters because they are where the time goes: under
+`--verify` step 7 re-hashes the whole library, and the adopt path relocates and deletes
+files before anything is persisted. The classification pass checks the context each asset
+and breaks, and the two whole-tree walks stop mid-walk, so a cancelled run still reaches
+step 9 and records what it did resolve. Without that the run keeps working — and keeps
+mutating — after the interrupt, and a second Ctrl-C does nothing either, because the signal
+handler has already taken SIGINT's default action away for the life of the run. The assets
+never reached are counted as not attempted, so the exit status stays non-zero.
+
 ## Where the guards live
 
 The download stream crosses two packages, so ownership is fixed rather than left to
@@ -225,6 +252,13 @@ all. Building it lazily matters too — the ordinary run, where everything is cu
 nothing asks, must not pay for a walk. It is taken after the temp sweep, so an abandoned
 partial is never in it.
 
+Adoption is also what a delisted asset falls back on. A disabled product answers 404, so
+it is the one class where a download can never make up the difference, and the lockfile is
+not the only thing that knows the bytes are here — a deleted lockfile, or a mirror made on
+another machine, leaves them on disk with nothing pointing at them. Reporting such an asset
+as unavailable sends the user looking for a package already in their library and records
+the entry untracked, so `list` stops counting it as mirrored.
+
 Three gates keep adoption from laundering a bad file into the cache. The descriptor's
 product id must match. Its version id must match what the store currently advertises, so a
 stale build cannot be recorded as current. And the file must clear the same size floor a
@@ -244,9 +278,32 @@ committed, hand-editable and read on other machines, so `./pub/a/a.unitypackage`
 recognised as the file `pub/a/a.unitypackage` names — and a backslash or a drive letter is
 refused rather than interpreted, because `filepath.Clean` on Windows lifts a volume prefix
 out before it resolves `..` and puts it back afterwards, so `Z:../../x` cleans to itself
-and walks out of the root that a leading-`..` test would have caught anywhere else. Treating two spellings as two files
-makes a run delete the copy it just downloaded as though it were a superseded one, and
-leaves adoption unable to clear a damaged file off the destination it needs.
+and walks out of the root that a leading-`..` test would have caught anywhere else.
+Treating two spellings as two files makes a run delete the copy it just downloaded as
+though it were a superseded one, and leaves adoption unable to clear a damaged file off
+the destination it needs.
+
+Canonical spelling is not the whole answer on every platform. Windows and macOS as it is
+usually configured are case-insensitive, so `Pub/a.unitypackage` and `pub/a.unitypackage`
+are one file that no canonical form collapses. Every place that is about to delete or move
+therefore asks the filesystem as well, through `os.SameFile`: the string comparison settles
+it without touching the disk, and the filesystem settles what only it knows. The tool never
+derives a path whose case varies — slugs are lowercased — so the spelling this catches
+arrives from a hand-edit, a merge, or a case-normalising sync client over the library.
+
+`Relocate` asks it too, and that one is not housekeeping. It refuses a destination that
+already holds a file, because the caller records the digest of whatever ends up there — but
+on those two platforms the occupant can be the source itself under its other spelling, and
+refusing then fails the adopt of a package sitting exactly where it belongs. `Find` matches
+that copy by identity and hands it over; without the same question at the move, the run
+reports a failure, exits non-zero, and does it again on every later run.
+
+Nor is a spelling the whole of confinement. `Canonical` refuses a path that leaves the root
+lexically, and a path whose every segment is an ordinary name still leaves it when one of
+those segments is a symlink, because a link is followed like any other directory. So the
+operations that open, move or delete go through `os.Root`, which resolves inside the
+library at the syscall level and leaves no window between the check and the act. The paths
+these take come out of the lockfile, and `RemoveStale` deletes what it is given.
 
 A file that just failed verification is excluded from the scan. A truncation or a mid-file
 flip leaves the descriptor intact and a small truncation clears the floor, so without that
@@ -280,6 +337,12 @@ stop a 75 GB mirror. The pool cancels early only for a run-fatal error. The exit
 separates actionable from permanent — a corrupt body exits non-zero, a pulled asset does
 not.
 
+The assets a cancelled pool never reached are counted apart from the ones that failed.
+Nothing is known about them, so the summary gives them one line rather than a line each:
+a session dying at asset 5 of 300 would otherwise bury the one message the user can act on
+under 295 identical cancellations. They still keep the exit status non-zero, because the
+run did not do what it was asked.
+
 ## The select page
 
 `select` serves the owned-asset list on loopback and takes one save back. Three things
@@ -304,6 +367,13 @@ tabs carry the same per-run token, so without it the second POST is answered "Sa
 a selection nothing is still reading, telling that user their choice was kept while the
 manifest holds the other tab's.
 
+The manifest refuses two entries for one asset at load, for the reason the lockfile does
+and by the same route: a merge that kept both sides of one. Accepting a duplicate makes
+the two readers disagree — the enabled set takes `true` from whichever block has it, so
+`sync` mirrors the asset, while the reconcile keeps the last block in file order, so the
+page renders it unchecked. Saving from that page collapses the pair to disabled and the
+asset silently stops being mirrored.
+
 A save that would deselect everything is refused rather than written, unless nothing was
 selected to begin with. The comparison is against the set `Reconcile` has already
 rewritten, so a de-owned asset dropping out is not mistaken for the user clearing the list.
@@ -322,6 +392,27 @@ verbatim — along with the entry's key, so key and path cannot drift apart.
 
 `sizeBytes` is always the received count, never the advertised one. There is no run
 timestamp: stamping one would dirty a committed file on every no-op run.
+
+It is rewritten as each asset resolves, not once at the end, and that applies to the
+classification pass as much as to the downloads. Both move and delete packages before
+anything is recorded, so a single closing write is a single point of loss: a run that
+adopts and fetches nothing rides entirely on it, and losing it to a held-open file, a full
+disk or a kill leaves the library moved while the lockfile still names the old path with a
+digest that no longer describes the bytes there. The next run verifies that entry against
+the file now sitting at the recorded path, finds the size and version it expects, calls it
+`Unchanged` and carries the stale digest forward. Nothing but `--verify` looks again.
+
+Those eight fields are one type rather than a convention, embedded in the entry, so the
+branch that carries a resolution forward and the branch that writes a fresh one cannot
+drift: a ninth field added to only one of them would be silently dropped from every entry a
+run does not resolve, which on a no-op run is the whole file.
+
+Two entries for one product are refused at load. A run never writes such a file, since the
+key is derived from the id — but a rename changes an entry's key by construction, so a
+merge that keeps both sides of one leaves a duplicate, and entries are looked up by walking
+the map. The run would then pick between them at random: the same checkout classifies the
+asset `Unchanged` on one run and `Changed` on the next, re-fetching gigabytes on a coin
+flip, and the entry not picked is dropped without a word.
 
 ## Cache layout
 
@@ -351,12 +442,17 @@ refuses such a segment arriving by any other route.
 ## Testing
 
 The default suite is fully offline: `httptest` servers plus committed fixtures scrubbed
-from real captures. `install.sh` is covered too, by running the real script against a stub
-release: it composes the asset label from `uname` in its own language, and the guard holds
-that composition to the labels `release.yml` actually publishes, which is otherwise the one
-contract nothing compiles together. The fixtures carry no account data, and a guard test fails the build if
-any appears. Raw captures are never committed, and the scrubber lands before anything that
-consumes fixtures, because git keeps what a later commit deletes.
+from real captures. It runs on Linux, Windows and macOS, because several checks select on
+the host and are otherwise half dead code: both signature tables — the Go one and
+`install.sh`'s — resolve to the running platform, so on Linux alone only the ELF arm is
+ever exercised, and the Gecko profile roots and the rename that replaces a running
+executable are per-platform for the same reason. `install.sh` is covered too, by running
+the real script against a stub release: it composes the asset label from `uname` in its own
+language, and the guard holds that composition to the labels `release.yml` actually
+publishes, which is otherwise the one contract nothing compiles together. The fixtures
+carry no account data, and a guard test fails the build if any appears. Raw captures are
+never committed, and the scrubber lands before anything that consumes fixtures, because git
+keeps what a later commit deletes.
 
 `go run ./cmd/scrubfixtures` regenerates `testdata/store` from a `captures/` directory of
 raw `SearchMyAssets` responses, one JSON per page. That directory is git-ignored and is not
@@ -368,7 +464,12 @@ capturing again rather than re-running the scrubber over something checked in.
 `install.sh` and `unity-sync update` both read the public release API, so neither needs a
 GitHub credential; one is used when the environment or `gh` supplies it, and buys only the
 authenticated rate limit. The installer passes it through a curl config on stdin rather
-than as an argument, which every local user can read out of `ps`.
+than as an argument, which every local user can read out of `ps`. The updater checks that
+the asset URL it found in the release JSON is on the API host before requesting it: Go
+strips the Authorization header on a redirect to another host, which covers the hop to the
+signed CDN, but nothing covers the first request. The archive and the binary inside it are
+both read under a ceiling, so an artifact that is not one of the published zips is an
+error naming the size rather than an update the kernel kills.
 
 The release attests build provenance, because `update` replaces the binary on PATH
 unattended and TLS to GitHub was otherwise the only thing vouching for the bytes. The

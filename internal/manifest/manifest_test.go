@@ -307,3 +307,25 @@ func TestTheExampleManifestStillParses(t *testing.T) {
 
 // settingLine matches a whole commented-out setting and not the prose around it.
 var settingLine = regexp.MustCompile(`^[a-z_]+ *= *(".*"|[0-9]+|true|false)$`)
+
+// The lockfile refuses two entries for one asset, and this file has the same properties:
+// committed, hand-edited, and re-keyed by nothing, so the way a duplicate arrives is a
+// merge that kept both sides. Accepting one makes the two readers disagree — EnabledIDs
+// takes true from whichever block has it, so sync mirrors the asset, while Reconcile keeps
+// the last block in file order, so the select page renders it unchecked. Saving from that
+// page collapses the pair to disabled and the asset silently stops being mirrored.
+func TestTwoEntriesForOneAssetAreRejected(t *testing.T) {
+	path := filepath.Join(t.TempDir(), manifest.FileName)
+	body := "[[asset]]\n  id = \"115488\"\n  name = \"Quick Outline\"\n  enabled = true\n\n" +
+		"[[asset]]\n  id = \"115488\"\n  name = \"Quick Outline\"\n  enabled = false\n"
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := manifest.Load(path)
+	if err == nil {
+		t.Fatal("a manifest with two entries for asset 115488 loaded without complaint")
+	}
+	if !strings.Contains(err.Error(), "115488") {
+		t.Errorf("error %q does not name the duplicated id", err)
+	}
+}

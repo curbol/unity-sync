@@ -15,7 +15,12 @@ import (
 	"github.com/curbol/unity-sync/internal/store"
 )
 
-const testCookie = "LS=cred; DS=abc"
+// Carries a _csrf of its own, because a real one does: session.join hands over the whole
+// filtered jar and a Gecko session store holds _csrf beside LS. The bootstrap has to strip
+// it rather than append beside it — the store compares its header against the first _csrf
+// in the cookie, so a stale one left in front makes every call a 400 the user reads as
+// their session being wrong.
+const testCookie = "_csrf=stale; LS=cred; DS=abc"
 
 func fastRetries() store.Option {
 	return store.WithRetryPolicy(retry.Policy{Attempts: 2, Base: time.Millisecond, Sleep: func(time.Duration) {}})

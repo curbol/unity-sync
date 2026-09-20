@@ -167,13 +167,7 @@ func TestOneFailedAssetDoesNotStopTheRest(t *testing.T) {
 // to fail one at a time. Deleting the cancelPool call leaves every other test green.
 func TestAnExpiredSessionStopsThePool(t *testing.T) {
 	root, lockPath := newRun(t)
-	var owned []model.Asset
-	bodies := map[string][]byte{}
-	for i := range 40 {
-		id := fmt.Sprint(i)
-		owned = append(owned, asset(id, "Asset "+id, "v1", 500))
-		bodies[id] = pkg(t, id, "v1", 500)
-	}
+	owned, bodies := manyAssets(t, 40)
 	// Whichever asset the pool reaches first kills the session; every fetch after that is
 	// waste. Keyed to the first fetch served rather than to asset "0", because with one
 	// worker the goroutine that wins the semaphore is not the one spawned first, and
@@ -192,6 +186,27 @@ func TestAnExpiredSessionStopsThePool(t *testing.T) {
 	}
 	if !rep.Failed() {
 		t.Error("an expired session left the run reporting success")
+	}
+	// The assets the pool never reached are counted apart from the one that failed. Left
+	// in Retryable they are indistinguishable from real failures, and the summary then
+	// prints a line per asset — burying the expired session among 39 context cancellations.
+	if rep.NotAttempted == 0 {
+		t.Error("no asset was recorded as unattempted; the cancelled ones are being reported as failures")
+	}
+	if rep.Retryable != 1 {
+		t.Errorf("Retryable = %d, want only the asset whose fetch actually failed", rep.Retryable)
+	}
+	named := 0
+	for _, r := range rep.Results {
+		if r.Err != nil {
+			named++
+		}
+		if r.NotAttempted && r.Err != nil {
+			t.Errorf("%s was never attempted but carries an error", r.Asset.Name)
+		}
+	}
+	if named != 1 {
+		t.Errorf("%d assets carry an error, want only the one the session died on", named)
 	}
 }
 
@@ -230,13 +245,7 @@ func TestALookupFailureDoesNotExcuseAShortBody(t *testing.T) {
 // the snapshot it came from — shows up here as a mirrored asset missing from the file.
 func TestConcurrentDownloadsEachLandInTheLockfile(t *testing.T) {
 	root, lockPath := newRun(t)
-	var owned []model.Asset
-	bodies := map[string][]byte{}
-	for i := range 12 {
-		id := fmt.Sprint(i)
-		owned = append(owned, asset(id, "Asset "+id, "v1", 500))
-		bodies[id] = pkg(t, id, "v1", 500)
-	}
+	owned, bodies := manyAssets(t, 12)
 	fs := &fakeStore{owned: owned, bodies: bodies, hold: 2 * time.Millisecond}
 	o := opts(root, allSelected(owned...))
 	o.Concurrency = 6
@@ -269,13 +278,7 @@ func TestConcurrentDownloadsEachLandInTheLockfile(t *testing.T) {
 // second temp appearing is the serialization being gone.
 func TestLockfileSavesNeverOverlap(t *testing.T) {
 	root, lockPath := newRun(t)
-	var owned []model.Asset
-	bodies := map[string][]byte{}
-	for i := range 60 {
-		id := fmt.Sprint(i)
-		owned = append(owned, asset(id, "Asset "+id, "v1", 500))
-		bodies[id] = pkg(t, id, "v1", 500)
-	}
+	owned, bodies := manyAssets(t, 60)
 
 	var overlapped atomic.Bool
 	lockDir := filepath.Dir(lockPath)
@@ -286,7 +289,10 @@ func TestLockfileSavesNeverOverlap(t *testing.T) {
 		}
 		var inFlight int
 		for _, e := range entries {
-			if strings.HasPrefix(e.Name(), ".unity-sync-lock-") {
+			// lockfile.TempPrefix, not a copy of it: a literal here goes stale silently
+			// when Save's prefix changes, and this watcher then counts nothing, finds no
+			// overlap, and passes forever without observing a single write.
+			if strings.HasPrefix(e.Name(), lockfile.TempPrefix) {
 				inFlight++
 			}
 		}
@@ -308,6 +314,10 @@ func TestLockfileSavesNeverOverlap(t *testing.T) {
 				return
 			default:
 				sample()
+				// A save spans a write, an fsync and a rename, so sampling every few
+				// tens of microseconds still lands inside one many times over. Spinning
+				// without it burns a core and contends on the directory being watched.
+				time.Sleep(50 * time.Microsecond)
 			}
 		}
 	}()
@@ -337,13 +347,7 @@ func TestLockfileSavesNeverOverlap(t *testing.T) {
 
 func TestConcurrencyCeilingIsHonoured(t *testing.T) {
 	root, lockPath := newRun(t)
-	var assets []model.Asset
-	bodies := map[string][]byte{}
-	for _, id := range []string{"1", "2", "3", "4", "5", "6"} {
-		a := asset(id, "Asset "+id, "v1", 500)
-		assets = append(assets, a)
-		bodies[id] = pkg(t, id, "v1", 500)
-	}
+	assets, bodies := manyAssets(t, 6)
 	fs := &fakeStore{owned: assets, bodies: bodies, hold: 20 * time.Millisecond}
 	o := opts(root, allSelected(assets...))
 	o.Concurrency = 2
@@ -572,10 +576,13 @@ func TestAFileThatFailedVerificationIsNotAdoptedBackIn(t *testing.T) {
 			p := place(t, root, a.PublisherSlug(), a.Slug(), good)
 			prior := lockfile.New()
 			prior.Assets[a.Slug()] = lockfile.Entry{
-				AssetID: "1", Name: a.Name, Tracked: true,
-				ResolvedVersionID: "v1", DeliveredVersionID: "v1",
-				SizeBytes: p.Size, SHA256: p.SHA256, CachePath: p.RelPath,
+				AssetID: "1", Name: a.Name,
 				Version: lockfile.Version{ID: "v1"},
+				Resolution: lockfile.Resolution{
+					Tracked:           true,
+					ResolvedVersionID: "v1", DeliveredVersionID: "v1",
+					SizeBytes: p.Size, SHA256: p.SHA256, CachePath: p.RelPath,
+				},
 			}
 			tc.damage(t, filepath.Join(root, filepath.FromSlash(p.RelPath)), p.Size)
 
@@ -610,10 +617,13 @@ func TestARenameWithAVersionBumpDoesNotStrandTheOldDirectory(t *testing.T) {
 	old := place(t, root, renamed.PublisherSlug(), "old-name-1", pkg(t, "1", "v1", 500))
 	prior := lockfile.New()
 	prior.Assets["old-name-1"] = lockfile.Entry{
-		AssetID: "1", Name: "Old Name", Tracked: true,
-		ResolvedVersionID: "v1", DeliveredVersionID: "v1",
-		SizeBytes: old.Size, SHA256: old.SHA256, CachePath: old.RelPath,
+		AssetID: "1", Name: "Old Name",
 		Version: lockfile.Version{ID: "v1"},
+		Resolution: lockfile.Resolution{
+			Tracked:           true,
+			ResolvedVersionID: "v1", DeliveredVersionID: "v1",
+			SizeBytes: old.Size, SHA256: old.SHA256, CachePath: old.RelPath,
+		},
 	}
 
 	fs := &fakeStore{owned: []model.Asset{renamed}, bodies: map[string][]byte{"1": pkg(t, "1", "v2", 500)}}
@@ -760,9 +770,277 @@ func TestPermanentDownloadFailuresAreNotRetried(t *testing.T) {
 	}
 }
 
+// The counter-case to the two above, and the half that keeps them honest. A body that
+// stopped delivering is the one download failure a second attempt is expected to fix — a
+// fresh connection is the whole remedy — so marking ErrStalled permanent anywhere between
+// stallGuard.Read and the pool's classification turns one transient silence into a failed
+// asset, and on a 23 GB package that is the whole transfer thrown away.
+func TestAStalledTransferIsRetriedRatherThanFailed(t *testing.T) {
+	root, lockPath := newRun(t)
+	a := asset("1", "Asset", "v1", 500)
+	fs := &fakeStore{
+		owned:    []model.Asset{a},
+		bodies:   map[string][]byte{"1": pkg(t, "1", "v1", 500)},
+		firstErr: fmt.Errorf("%w: no bytes for 2m0s", store.ErrStalled),
+	}
+
+	o := opts(root, allSelected(a))
+	o.Retry = retryPolicyWithAttempts(2)
+
+	rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, o)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(fs.fetched) != 2 {
+		t.Errorf("fetched %d times, want 2: a stall is exactly what a fresh connection fixes", len(fs.fetched))
+	}
+	if rep.Results[0].Err != nil {
+		t.Errorf("the retried asset still failed: %v", rep.Results[0].Err)
+	}
+	if rep.Failed() {
+		t.Error("a stall that the retry cleared still failed the run")
+	}
+	if e := rep.Lockfile.Assets[a.Slug()]; !e.Tracked {
+		t.Error("the asset was not recorded after the retry succeeded")
+	}
+}
+
 // retryPolicyWithAttempts gives a test a real attempt budget without real sleeping.
 func retryPolicyWithAttempts(n int) retry.Policy {
 	return retry.Policy{Attempts: n, Base: time.Millisecond, Sleep: func(time.Duration) {}}
+}
+
+// The one input Run refuses before it touches the network. A malformed glob otherwise
+// reaches path.Match once per owned asset, where the error is discarded and every asset
+// silently fails to match — so a typo in --only reports "0 selected" against a full
+// library rather than saying the pattern is wrong.
+func TestABadOnlyPatternIsRefusedBeforeAnythingIsEnumerated(t *testing.T) {
+	root, lockPath := newRun(t)
+	a := asset("1", "Asset", "v1", 500)
+	fs := &fakeStore{owned: []model.Asset{a}, bodies: map[string][]byte{"1": pkg(t, "1", "v1", 500)}}
+
+	o := opts(root, allSelected(a))
+	o.OnlyGlob = "[" // an unterminated character class
+
+	_, err := Run(context.Background(), fs, lockfile.New(), lockPath, o)
+	if err == nil {
+		t.Fatal("Run accepted a pattern path.Match cannot compile")
+	}
+	if !strings.Contains(err.Error(), "--only") {
+		t.Errorf("error %q does not name the flag that was wrong", err)
+	}
+	if len(fs.fetched) != 0 {
+		t.Errorf("a bad pattern still reached the store: %v", fs.fetched)
+	}
+	if _, statErr := os.Stat(lockPath); !os.IsNotExist(statErr) {
+		t.Error("a bad pattern still wrote a lockfile")
+	}
+}
+
+// The classification pass relocates and deletes whole packages before the pool starts, and
+// those moves are recorded by the same per-asset write the downloads use. Left to the
+// closing save, a run that adopts and fetches nothing rides entirely on one write: lose it
+// to a held-open file, a full disk or a kill, and the library has moved while the lockfile
+// still names the old path with a digest that no longer describes the bytes there — which
+// the next run reads as Unchanged and carries forward, and nothing but --verify looks again.
+//
+// The first fetch is the observation point: the whole classification pass has run by then,
+// so whatever it resolved must already be on disk.
+func TestAdoptionsAndMovesAreRecordedBeforeTheFirstDownload(t *testing.T) {
+	root, lockPath := newRun(t)
+	adopted := asset("1", "Adopted", "v1", 500)
+	moved := asset("2", "Renamed Since", "v1", 500)
+	fetched := asset("3", "Fetched", "v1", 500)
+
+	// Off the derived path, so adopting it is a relocation the lockfile has to learn.
+	place(t, root, adopted.PublisherSlug(), "stale-slug-1", pkg(t, "1", "v1", 500))
+	// Current at a path the old slug named, so it classifies Unchanged and then moves.
+	oldRel := cache.RelPath(moved.PublisherSlug(), "old-name-2")
+	p := place(t, root, moved.PublisherSlug(), "old-name-2", pkg(t, "2", "v1", 500))
+
+	prior := lockfile.New()
+	prior.Assets["old-name-2"] = lockfile.Entry{
+		AssetID: "2", Name: "Old Name",
+		Version: lockfile.Version{ID: "v1"},
+		Resolution: lockfile.Resolution{
+			Tracked:           true,
+			ResolvedVersionID: "v1", DeliveredVersionID: "v1",
+			SizeBytes: p.Size, SHA256: p.SHA256, CachePath: oldRel,
+		},
+	}
+
+	var atFirstFetch lockfile.Lockfile
+	var loadErr error
+	fs := &fakeStore{
+		owned:  []model.Asset{adopted, moved, fetched},
+		bodies: map[string][]byte{"3": pkg(t, "3", "v1", 500)},
+		beforeFetch: func(int) {
+			atFirstFetch, loadErr = lockfile.Load(lockPath)
+		},
+	}
+
+	rep, err := Run(context.Background(), fs, prior,
+		lockPath, opts(root, allSelected(adopted, moved, fetched)))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if loadErr != nil {
+		t.Fatalf("reading the lockfile mid-run: %v", loadErr)
+	}
+	for _, tc := range []struct {
+		id, want string
+		class    Class
+	}{
+		{"1", cache.RelPath(adopted.PublisherSlug(), adopted.Slug()), Adopted},
+		{"2", cache.RelPath(moved.PublisherSlug(), moved.Slug()), Unchanged},
+	} {
+		_, e, ok := atFirstFetch.FindByAssetID(tc.id)
+		if !ok || !e.Tracked {
+			t.Errorf("asset %s (%v) was not in the lockfile when the first download began; "+
+				"its bytes had already moved on disk", tc.id, tc.class)
+			continue
+		}
+		if e.CachePath != tc.want {
+			t.Errorf("asset %s recorded at %q mid-run, want %q", tc.id, e.CachePath, tc.want)
+		}
+	}
+	// The classes above are what the assertions assume; a fixture that stopped producing
+	// them would leave this test passing for the wrong reason.
+	for _, r := range rep.Results {
+		switch r.Asset.ID {
+		case "1":
+			if r.Class != Adopted {
+				t.Fatalf("asset 1 classified %v, want Adopted", r.Class)
+			}
+		case "2":
+			if r.Class != Unchanged {
+				t.Fatalf("asset 2 classified %v, want Unchanged", r.Class)
+			}
+		}
+	}
+}
+
+// countScans and countVerifies replace the two probes with counting wrappers for the
+// duration of a test, restoring them afterwards.
+func countScans(t *testing.T) *int {
+	t.Helper()
+	var n int
+	prev := scanLibrary
+	scanLibrary = func(ctx context.Context, root string) *cache.Index {
+		n++
+		return prev(ctx, root)
+	}
+	t.Cleanup(func() { scanLibrary = prev })
+	return &n
+}
+
+func countVerifies(t *testing.T) *int {
+	t.Helper()
+	var n int
+	prev := verifyDeep
+	verifyDeep = func(root, rel, sha string) bool {
+		n++
+		return prev(root, rel, sha)
+	}
+	t.Cleanup(func() { verifyDeep = prev })
+	return &n
+}
+
+// One walk of the library serves every adopt probe in a run. Probing per asset is
+// quadratic exactly when adoption matters most — a lost lockfile makes every owned asset
+// ask, over a library that already holds them all — and the outcome is identical either
+// way, so only a count sees the difference.
+func TestTheLibraryIsWalkedOncePerRunAtMost(t *testing.T) {
+	root, lockPath := newRun(t)
+	var owned []model.Asset
+	for _, id := range []string{"1", "2", "3", "4"} {
+		a := asset(id, "Asset "+id, "v1", 500)
+		owned = append(owned, a)
+		place(t, root, a.PublisherSlug(), "old-slug-"+id, pkg(t, id, "v1", 500))
+	}
+	scans := countScans(t)
+
+	fs := &fakeStore{owned: owned}
+	rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, opts(root, allSelected(owned...)))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, a := range owned {
+		if _, e, ok := rep.Lockfile.FindByAssetID(a.ID); !ok || !e.Tracked {
+			t.Fatalf("asset %s was not adopted, so the count below proves nothing", a.ID)
+		}
+	}
+	if *scans != 1 {
+		t.Errorf("walked the library %d times for %d adoptions, want 1", *scans, len(owned))
+	}
+}
+
+// The ordinary run is the one that must not pay for the walk: everything is current,
+// nothing asks to adopt, and the scan is built on first use precisely so it never happens.
+func TestARunThatAdoptsNothingNeverWalksTheLibrary(t *testing.T) {
+	root, lockPath := newRun(t)
+	a := asset("1", "Asset", "v1", 500)
+	p := place(t, root, a.PublisherSlug(), a.Slug(), pkg(t, "1", "v1", 500))
+
+	prior := lockfile.New()
+	prior.Assets[a.Slug()] = lockfile.Entry{
+		AssetID: "1", Name: a.Name,
+		Version: lockfile.Version{ID: "v1"},
+		Resolution: lockfile.Resolution{
+			Tracked:           true,
+			ResolvedVersionID: "v1", DeliveredVersionID: "v1",
+			SizeBytes: p.Size, SHA256: p.SHA256,
+			CachePath: cache.RelPath(a.PublisherSlug(), a.Slug()),
+		},
+	}
+	scans := countScans(t)
+
+	fs := &fakeStore{owned: []model.Asset{a}}
+	rep, err := Run(context.Background(), fs, prior, lockPath, opts(root, allSelected(a)))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep.Results[0].Class != Unchanged {
+		t.Fatalf("class = %v, want Unchanged; the count below proves nothing otherwise", rep.Results[0].Class)
+	}
+	if *scans != 0 {
+		t.Errorf("a run where nothing needed adopting still walked the library %d time(s)", *scans)
+	}
+}
+
+// Under --verify the cheap probe becomes a full re-hash, so a probe asked twice for one
+// file is not a repeated lookup but a doubling of the cost of verifying the whole library.
+// classify asks, and the excludeRel decision asks again.
+func TestVerifyHashesEachFileOncePerRun(t *testing.T) {
+	root, lockPath := newRun(t)
+	a := asset("1", "Asset", "v1", 500)
+	p := place(t, root, a.PublisherSlug(), a.Slug(), pkg(t, "1", "v1", 500))
+
+	prior := lockfile.New()
+	prior.Assets[a.Slug()] = lockfile.Entry{
+		AssetID: "1", Name: a.Name,
+		Version: lockfile.Version{ID: "v1"},
+		Resolution: lockfile.Resolution{
+			Tracked:           true,
+			ResolvedVersionID: "v1", DeliveredVersionID: "v1",
+			SizeBytes: p.Size,
+			// Deliberately wrong, so the deep verify fails and the run goes on to ask the
+			// adopt question — which is the second place the same probe is reached from.
+			SHA256:    "0000000000000000000000000000000000000000000000000000000000000000",
+			CachePath: cache.RelPath(a.PublisherSlug(), a.Slug()),
+		},
+	}
+	hashes := countVerifies(t)
+
+	fs := &fakeStore{owned: []model.Asset{a}, bodies: map[string][]byte{"1": pkg(t, "1", "v1", 500)}}
+	o := opts(root, allSelected(a))
+	o.FullVerify = true
+	if _, err := Run(context.Background(), fs, prior, lockPath, o); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if *hashes != 1 {
+		t.Errorf("re-hashed one file %d times in a single run, want 1", *hashes)
+	}
 }
 
 // The probes this wraps re-hash whole packages under --verify, so asking twice does not
@@ -867,10 +1145,13 @@ func TestAdoptionRemovesTheEntrysOwnSupersededCopy(t *testing.T) {
 
 	prior := lockfile.New()
 	prior.Assets["old-name-1"] = lockfile.Entry{
-		AssetID: "1", Name: "Old Name", Tracked: true,
-		ResolvedVersionID: "v1", DeliveredVersionID: "v1",
-		SizeBytes: stale.Size, SHA256: stale.SHA256, CachePath: stale.RelPath,
+		AssetID: "1", Name: "Old Name",
 		Version: lockfile.Version{ID: "v1"},
+		Resolution: lockfile.Resolution{
+			Tracked:           true,
+			ResolvedVersionID: "v1", DeliveredVersionID: "v1",
+			SizeBytes: stale.Size, SHA256: stale.SHA256, CachePath: stale.RelPath,
+		},
 	}
 
 	fs := &fakeStore{owned: []model.Asset{a}}
@@ -902,9 +1183,15 @@ func TestDroppedAssetsAreReportedInAStableOrder(t *testing.T) {
 	for _, e := range []struct{ id, name string }{
 		{"7", "Zulu"}, {"8", "Alpha"}, {"9", "Mike"}, {"10", "Bravo"},
 	} {
-		prior.Assets[e.name] = lockfile.Entry{AssetID: e.id, Name: e.name, Tracked: true}
+		prior.Assets[e.name] = lockfile.Entry{
+			AssetID: e.id, Name: e.name,
+			Resolution: lockfile.Resolution{Tracked: true},
+		}
 	}
-	prior.Assets[kept.Slug()] = lockfile.Entry{AssetID: "1", Name: "Kept", Tracked: false}
+	prior.Assets[kept.Slug()] = lockfile.Entry{
+		AssetID: "1", Name: "Kept",
+		Resolution: lockfile.Resolution{Tracked: false},
+	}
 
 	var first []string
 	for run := range 6 {
@@ -987,11 +1274,14 @@ func TestARecordedPathSpelledDifferentlyIsNotTreatedAsASecondFile(t *testing.T) 
 
 	prior := lockfile.New()
 	prior.Assets[a.Slug()] = lockfile.Entry{
-		AssetID: "1", Name: a.Name, Tracked: true,
-		ResolvedVersionID: "v1", DeliveredVersionID: "v1",
-		SizeBytes: p.Size, SHA256: p.SHA256,
-		CachePath: "./" + derived, // the same file, spelled the way a hand-edit might
-		Version:   lockfile.Version{ID: "v1"},
+		AssetID: "1", Name: a.Name,
+		Version: lockfile.Version{ID: "v1"},
+		Resolution: lockfile.Resolution{
+			Tracked:           true,
+			ResolvedVersionID: "v1", DeliveredVersionID: "v1",
+			SizeBytes: p.Size, SHA256: p.SHA256,
+			CachePath: "./" + derived, // the same file, spelled the way a hand-edit might
+		},
 	}
 
 	fs := &fakeStore{owned: []model.Asset{a}, bodies: map[string][]byte{"1": pkg(t, "1", "v2", 500)}}
@@ -1019,13 +1309,7 @@ func TestARecordedPathSpelledDifferentlyIsNotTreatedAsASecondFile(t *testing.T) 
 
 func TestEachDownloadIsPersistedBeforeTheNextOneStarts(t *testing.T) {
 	root, lockPath := newRun(t)
-	var owned []model.Asset
-	bodies := map[string][]byte{}
-	for i := range 3 {
-		id := fmt.Sprint(i)
-		owned = append(owned, asset(id, "Asset "+id, "v1", 500))
-		bodies[id] = pkg(t, id, "v1", 500)
-	}
+	owned, bodies := manyAssets(t, 3)
 
 	// Read from inside the fetch of each later asset: whatever came before it must already
 	// be on disk, which is only true if the pool persists as it goes.
@@ -1066,7 +1350,11 @@ func TestEachDownloadIsPersistedBeforeTheNextOneStarts(t *testing.T) {
 // with the answer.
 func TestAChangedAssetIsDecidedWithoutTouchingTheDisk(t *testing.T) {
 	a := asset("1", "A", "v2", 500)
-	prior := lockfile.Entry{Tracked: true, ResolvedVersionID: "v1", CachePath: "p"}
+	prior := lockfile.Entry{
+		Resolution: lockfile.Resolution{
+			Tracked: true, ResolvedVersionID: "v1", CachePath: "p",
+		},
+	}
 	probed := false
 	cacheOK := func() bool {
 		probed = true
@@ -1077,5 +1365,206 @@ func TestAChangedAssetIsDecidedWithoutTouchingTheDisk(t *testing.T) {
 	}
 	if probed {
 		t.Error("classify probed the cache for an asset it had already decided was out of date")
+	}
+}
+
+// A disabled asset answers 404, so nothing about it can be fixed by fetching. That makes
+// it the one class where the run's answer to "do we have it?" is final, and the lockfile
+// is not the only thing that knows: a deleted lockfile leaves the bytes on disk with
+// nothing pointing at them. Reporting the asset as unavailable while it sits in the
+// library tells the user to go and find a package they already have, and records the
+// entry untracked so `list` stops counting it as mirrored.
+func TestADelistedAssetAlreadyInTheLibraryIsAdoptedNotReported(t *testing.T) {
+	root, lockPath := newRun(t)
+	a := asset("115488", "Quick Outline", "v1", 500)
+	a.State = model.StateDisabled
+
+	rel := cache.RelPath(a.PublisherSlug(), a.Slug())
+	full := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(full, pkg(t, a.ID, "v1", 500), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fs := &fakeStore{owned: []model.Asset{a}}
+	rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, opts(root, allSelected(a)))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(rep.Results) != 1 {
+		t.Fatalf("Results = %d, want 1", len(rep.Results))
+	}
+	if got := rep.Results[0].Class; got != Adopted {
+		t.Errorf("class = %v, want adopted: the package is in the library", got)
+	}
+	if len(fs.fetched) != 0 {
+		t.Errorf("the run fetched %v for a disabled asset", fs.fetched)
+	}
+	_, e, ok := rep.Lockfile.FindByAssetID(a.ID)
+	if !ok || !e.Tracked {
+		t.Fatalf("entry tracked = %v, ok = %v; the mirrored copy is not recorded", e.Tracked, ok)
+	}
+	if e.SHA256 == "" || e.SizeBytes == 0 {
+		t.Errorf("entry records no digest or size: %+v", e)
+	}
+	if rep.Failed() {
+		t.Error("adopting a delisted asset made the run report failure")
+	}
+}
+
+// The other half: a delisted asset with nothing on disk is still reported, and still does
+// not fail the run. Without this, making the branch above adopt could quietly turn every
+// delisted asset into a silent success.
+func TestADelistedAssetWithNoCopyIsStillReported(t *testing.T) {
+	root, lockPath := newRun(t)
+	a := asset("115488", "Quick Outline", "v1", 500)
+	a.State = model.StateDisabled
+
+	fs := &fakeStore{owned: []model.Asset{a}}
+	rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, opts(root, allSelected(a)))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := rep.Results[0].Class; got != Undownloadable {
+		t.Errorf("class = %v, want undownloadable", got)
+	}
+	if len(fs.fetched) != 0 {
+		t.Errorf("the run fetched %v for a disabled asset", fs.fetched)
+	}
+	// A pulled asset is permanent, not actionable: failing here would make every later
+	// run fail forever over an asset the store will never serve again.
+	if rep.Failed() {
+		t.Error("a delisted asset made the run exit non-zero")
+	}
+}
+
+// Adoption is the one route into the cache that skips the download guards, so when it
+// cannot complete the asset has to fail rather than fall through to a fetch that would
+// rename over the file in the way. Relocate refusing an occupied destination is the
+// reachable trigger: a file the tool did not write already sits at the derived path.
+func TestAnAdoptionThatCannotCompleteFailsItsAsset(t *testing.T) {
+	root, lockPath := newRun(t)
+	a := asset("115488", "Quick Outline", "v1", 500)
+
+	// The copy to adopt, parked somewhere the current layout does not put it.
+	stray := filepath.Join(root, "elsewhere", "quick-outline.unitypackage")
+	if err := os.MkdirAll(filepath.Dir(stray), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stray, pkg(t, a.ID, "v1", 500), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// An unrelated file already holding the destination.
+	derived := filepath.Join(root, filepath.FromSlash(cache.RelPath(a.PublisherSlug(), a.Slug())))
+	if err := os.MkdirAll(filepath.Dir(derived), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(derived, []byte("not this asset"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	fs := &fakeStore{owned: []model.Asset{a}, bodies: map[string][]byte{a.ID: pkg(t, a.ID, "v1", 500)}}
+	rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, opts(root, allSelected(a)))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep.Results[0].Err == nil {
+		t.Error("a refused relocation resolved the asset anyway")
+	}
+	if !rep.Failed() {
+		t.Error("a failed adoption left the run reporting success")
+	}
+	if len(fs.fetched) != 0 {
+		t.Errorf("the run fell through to a download (%v); the occupied destination is "+
+			"still holding a file no guard has seen", fs.fetched)
+	}
+	if got, _ := os.ReadFile(derived); string(got) != "not this asset" {
+		t.Error("the file already at the destination was replaced")
+	}
+}
+
+// Run's classification pass hashes, relocates and deletes whole packages, and under
+// --verify re-reads the entire library. Without a ctx check it goes on doing all of that
+// after the user has asked it to stop — and main's signal handler has already taken
+// SIGINT's default action away, so the second and third Ctrl-C do nothing either.
+//
+// The observable is the relocation an Unchanged asset takes when its slug moved: that
+// branch consults no scan, so it is the one piece of classification work a cancelled
+// Scan cannot suppress on its own. A run that keeps going moves the files and reports
+// nothing skipped.
+func TestACancelledRunStopsClassifyingAndCountsWhatItSkipped(t *testing.T) {
+	root, lockPath := newRun(t)
+
+	var owned []model.Asset
+	prior := lockfile.New()
+	for i := range 20 {
+		id := fmt.Sprint(i)
+		renamed := asset(id, "New Name "+id, "v1", 500)
+		owned = append(owned, renamed)
+		// Mirrored under the old slug, so classification would relocate it to the one the
+		// current name derives.
+		p := place(t, root, renamed.PublisherSlug(), "old-name-"+id, pkg(t, id, "v1", 500))
+		prior.Assets["old-name-"+id] = tracked(id, "Old Name "+id, "v1", p)
+	}
+	before := treeSnapshot(t, root)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	fs := &fakeStore{owned: owned}
+	rep, err := Run(ctx, fs, prior, lockPath, opts(root, allSelected(owned...)))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := treeSnapshot(t, root); got != before {
+		t.Errorf("a cancelled run relocated packages anyway:\nbefore:\n%s\nafter:\n%s", before, got)
+	}
+	if rep.NotAttempted != len(owned) {
+		t.Errorf("NotAttempted = %d, want all %d selected assets counted as skipped",
+			rep.NotAttempted, len(owned))
+	}
+	if !rep.Failed() {
+		t.Error("Failed() = false; a run that skipped every asset must not exit 0")
+	}
+	if len(fs.fetched) != 0 {
+		t.Errorf("fetched %v against a cancelled context", fs.fetched)
+	}
+	// The tail still runs, so every owned asset keeps its entry and its prior resolution
+	// rather than being dropped by the run that was interrupted.
+	if len(rep.Lockfile.Assets) != len(owned) {
+		t.Errorf("lockfile holds %d entries, want all %d owned assets carried forward",
+			len(rep.Lockfile.Assets), len(owned))
+	}
+	if e, ok := rep.Lockfile.Assets["old-name-0"]; !ok || !e.Tracked {
+		t.Errorf("entry old-name-0 = %+v, want the prior resolution carried forward under its own key", e)
+	}
+}
+
+// The floor's allowance is min(4096, advertised/8) and the comparison is strict, so the
+// exact boundary is the only place a < that became a <= would show. advertised <= 0 turns
+// the floor off, which is store-reachable: product.asset accepts an empty downloadSize as
+// zero, and a guard that failed such an asset instead would fail it on every run.
+func TestBelowFloorHoldsItsBoundaries(t *testing.T) {
+	cases := []struct {
+		name               string
+		received, adverted int64
+		want               bool
+	}{
+		{"exactly on the allowance", 2000 - 250, 2000, false},
+		{"one byte under it", 2000 - 251, 2000, true},
+		{"the 4096 cap applies to a large package", 1 << 20, 1<<20 + 4096, false},
+		{"a byte under the capped allowance", 1<<20 - 1, 1<<20 + 4096, true},
+		{"an exact transfer", 500, 500, false},
+		{"no advertised size disables the floor", 1, 0, false},
+		{"a negative advertised size disables it too", 1, -1, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := belowFloor(tc.received, tc.adverted); got != tc.want {
+				t.Errorf("belowFloor(%d, %d) = %v, want %v", tc.received, tc.adverted, got, tc.want)
+			}
+		})
 	}
 }

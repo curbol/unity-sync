@@ -76,3 +76,48 @@ func TestACookiesTxtForAnotherSiteIsNamedAsSuch(t *testing.T) {
 		t.Errorf("the diagnostic quoted what it read: %q", err)
 	}
 }
+
+// The cmd form does not only change the quoting, it rewrites the value: a caret goes in
+// front of every byte cmd would otherwise act on, and one more inside %7B so the percent
+// cannot start a variable expansion. A reader that takes the value as written hands the
+// store a credential with carets in it, which comes back as the opaque 500 that naming
+// the missing cookie early exists to avoid.
+func TestTheCmdFormsEscapingIsUndoneExactly(t *testing.T) {
+	body := "curl ^\"https://assetstore.unity.com/^\" ^\n" +
+		"  -H ^\"Cookie: LS=a%^7Bb^|c^&d^^e; _csrf=z^\"\n"
+	got, _, err := session.ResolveFrom(write(t, "session.curl", body))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if want := "LS=a%7Bb|c&d^e; _csrf=z"; got != want {
+		t.Errorf("header = %q, want %q", got, want)
+	}
+}
+
+// The other half of the same rule: inside POSIX single quotes nothing is escaped, so a
+// value that genuinely contains a caret has to survive as itself. Unescaping everywhere
+// would corrupt every such value on the platform the tool is mostly used on.
+func TestAValueIsNotUnescapedWhereTheShellDoesNotEscape(t *testing.T) {
+	body := `curl 'https://assetstore.unity.com/' -H 'Cookie: LS=a^b\c; _csrf=z'`
+	got, _, err := session.ResolveFrom(write(t, "session.curl", body))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if want := `LS=a^b\c; _csrf=z`; got != want {
+		t.Errorf("header = %q, want %q", got, want)
+	}
+}
+
+// A curl paste that the Cookie reader cannot find must still be reported as a curl paste.
+// Falling through to the cookies.txt parser answers "no unity.com cookies found (is this a
+// cookies.txt export for the right site?)" for a file that is plainly neither.
+func TestAWindowsPasteIsNeverMisreportedAsACookiesTxt(t *testing.T) {
+	body := "curl.exe ^\"https://assetstore.unity.com/^\" ^\n  -H ^\"Accept: application/json^\"\n"
+	_, _, err := session.ResolveFrom(write(t, "session.curl", body))
+	if err == nil {
+		t.Fatal("a curl paste with no Cookie header resolved")
+	}
+	if strings.Contains(err.Error(), "cookies.txt") {
+		t.Errorf("a curl paste was diagnosed as a cookies.txt: %v", err)
+	}
+}

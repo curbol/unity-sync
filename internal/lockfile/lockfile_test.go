@@ -13,20 +13,22 @@ import (
 func sample() lockfile.Lockfile {
 	lf := lockfile.New()
 	lf.Assets["quick-outline-115488"] = lockfile.Entry{
-		AssetID:            "115488",
-		Name:               "Quick Outline",
-		State:              "published",
-		Publisher:          lockfile.Publisher{ID: "37073", Name: "Chris Nolet"},
-		Version:            lockfile.Version{ID: "683375", Name: "1.1", PublishedDate: "2022-03-07T16:46:24Z"},
-		AdvertisedSize:     33824,
-		Tracked:            true,
-		ResolvedVersionID:  "683375",
-		DeliveredVersionID: "683375",
-		SizeBytes:          33822,
-		SHA256:             "abc123",
-		CachePath:          "chris-nolet/quick-outline-115488/quick-outline-115488.unitypackage",
-		DownloadedAt:       "2026-08-22T04:00:00Z",
-		StoreFilename:      "Quick Outline.unitypackage",
+		AssetID:        "115488",
+		Name:           "Quick Outline",
+		State:          "published",
+		Publisher:      lockfile.Publisher{ID: "37073", Name: "Chris Nolet"},
+		Version:        lockfile.Version{ID: "683375", Name: "1.1", PublishedDate: "2022-03-07T16:46:24Z"},
+		AdvertisedSize: 33824,
+		Resolution: lockfile.Resolution{
+			Tracked:            true,
+			ResolvedVersionID:  "683375",
+			DeliveredVersionID: "683375",
+			SizeBytes:          33822,
+			SHA256:             "abc123",
+			CachePath:          "chris-nolet/quick-outline-115488/quick-outline-115488.unitypackage",
+			DownloadedAt:       "2026-08-22T04:00:00Z",
+			StoreFilename:      "Quick Outline.unitypackage",
+		},
 	}
 	lf.Assets["unowned-yet-999"] = lockfile.Entry{
 		AssetID:        "999",
@@ -34,7 +36,7 @@ func sample() lockfile.Lockfile {
 		State:          "published",
 		Version:        lockfile.Version{ID: "1", Name: "1.0"},
 		AdvertisedSize: 4096,
-		Tracked:        false,
+		Resolution:     lockfile.Resolution{Tracked: false},
 	}
 	return lf
 }
@@ -222,6 +224,32 @@ func TestSaveLeavesNoTempBehindWhenTheRenameFails(t *testing.T) {
 	for _, e := range entries {
 		if strings.HasPrefix(e.Name(), ".unity-sync-lock-") {
 			t.Errorf("a failed rename left the temp file %q beside the lockfile", e.Name())
+		}
+	}
+}
+
+// The lockfile is committed and a rename changes an entry's key, so a merge that keeps
+// both sides of one leaves two entries for one product. FindByAssetID walks a map, so
+// without a refusal the run picks between them at random — the same checkout classifies
+// the asset differently from run to run, and build drops the entry it did not pick.
+func TestTwoEntriesForOneAssetAreRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unity-sync.lock.json")
+	body := `{"assets":{
+	  "quick-outline-115488":{"assetId":"115488","name":"Quick Outline","tracked":true,
+	    "resolvedVersionId":"v1","cachePath":"acme/quick-outline-115488/quick-outline-115488.unitypackage"},
+	  "outline-115488":{"assetId":"115488","name":"Outline","tracked":true,
+	    "resolvedVersionId":"v2","cachePath":"acme/outline-115488/outline-115488.unitypackage"}
+	}}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := lockfile.Load(path)
+	if err == nil {
+		t.Fatal("Load accepted two entries for one asset id")
+	}
+	for _, want := range []string{"115488", "quick-outline-115488", "outline-115488"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("diagnostic %q does not name %q", err, want)
 		}
 	}
 }

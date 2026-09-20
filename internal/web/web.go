@@ -253,7 +253,10 @@ func (h *Handler) save(w http.ResponseWriter, r *http.Request) {
 // It opens a browser at the address ln is bound to, so a test driving it must stub
 // OpenBrowser first.
 func Serve(ctx context.Context, ln net.Listener, assets []model.Asset, enabled map[string]bool) (Selection, error) {
-	h := NewHandler(assets, enabled, ln.Addr())
+	return serveHandler(ctx, ln, NewHandler(assets, enabled, ln.Addr()))
+}
+
+func serveHandler(ctx context.Context, ln net.Listener, h *Handler) (sel Selection, err error) {
 	srv := &http.Server{Handler: h}
 	go srv.Serve(ln)
 	// Shutdown, not Close. The accepted save is delivered on a buffered channel, so this
@@ -264,10 +267,24 @@ func Serve(ctx context.Context, ln net.Listener, assets []model.Asset, enabled m
 		// Background, not the caller's ctx: the usual reason Serve is returning is that
 		// ctx ended, and shutting down under an already-cancelled context severs the
 		// connection exactly as Close would.
-		ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 		defer cancel()
-		if srv.Shutdown(ctx) != nil {
+		if srv.Shutdown(shutdownCtx) != nil {
 			srv.Close()
+		}
+		if err == nil {
+			return
+		}
+		// Drained again, after Shutdown has waited for every in-flight handler. The
+		// select below covers a save already on the channel when ctx ended; this covers
+		// the window one step earlier, where the interrupt landed while the handler was
+		// still reading the POST body off the socket. That handler goes on to accept the
+		// save and answer "Saved …", so returning the interrupt would leave the page
+		// telling the user their selection was kept while the manifest holds the old one.
+		select {
+		case s := <-h.done:
+			sel, err = s, nil
+		default:
 		}
 	}()
 
@@ -279,7 +296,17 @@ func Serve(ctx context.Context, ln net.Listener, assets []model.Asset, enabled m
 	case sel := <-h.done:
 		return sel, nil
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		// A save already on the channel is one the handler has accepted and answered
+		// "Saved …" for, and both cases are ready when the interrupt lands in that
+		// window — which Go resolves by picking at random. Honouring the save is the
+		// only resolution that does not tell the user their selection was kept while
+		// nothing was written.
+		select {
+		case sel := <-h.done:
+			return sel, nil
+		default:
+			return nil, ctx.Err()
+		}
 	}
 }
 

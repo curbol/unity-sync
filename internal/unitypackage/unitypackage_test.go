@@ -123,3 +123,20 @@ func TestDescriptorWithoutAProductIdIsRejected(t *testing.T) {
 		t.Error("Read accepted a descriptor with no product id; the id gate depends on it")
 	}
 }
+
+// A subfield whose declared length runs past the end of the extra field is the only way a
+// readable gzip stream produces something other than ErrNoMetadata, and the syncer
+// branches on exactly that difference: ErrNoMetadata is a warning and the download is
+// kept, while this is a permanent failure for that asset. Every other case here builds a
+// well-formed subfield list, so nothing holds the two apart.
+func TestASubfieldClaimingMoreThanRemainsIsNotNoMetadata(t *testing.T) {
+	// id "QQ", then a uint16 length of 65535 with no bytes behind it.
+	raw := gzipWithExtra(t, []byte{'Q', 'Q', 0xff, 0xff})
+	_, err := unitypackage.Read(bytes.NewReader(raw))
+	if err == nil {
+		t.Fatal("Read accepted a subfield that claims more than the extra field holds")
+	}
+	if errors.Is(err, unitypackage.ErrNoMetadata) {
+		t.Errorf("a malformed subfield list was reported as ErrNoMetadata: %v", err)
+	}
+}

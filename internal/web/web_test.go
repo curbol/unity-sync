@@ -141,25 +141,6 @@ func TestOnlyTheFirstSaveIsAccepted(t *testing.T) {
 	}
 }
 
-// A page served by an earlier run still has a Save button. Honouring it would apply a
-// selection made against a different library.
-func TestStaleTabIsRefused(t *testing.T) {
-	h := newHandler(assets(), map[string]bool{"115488": true})
-	render(t, h)
-
-	form := url.Values{"token": {"from-an-older-run"}, "asset": {"115488"}}
-	rec := httptest.NewRecorder()
-	req := newRequest(http.MethodPost, form.Encode())
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusConflict {
-		t.Errorf("POST from a stale tab = %d, want %d", rec.Code, http.StatusConflict)
-	}
-	if !strings.Contains(rec.Body.String(), "earlier run") {
-		t.Errorf("response %q does not explain the refusal", rec.Body)
-	}
-}
-
 // select is the only command that writes the manifest, so clearing every selection at
 // once has to be deliberate rather than a mis-click or a reloaded old tab.
 func TestSaveThatWouldDeselectEverythingIsRefused(t *testing.T) {
@@ -207,9 +188,15 @@ func TestARefusedSaveLeavesThePageServing(t *testing.T) {
 
 	stale := httptest.NewRecorder()
 	h.ServeHTTP(stale, newRequest(http.MethodPost,
-		url.Values{"token": {"from-an-older-run"}}.Encode()))
+		url.Values{"token": {"from-an-older-run"}, "asset": {"115488"}}.Encode()))
 	if stale.Code != http.StatusConflict {
 		t.Fatalf("stale POST = %d, want %d", stale.Code, http.StatusConflict)
+	}
+	// A page served by an earlier run still has a Save button, and honouring it would
+	// apply a selection made against a different library. The refusal has to say which
+	// of the three it is, or the user has no way to tell a stale tab from an empty one.
+	if !strings.Contains(stale.Body.String(), "earlier run") {
+		t.Errorf("response %q does not explain the refusal", stale.Body)
 	}
 
 	// The page is still up, with the same token, and a correct save still lands.

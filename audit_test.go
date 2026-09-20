@@ -3,15 +3,23 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	neturl "net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
+	"github.com/curbol/unity-sync/internal/config"
+	"github.com/curbol/unity-sync/internal/fixtures"
 	"github.com/curbol/unity-sync/internal/lockfile"
 	"github.com/curbol/unity-sync/internal/manifest"
 	"github.com/curbol/unity-sync/internal/model"
@@ -107,6 +115,34 @@ func TestTheSummaryNamesEachDelistedAsset(t *testing.T) {
 	}
 }
 
+// captureStderr redirects os.Stderr for the duration of a test and returns a function
+// yielding what was written to it. Progress and the session provenance line go there, and
+// what must never go there is the credential.
+//
+// Restoration runs through Cleanup as well as through the returned function: a t.Fatal or
+// a panic inside run would otherwise leave every later test in this binary writing into a
+// closed pipe.
+func captureStderr(t *testing.T) func() string {
+	t.Helper()
+	prev := os.Stderr
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = w
+
+	var once sync.Once
+	restore := func() { once.Do(func() { os.Stderr = prev; w.Close() }) }
+	t.Cleanup(func() { restore(); r.Close() })
+
+	return func() string {
+		restore()
+		var buf bytes.Buffer
+		io.Copy(&buf, r)
+		return buf.String()
+	}
+}
+
 // serveStore points run() at a stub Asset Store and reports every request it received.
 // Everything below drives the real dispatch — config, session, store.New, Bootstrap and
 // the writes that follow — which no other test in this repo reaches.
@@ -157,7 +193,8 @@ func sessionFile(t *testing.T) string {
 func TestTheResolvedSessionIsWhatReachesTheStore(t *testing.T) {
 	wd := isolate(t)
 	project(t, wd)
-	capture(t)
+	out := capture(t)
+	errOut := captureStderr(t)
 	seen := serveStore(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Set-Cookie", "_csrf=issued")
 		w.WriteHeader(http.StatusNotFound)
@@ -166,6 +203,7 @@ func TestTheResolvedSessionIsWhatReachesTheStore(t *testing.T) {
 	// Enumeration fails after the bootstrap, which is fine: the assertion is on what the
 	// bootstrap request carried.
 	run([]string{"status", "--session", sessionFile(t)})
+	stderr := errOut()
 
 	if len(*seen) == 0 {
 		t.Fatal("no request reached the store")
@@ -176,6 +214,15 @@ func TestTheResolvedSessionIsWhatReachesTheStore(t *testing.T) {
 	}
 	if agent := got.Header.Get("User-Agent"); !strings.HasPrefix(agent, "unity-sync/") {
 		t.Errorf("User-Agent = %q; the version and the cookie look transposed", agent)
+	}
+	// The same value, checked in the other direction: the header is the user's live
+	// session, so it belongs in the request and nowhere a terminal, a pipe or a CI log
+	// would keep it. Which file the session came from is printed on purpose; what the
+	// file contained is not.
+	for name, stream := range map[string]string{"stdout": out.String(), "stderr": stderr} {
+		if strings.Contains(stream, "the-credential") {
+			t.Errorf("the credential was written to %s:\n%s", name, stream)
+		}
 	}
 }
 
@@ -202,8 +249,12 @@ func TestAnExpiredSessionLeavesTheCommittedFilesAlone(t *testing.T) {
 			lockPath := manifest.LockPath(manifestPath)
 			lf := lockfile.New()
 			lf.Assets["quick-outline-115488"] = lockfile.Entry{
-				AssetID: "115488", Name: "Quick Outline", Tracked: true,
-				ResolvedVersionID: "683375", CachePath: "chris-nolet/quick-outline-115488/quick-outline-115488.unitypackage",
+				AssetID: "115488", Name: "Quick Outline",
+				Resolution: lockfile.Resolution{
+					Tracked:           true,
+					ResolvedVersionID: "683375",
+					CachePath:         "chris-nolet/quick-outline-115488/quick-outline-115488.unitypackage",
+				},
 			}
 			if err := lockfile.Save(lockPath, lf); err != nil {
 				t.Fatal(err)
@@ -220,8 +271,8 @@ func TestAnExpiredSessionLeavesTheCommittedFilesAlone(t *testing.T) {
 
 			// select binds the address for real, so this asks for an ephemeral port.
 			// The default is a fixed one, and a machine already serving on it fails the
-			// bind before the store is ever reached — the failure this test wants, for a
-			// reason that has nothing to do with the session.
+			// bind before the enumeration — the failure this test wants, for a reason
+			// that has nothing to do with the session.
 			code, err := run([]string{cmd, "--session", sessionFile(t), "--addr", "127.0.0.1:0"})
 			if code == 0 || err == nil {
 				t.Fatalf("%s against an expired session = %d, %v; want a failure", cmd, code, err)
@@ -331,7 +382,8 @@ func TestTheSummaryNamesDroppedAndUnknownAssets(t *testing.T) {
 	printReport(buf, syncer.Report{
 		Owned: 1,
 		Removed: []lockfile.Entry{
-			{Name: "Old Pack", CachePath: "pub/old-pack-42/old-pack-42.unitypackage", SizeBytes: 4096},
+			{Name: "Old Pack", Resolution: lockfile.Resolution{
+				CachePath: "pub/old-pack-42/old-pack-42.unitypackage", SizeBytes: 4096}},
 			{Name: "Never Mirrored"},
 		},
 		Unknown: []manifest.Entry{{ID: "404", Name: "Typo'd Entry"}},
@@ -363,5 +415,245 @@ func TestSelectRefusesAnAddressThatIsNotThisMachine(t *testing.T) {
 		if err := checkLoopback(addr); err != nil {
 			t.Errorf("--addr %q was refused (%v); the page is unreachable this way", addr, err)
 		}
+	}
+}
+
+// checkLoopback is only a control if run actually calls it. Go does not complain about an
+// unused function, so deleting the call — or moving it below the listener — leaves the
+// helper here still passing its own test while `select --addr 0.0.0.0:8788` serves the
+// owned-asset list and the save token to anything that can route to the machine.
+func TestRunRefusesAWildcardSelectAddress(t *testing.T) {
+	isolate(t)
+	capture(t)
+	seen := serveStore(t, func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("the store was called for a --addr that should never have been accepted: %s", r.URL)
+	})
+	for _, addr := range []string{":8788", "0.0.0.0:8788"} {
+		code, err := run([]string{"select", "--addr", addr, "--session", sessionFile(t)})
+		if err == nil {
+			t.Errorf("--addr %q was accepted by run", addr)
+		}
+		if code == 0 {
+			t.Errorf("--addr %q exited 0", addr)
+		}
+	}
+	if len(*seen) != 0 {
+		t.Errorf("the refusal came after %d store request(s); it does not depend on the store", len(*seen))
+	}
+}
+
+// The only manifest write in the program, end to end. The handler and Reconcile are each
+// tested alone; what is untested between them is the order — EnabledIDs has to be read
+// from the manifest Reconcile already rewrote, or a de-owned asset dropping out reads as
+// the user clearing the list and the page refuses their save.
+func TestSelectWritesTheSelectionTheBrowserPosted(t *testing.T) {
+	wd := isolate(t)
+	manifestPath := project(t, wd)
+	capture(t)
+
+	owned := []model.Asset{
+		ownedAsset("115488", "Quick Outline", "v1", 500),
+		ownedAsset("222222", "Another Asset", "v1", 500),
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	url := "http://" + ln.Addr().String()
+
+	done := make(chan error, 1)
+	go func() { done <- selectAssets(context.Background(), &fakeStore{owned: owned}, manifestPath, ln) }()
+
+	body := poll(t, url)
+	token := tokenFrom(t, body)
+	for _, a := range owned {
+		if !strings.Contains(body, a.Name) {
+			t.Errorf("the page does not list %q", a.Name)
+		}
+	}
+
+	form := neturl.Values{"token": {token}, "asset": {"222222"}}
+	resp, err := http.PostForm(url, form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if !strings.Contains(string(saved), "Saved") {
+		t.Fatalf("the save was refused: %s", saved)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("selectAssets: %v", err)
+	}
+
+	m, err := manifest.Load(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled := m.EnabledIDs()
+	if len(enabled) != 1 || !enabled["222222"] {
+		t.Errorf("manifest enables %v, want only the asset the browser posted", enabled)
+	}
+	// The entry the user deselected stays in the file: it is still owned, and the manifest
+	// records what there is to choose from as well as what is chosen.
+	kept := false
+	for _, e := range m.Assets {
+		if e.ID == "115488" {
+			kept = true
+		}
+	}
+	if !kept {
+		t.Error("the deselected asset was dropped from the manifest instead of disabled")
+	}
+}
+
+// poll fetches the page until the goroutine running selectAssets has it listening.
+func poll(t *testing.T, url string) string {
+	t.Helper()
+	for i := 0; i < 200; i++ {
+		resp, err := http.Get(url)
+		if err == nil {
+			raw, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return string(raw)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the select page never came up")
+	return ""
+}
+
+func tokenFrom(t *testing.T, body string) string {
+	t.Helper()
+	m := regexp.MustCompile(`name=token value="([0-9a-f]+)"`).FindStringSubmatch(body)
+	if m == nil {
+		t.Fatalf("no token in the page: %s", body)
+	}
+	return m[1]
+}
+
+// An expired session cancels the pool with hundreds of assets still queued. Naming each
+// as its own failure buries the one line the user can act on, so they are summarised —
+// and the counter being kept apart from Retryable is only half of that rule: the other
+// half is what printReport does with it, which is what the user actually sees.
+func TestTheSummaryGivesEveryUnreachedAssetOneLine(t *testing.T) {
+	rep := syncer.Report{Owned: 300, NotAttempted: 295}
+	for i := range 5 {
+		rep.Results = append(rep.Results, syncer.Result{
+			Asset: model.Asset{ID: fmt.Sprint(i), Name: "Asset " + fmt.Sprint(i)},
+			Class: syncer.New,
+		})
+	}
+	rep.Results[0].Err = errors.New("session expired or missing")
+
+	buf := &bytes.Buffer{}
+	printReport(buf, rep, false, "/lib")
+	got := buf.String()
+
+	if n := strings.Count(got, "not attempted:"); n != 1 {
+		t.Errorf("the summary says \"not attempted\" %d times, want exactly one line for all 295", n)
+	}
+	if !strings.Contains(got, "295 asset(s)") {
+		t.Errorf("the summary does not say how many were never reached:\n%s", got)
+	}
+	if !strings.Contains(got, "session expired") {
+		t.Errorf("the one diagnostic the user can act on is missing:\n%s", got)
+	}
+}
+
+// A run that could not do what it was asked has to say so in its exit status, and the
+// report is the only thing that knows: Run returns a nil error for a failure that fails
+// one asset rather than the run, so main's own err != nil check never fires and this
+// branch is the whole defence. Delete it and `unity-sync sync && deploy` proceeds on a
+// mirror that is missing whatever failed.
+//
+// The two halves are opposite on purpose. A corrupt body is actionable, so it exits
+// non-zero; an asset the store has pulled is permanent, and failing on it would fail every
+// future run forever.
+func TestTheExitStatusSeparatesAnActionableFailureFromAPulledAsset(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		body     []byte
+		wantCode int
+	}{
+		{"a corrupt body", []byte("this is not a gzip stream at all"), 1},
+		{"an asset the store has pulled", nil, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			wd := isolate(t)
+			capture(t)
+			a := ownedAsset("115488", "Quick Outline", "683375", 500)
+			manifestPath := filepath.Join(wd, manifest.FileName)
+			if err := manifest.Save(manifestPath, manifest.Manifest{
+				Assets: []manifest.Entry{{ID: a.ID, Name: a.Name, Enabled: true}},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			fake := &fakeStore{owned: []model.Asset{a}}
+			if tc.body != nil {
+				fake.bodies = map[string][]byte{a.ID: tc.body}
+			}
+			cfg := config.Config{LibraryPath: filepath.Join(wd, "library"), Concurrency: 1}
+
+			code, err := syncOrStatus(context.Background(), fake, cfg, manifestPath,
+				manifest.LockPath(manifestPath), "", false, false)
+			if err != nil {
+				t.Fatalf("sync returned an error rather than a report and a code: %v", err)
+			}
+			if code != tc.wantCode {
+				t.Errorf("exit code = %d, want %d", code, tc.wantCode)
+			}
+		})
+	}
+}
+
+// Which profile a browser scan settled on is printed because a run against the wrong
+// signed-in account is otherwise completely silent: the enumeration succeeds, the lockfile
+// is rewritten against somebody else's owned set, and nothing says why. The existing
+// session test points --session at a file, where the source and what was read are the same
+// string and this branch never runs.
+//
+// The credential assertion is repeated here rather than assumed: this is the one path that
+// prints anything about the session at all, so it is the one that could print the wrong
+// part of it.
+func TestABrowserScanSaysWhichProfileItRead(t *testing.T) {
+	wd := isolate(t)
+	project(t, wd)
+	capture(t)
+
+	// A profile directory holding a session store, which is what --session accepts
+	// besides the "browser" keyword and a pasted file.
+	profile := filepath.Join(t.TempDir(), "abcd.default-release")
+	backups := filepath.Join(profile, "sessionstore-backups")
+	if err := os.MkdirAll(backups, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	jar := `{"windows":[{"cookies":[` +
+		`{"host":"assetstore.unity.com","name":"LS","value":"the-credential"},` +
+		`{"host":"assetstore.unity.com","name":"_csrf","value":"t"}` +
+		`]}]}`
+	recovery := filepath.Join(backups, "recovery.jsonlz4")
+	if err := os.WriteFile(recovery, fixtures.MozLZ4([]byte(jar)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	errOut := captureStderr(t)
+	serveStore(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Set-Cookie", "_csrf=issued")
+		w.WriteHeader(http.StatusNotFound)
+	})
+	// Enumeration fails after the bootstrap, which is fine: the assertion is on what the
+	// session resolution said on its way there.
+	run([]string{"status", "--session", profile})
+
+	stderr := errOut()
+	if !strings.Contains(stderr, "session: read from") {
+		t.Errorf("a browser scan did not say which profile it read:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, recovery) {
+		t.Errorf("the provenance line does not name the file it read:\n%s", stderr)
+	}
+	if strings.Contains(stderr, "the-credential") {
+		t.Errorf("the credential was written to stderr:\n%s", stderr)
 	}
 }

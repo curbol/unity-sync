@@ -1,6 +1,7 @@
 package lockfile_test
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -124,24 +125,60 @@ func TestAdvertisedAndReceivedSizesAreSeparateFields(t *testing.T) {
 	}
 }
 
+// The committed file must not grow empty resolution keys for the assets a run never
+// resolved, which on a no-op run is most of it.
+//
+// This asserted nothing until it was rewritten. It sliced from the entry's key to the
+// first "}", and Entry marshals in declaration order with Publisher carrying no
+// omitempty — so the block it inspected ended at the close of the empty "publisher"
+// object, before "version", and could not contain the keys it forbade whatever Save
+// wrote. Dropping omitempty from all eight Resolution fields left the whole suite green.
+// Decoding the entry and comparing key sets is what makes the assertion real, and it
+// pins the field-order contract the Resolution embedding comment depends on besides.
 func TestUntrackedEntriesOmitResolutionFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "lock.json")
 	if err := lockfile.Save(path, sample()); err != nil {
 		t.Fatal(err)
 	}
-	raw, _ := os.ReadFile(path)
-	// The untracked entry must not carry empty resolution keys; omitempty keeps the
-	// committed file readable.
-	chunk := string(raw)
-	start := strings.Index(chunk, `"unowned-yet-999"`)
-	if start < 0 {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Assets map[string]map[string]json.RawMessage `json:"assets"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	untracked, ok := doc.Assets["unowned-yet-999"]
+	if !ok {
 		t.Fatal("untracked entry missing")
 	}
-	end := strings.Index(chunk[start:], "}")
-	block := chunk[start : start+end]
-	for _, field := range []string{"sha256", "cachePath", "downloadedAt", "resolvedVersionId"} {
-		if strings.Contains(block, field) {
+	// Every resolution key, not the four that used to be listed: the point is that the
+	// half is absent, so a ninth field added later is covered without editing this.
+	for _, field := range []string{
+		"resolvedVersionId", "deliveredVersionId", "sizeBytes",
+		"sha256", "cachePath", "downloadedAt", "storeFilename",
+	} {
+		if _, present := untracked[field]; present {
 			t.Errorf("untracked entry carries %q", field)
+		}
+	}
+	// tracked has no omitempty and is meant to be written, so its absence would mean the
+	// entry was not decoded at all and the loop above passed vacuously.
+	if _, present := untracked["tracked"]; !present {
+		t.Error(`untracked entry has no "tracked" key, so this test is reading the wrong thing`)
+	}
+
+	tracked, ok := doc.Assets["quick-outline-115488"]
+	if !ok {
+		t.Fatal("tracked entry missing")
+	}
+	// The other half of the contract: omitempty must not be swallowing a resolved
+	// entry's fields either.
+	for _, field := range []string{"resolvedVersionId", "sha256", "cachePath"} {
+		if _, present := tracked[field]; !present {
+			t.Errorf("tracked entry is missing %q", field)
 		}
 	}
 }

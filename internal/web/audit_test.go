@@ -236,3 +236,55 @@ func TestASaveAcceptedWhileTheInterruptLandsIsStillReturned(t *testing.T) {
 		base.Close()
 	}
 }
+
+// Every row on this page is store-controlled text: the publisher chooses the asset name,
+// the publisher name and the thumbnail URL. html/template's contextual escaping is the
+// only thing that makes rendering them safe, and nothing asserted it — changing row.Thumb
+// to template.URL, or any row field to template.HTML, left the whole suite green.
+//
+// The trigger is not hypothetical. html/template's URL filter allows only http, https and
+// mailto, so a thumbnail on any other scheme renders as the literal "#ZgotmplZ". A
+// developer who sees a broken image and greps for that string lands on exactly one
+// suggested fix, template.URL, which switches the filter off for every row at once.
+func TestStoreControlledTextCannotEscapeItsContext(t *testing.T) {
+	hostile := []model.Asset{{
+		ID:           "115488",
+		Name:         `Quick "Outline" <script>alert('name')</script>`,
+		State:        model.State(`published"><script>alert('state')</script>`),
+		Publisher:    model.Publisher{Name: `<img src=x onerror=alert('pub')>`},
+		ThumbnailURL: "javascript:alert(document.cookie)",
+	}, {
+		ID:           "193760",
+		Name:         "Ordinary Asset",
+		State:        model.StatePublished,
+		Publisher:    model.Publisher{Name: "Cafofo"},
+		ThumbnailURL: "data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==",
+	}}
+	body := render(t, newHandler(hostile, map[string]bool{"115488": true}))
+
+	// The markup the payloads would have introduced, none of which may survive as itself.
+	for _, raw := range []string{
+		"<script>alert('name')</script>",
+		"<script>alert('state')</script>",
+		"<img src=x onerror=alert('pub')>",
+	} {
+		if strings.Contains(body, raw) {
+			t.Errorf("a store-supplied value reached the page unescaped: %s", raw)
+		}
+	}
+	// A URL context is not an HTML-text context: escaping the angle brackets would not
+	// save an href or a src, so the scheme has to be filtered rather than quoted.
+	for _, scheme := range []string{"javascript:", "data:text/html"} {
+		if strings.Contains(body, scheme) {
+			t.Errorf("a store-supplied %s URL reached the page", scheme)
+		}
+	}
+	// The escaped forms must actually be present, or the loops above pass because the
+	// values never rendered at all and this test guards nothing.
+	if !strings.Contains(body, "&lt;script&gt;") {
+		t.Error("no escaped markup in the page, so the payloads were never rendered")
+	}
+	if !strings.Contains(body, "Ordinary Asset") {
+		t.Error("the benign row is missing, so the page did not render normally")
+	}
+}

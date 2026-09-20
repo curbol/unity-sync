@@ -350,15 +350,23 @@ func TestRenamedAssetIsRecognisedByIdAndRekeyedOnce(t *testing.T) {
 	}
 }
 
+// Losing ownership of an asset never deletes its package. A run removes a file only when
+// it is replacing that same asset's own copy with newer bytes, and a refund or an org
+// transfer is not that: the summary names what dropped out and leaves the bytes alone.
+//
+// The dropped entry's file is really on disk here, which it was not before. Report.Removed
+// carries the CachePath and SizeBytes that make "tidy the library" a one-line edit at the
+// end of Run, and with no file to miss, adding that loop kept the whole suite green.
 func TestOwnershipDropIsReportedNotJustRemoved(t *testing.T) {
 	root, lockPath := newRun(t)
 	kept := asset("1", "Kept", "v1", 500)
+	orphan := place(t, root, "pub-one", "gone-2", pkg(t, "2", "v9", 900))
 	prior := lockfile.New()
 	prior.Assets["kept-1"] = lockfile.Entry{AssetID: "1", Name: "Kept", Version: lockfile.Version{ID: "v1"}}
 	prior.Assets["gone-2"] = lockfile.Entry{
 		AssetID: "2", Name: "Refunded",
 		Resolution: lockfile.Resolution{
-			Tracked: true, CachePath: "pub-one/gone-2/gone-2.unitypackage", SizeBytes: 900,
+			Tracked: true, CachePath: orphan.RelPath, SizeBytes: orphan.Size, SHA256: orphan.SHA256,
 		},
 	}
 	fs := &fakeStore{owned: []model.Asset{kept}, bodies: map[string][]byte{"1": pkg(t, "1", "v1", 500)}}
@@ -372,6 +380,15 @@ func TestOwnershipDropIsReportedNotJustRemoved(t *testing.T) {
 	}
 	if _, _, ok := rep.Lockfile.FindByAssetID("2"); ok {
 		t.Error("the dropped asset is still in the lockfile")
+	}
+	// The whole point: the record goes, the bytes stay.
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(orphan.RelPath))); err != nil {
+		t.Errorf("the de-owned asset's package was deleted: %v", err)
+	}
+	// And the summary has to carry enough for the user to find it, or "left in place" is
+	// a claim they cannot act on.
+	if rep.Removed[0].CachePath == "" || rep.Removed[0].SizeBytes == 0 {
+		t.Errorf("Removed entry does not say where the bytes are: %+v", rep.Removed[0])
 	}
 }
 

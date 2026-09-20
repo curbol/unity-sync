@@ -245,6 +245,46 @@ func TestAnAbsoluteProfilePathIsNotJoinedUnderTheRoot(t *testing.T) {
 	}
 }
 
+// installs.ini carries no IsRelative key at all, so a pending entry defaults to relative
+// and an absolute Default= would be joined under the browser root without the IsAbs arm
+// in iniEntry.under. That names a directory which cannot exist, so the running profile
+// drops out of the preferred set and ranking falls back to the Default=1 flag in
+// profiles.ini — the exact ordering profileDirs exists to override, because the flagged
+// profile can be the one with no session store.
+//
+// The sibling test above writes IsRelative=0, which takes the other arm; deleting
+// `|| filepath.IsAbs(p)` left the whole session suite green until this was added.
+func TestAnAbsolutePathInInstallsIniIsNotJoinedUnderTheRoot(t *testing.T) {
+	root := t.TempDir()
+	elsewhere := t.TempDir()
+	// The profile installs.ini points at, kept outside the browser root and signed in.
+	writeProfile(t, elsewhere, "running", []storeCookie{
+		{Host: "assetstore.unity.com", Name: "LS", Value: "the-running-profile"},
+	})
+	// The profile profiles.ini flags as default, under the root and signed in as someone
+	// else. installs.ini has to win, or the run reads the wrong account.
+	writeProfile(t, root, "flagged", []storeCookie{
+		{Host: "assetstore.unity.com", Name: "LS", Value: "the-flagged-profile"},
+	})
+	if err := os.WriteFile(filepath.Join(root, "profiles.ini"), []byte(
+		"[Profile0]\nName=flagged\nIsRelative=1\nPath=flagged\nDefault=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// No IsRelative key, which is the whole point.
+	if err := os.WriteFile(filepath.Join(root, "installs.ini"), []byte(
+		"[3B722F5C50BF4C1D]\nDefault="+filepath.ToSlash(filepath.Join(elsewhere, "running"))+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	header, from, err := ResolveFrom(root)
+	if err != nil {
+		t.Fatalf("ResolveFrom: %v", err)
+	}
+	if !strings.Contains(header, "the-running-profile") {
+		t.Errorf("header came from %s, not the profile installs.ini names: %q", from, header)
+	}
+}
+
 // A profile whose session has no Asset Store credential is skipped, not fatal: the
 // signed-in one is usually another profile or another browser.
 func TestAProfileWithoutTheCredentialIsSkipped(t *testing.T) {

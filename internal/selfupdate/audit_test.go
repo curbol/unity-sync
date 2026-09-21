@@ -111,22 +111,10 @@ func TestDownloadFollowsTheAssetRedirect(t *testing.T) {
 // set GITHUB_TOKEN or logged in with gh, which is the tool's own documented upgrade path.
 func TestAnUpdateWorksWithNoGitHubCredential(t *testing.T) {
 	var sawAuth []string
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := releaseServer(t, nil, func(w http.ResponseWriter, r *http.Request) bool {
 		sawAuth = append(sawAuth, r.Header.Get("Authorization"))
-		if strings.HasSuffix(r.URL.Path, "/releases/latest") {
-			asset, err := selfupdate.PlatformAssetFor(runtime.GOOS, runtime.GOARCH, "9.9.9")
-			if err != nil {
-				t.Errorf("PlatformAsset: %v", err)
-			}
-			json.NewEncoder(w).Encode(map[string]any{
-				"tag_name": "v9.9.9",
-				"assets":   []any{map[string]any{"name": asset, "url": "http://" + r.Host + "/asset"}},
-			})
-			return
-		}
-		w.Write(zipWithBinary(t, nativeBinary(t, "fresh binary")))
-	}))
-	defer srv.Close()
+		return false
+	})
 
 	// Driven through the whole update, not just the client, because the refusal that
 	// broke this lived above both calls and a client-level test walks straight past it.
@@ -307,20 +295,7 @@ func TestAnAssetThatIsNotAnExecutableIsRefusedBeforeTheSwap(t *testing.T) {
 		"#!/bin/sh\necho wrong artifact\n",        // a script rather than a build
 		"",                                        // an empty file the build step never wrote
 	} {
-		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if strings.HasSuffix(r.URL.Path, "/releases/latest") {
-				asset, err := selfupdate.PlatformAssetFor(runtime.GOOS, runtime.GOARCH, "9.9.9")
-				if err != nil {
-					t.Errorf("PlatformAsset: %v", err)
-				}
-				json.NewEncoder(w).Encode(map[string]any{
-					"tag_name": "v9.9.9",
-					"assets":   []any{map[string]any{"name": asset, "url": "http://" + r.Host + "/asset"}},
-				})
-				return
-			}
-			w.Write(zipWithBinary(t, body))
-		}))
+		srv := releaseServer(t, zipWithBinary(t, body), nil)
 
 		target := filepath.Join(t.TempDir(), "unity-sync")
 		if err := os.WriteFile(target, []byte(nativeBinary(t, "the working one")), 0o755); err != nil {
@@ -481,21 +456,7 @@ func TestAnAssetWhoseCRCDoesNotMatchIsRefusedBeforeTheSwap(t *testing.T) {
 	}
 	archive[at] ^= 0xff
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/releases/latest") {
-			asset, err := selfupdate.PlatformAssetFor(runtime.GOOS, runtime.GOARCH, "9.9.9")
-			if err != nil {
-				t.Errorf("PlatformAsset: %v", err)
-			}
-			json.NewEncoder(w).Encode(map[string]any{
-				"tag_name": "v9.9.9",
-				"assets":   []any{map[string]any{"name": asset, "url": "http://" + r.Host + "/asset"}},
-			})
-			return
-		}
-		w.Write(archive)
-	}))
-	defer srv.Close()
+	srv := releaseServer(t, archive, nil)
 
 	target := filepath.Join(t.TempDir(), "unity-sync")
 	working := nativeBinary(t, "the working one")
@@ -516,7 +477,16 @@ func TestAnAssetWhoseCRCDoesNotMatchIsRefusedBeforeTheSwap(t *testing.T) {
 
 // releaseServer serves a release and its asset, letting a test answer a request itself
 // first. The handler returns true when it has written the whole response.
-func releaseServer(t *testing.T, intercept func(http.ResponseWriter, *http.Request) bool) *httptest.Server {
+// releaseServer answers the release API and serves archive as the platform asset. A nil
+// archive serves a zip holding a plausible binary, which is what every test that is about
+// something other than the bytes wants; intercept may answer a request itself and report
+// true to stop there.
+//
+// It takes the archive because the release JSON — the tag, the asset name resolved through
+// PlatformAssetFor, the asset URL pointed back at this server — is the same twenty lines
+// in every test that needs one, and the only thing any of them varies is what comes back
+// from /asset.
+func releaseServer(t *testing.T, archive []byte, intercept func(http.ResponseWriter, *http.Request) bool) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if intercept != nil && intercept(w, r) {
@@ -533,7 +503,10 @@ func releaseServer(t *testing.T, intercept func(http.ResponseWriter, *http.Reque
 			})
 			return
 		}
-		w.Write(zipWithBinary(t, nativeBinary(t, "fresh binary")))
+		if archive == nil {
+			archive = zipWithBinary(t, nativeBinary(t, "fresh binary"))
+		}
+		w.Write(archive)
 	}))
 	t.Cleanup(srv.Close)
 	return srv
@@ -563,7 +536,7 @@ func TestACredentialGitHubRejectsFallsBackToAnAnonymousRequest(t *testing.T) {
 	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound} {
 		t.Run(http.StatusText(status), func(t *testing.T) {
 			var anonymous int
-			srv := releaseServer(t, func(w http.ResponseWriter, r *http.Request) bool {
+			srv := releaseServer(t, nil, func(w http.ResponseWriter, r *http.Request) bool {
 				if r.Header.Get("Authorization") != "" {
 					w.WriteHeader(status)
 					return true
@@ -589,7 +562,7 @@ func TestACredentialGitHubRejectsFallsBackToAnAnonymousRequest(t *testing.T) {
 // A failure that is not about the credential must still be reported. Retrying anonymously
 // and reporting the second error would replace a real diagnosis with a worse one.
 func TestAFailureThatIsNotTheCredentialIsReportedAsItself(t *testing.T) {
-	srv := releaseServer(t, func(w http.ResponseWriter, r *http.Request) bool {
+	srv := releaseServer(t, nil, func(w http.ResponseWriter, r *http.Request) bool {
 		w.WriteHeader(http.StatusInternalServerError)
 		return true
 	})
@@ -597,5 +570,96 @@ func TestAFailureThatIsNotTheCredentialIsReportedAsItself(t *testing.T) {
 		t.Fatal("a 500 from the release API was treated as success")
 	} else if !strings.Contains(err.Error(), "500") {
 		t.Errorf("error %q does not report the status the API actually returned", err)
+	}
+}
+
+// 401, 403 and 404 are each worth one anonymous retry, but only one of the three ever
+// means "this credential" — so the marker that decides whether to retry must never decide
+// what to report. `unity-sync update 0.2.9` for a version that was never tagged 404s, and
+// answering "github rejected the credential" sends a user who has none looking for one,
+// with the actual cause buried behind a claim about a thing they do not have.
+func TestAStatusIsReportedAsItselfRatherThanAsARejectedCredential(t *testing.T) {
+	for _, token := range []string{"", "a-token"} {
+		name := "no token"
+		if token != "" {
+			name = "token that changes nothing"
+		}
+		t.Run(name, func(t *testing.T) {
+			srv := releaseServer(t, nil, func(w http.ResponseWriter, r *http.Request) bool {
+				// 404 whether or not a credential is sent, which is what a version that
+				// was never tagged looks like.
+				w.WriteHeader(http.StatusNotFound)
+				return true
+			})
+			_, err := runUpdate(t, srv, token)
+			if err == nil {
+				t.Fatal("a 404 from the release API was treated as success")
+			}
+			if !strings.Contains(err.Error(), "404") {
+				t.Errorf("error %q does not report the status the API returned", err)
+			}
+			if strings.Contains(err.Error(), "rejected the credential") {
+				t.Errorf("error %q blames a credential for a failure that survives removing it", err)
+			}
+		})
+	}
+}
+
+// gh answers for whichever host is logged in unless one is named, so `gh auth token` alone
+// sends a user authenticated only against their company's GitHub Enterprise that token to
+// api.github.com. Nothing goes red when it regresses: the request 401s, the anonymous
+// fallback rescues it, and the update succeeds — the safety net is what hides the leak, so
+// the argv is the only thing that can catch it.
+func TestTheGhFallbackAsksForGitHubComByName(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// The stub is a /bin/sh script, and Windows resolves an executable by extension.
+		t.Skip("the gh stub is a shell script")
+	}
+	dir := t.TempDir()
+	record := filepath.Join(dir, "argv")
+	stub := filepath.Join(dir, "gh")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + record + "\nprintf 'a-token\\n'\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Both spellings cleared, or the environment short-circuits the fallback entirely.
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PATH", dir)
+
+	if got := selfupdate.Token(context.Background()); got != "a-token" {
+		t.Fatalf("Token = %q, want the stub's output; the gh fallback was not reached", got)
+	}
+	argv, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("gh was not run: %v", err)
+	}
+	if !strings.Contains(string(argv), "--hostname github.com") {
+		t.Errorf("gh was called as %q, without naming the host; an enterprise-only login "+
+			"would have its token sent to api.github.com", strings.TrimSpace(string(argv)))
+	}
+}
+
+// The environment wins over gh, and an absent credential is an empty string rather than a
+// failure: everything this package reads is public.
+func TestTokenPrefersTheEnvironmentAndToleratesNeither(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+
+	t.Setenv("GH_TOKEN", "from-gh-token")
+	t.Setenv("GITHUB_TOKEN", "from-github-token")
+	if got := selfupdate.Token(context.Background()); got != "from-github-token" {
+		t.Errorf("Token = %q, want GITHUB_TOKEN to win", got)
+	}
+	t.Setenv("GITHUB_TOKEN", "")
+	if got := selfupdate.Token(context.Background()); got != "from-gh-token" {
+		t.Errorf("Token = %q, want GH_TOKEN when GITHUB_TOKEN is unset", got)
+	}
+	t.Setenv("GH_TOKEN", "")
+	if got := selfupdate.Token(context.Background()); got != "" {
+		t.Errorf("Token = %q, want empty when nothing supplies one", got)
 	}
 }

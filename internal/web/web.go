@@ -31,6 +31,13 @@ const (
 	msgWouldEmptySelection = "refusing a save that would deselect everything"
 	msgStaleTab            = "this page was served by an earlier run; reload and choose again"
 	msgForeignHost         = "this page is only served to a browser on this machine"
+
+	// Kept apart from msgStaleTab because the two are different mistakes with different
+	// remedies. A second tab of *this* run carries a token that is perfectly current, so
+	// telling its user to reload is both false and useless: the save has been taken, Serve
+	// has returned, and there is no page left to reload.
+	msgAlreadySaved = "another tab saved first and this run accepts one save; " +
+		"run `unity-sync select` again to change the selection"
 )
 
 // shutdownGrace bounds how long Serve waits for the in-flight save to be written before
@@ -244,7 +251,7 @@ func (h *Handler) save(w http.ResponseWriter, r *http.Request) {
 		h.done <- chosen
 	})
 	if !accepted {
-		http.Error(w, msgStaleTab, http.StatusConflict)
+		http.Error(w, msgAlreadySaved, http.StatusConflict)
 		return
 	}
 	fmt.Fprintf(w, "Saved %d selection(s). You can close this tab.", len(chosen))

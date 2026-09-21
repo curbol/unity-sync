@@ -40,7 +40,11 @@ each with a package doc comment stating its contract:
   dir the user named (`--config`, `$UNITY_SYNC_CONFIG_DIR`) must exist; the XDG and
   `~/.config` fallbacks need not, since no config file is the ordinary first run. Absent,
   the two are indistinguishable, and a misspelled one silently drops `library_path` and
-  mirrors tens of gigabytes into the default directory.
+  mirrors tens of gigabytes into the default directory. `--manifest` gets the same rule
+  and the same `ExpandHome`, applied in `main.namedManifest`: an absent manifest loads as
+  an empty allowlist, so a typo mirrors nothing and still exits 0. A `concurrency` the
+  file sets below 1 is refused the way `--concurrency 0` is, since the merge guard cannot
+  tell a zero someone typed from a key nobody wrote.
 - `session` — builds the Cookie header from a Firefox-family session store, a pasted curl
   file, or a `cookies.txt`, and asserts the `LS` cookie is present before any request. The
   source is identified by reading it, not by configuration. Both the running browser's
@@ -53,13 +57,23 @@ each with a package doc comment stating its contract:
 - `unitypackage` — reads the store descriptor from a package's gzip FEXTRA field.
 - `store` — the Asset Store client and the response-level download guards.
 - `cache` — the local mirror. Two-phase writes (`Store` → `Commit`/`Discard`), adopt by
-  scan, relocate on rename, temp sweep, root confinement. `Canonical`/`SamePath` are the
-  only correct way to compare a lockfile-recorded path against a derived one, and
-  `SameFile` is what pairs with them where the filesystem ignores case.
+  scan, relocate on rename, temp sweep, root confinement. Every path here that creates
+  directories unwinds them when it then fails, `Relocate` included, or a rename that loses
+  a race leaves an empty `<publisher>/<asset>/` in the tree quarry walks, on every run.
+  `Canonical`/`SamePath` are the only correct way to compare a lockfile-recorded path
+  against a derived one, and `SameFile` is what pairs with them where the filesystem
+  ignores case.
 - `lockfile` — `unity-sync.lock.json`, advertised fields kept apart from the embedded
-  `Resolution`, which is one type so its two write paths cannot drift.
+  `Resolution`, which is one type so its two write paths cannot drift. It is embedded
+  *last* on purpose: `encoding/json` emits an embedded struct's fields at its own index, so
+  moving it shifts every key in every entry and the next sync rewrites the whole committed
+  file.
 - `manifest` — `unity-sync.toml`, the committed allowlist keyed by asset id.
 - `syncer` — orchestration, the pure `classify`, and the semantic download guards.
+  `Classes()` and `Class.String()` must both name every class: `main` drives the whole
+  per-class tally off the first, and the second's default arm answers "unchanged", so a
+  class missing from either is reported as a no-op and dropped from a tally that still
+  counts it in the total.
 - `humanize` — byte sizes for people, clamped: the count comes from the store.
 - `web` — the `select` page.
 - `selfupdate` — the `update` subcommand.
@@ -79,7 +93,12 @@ each with a package doc comment stating its contract:
   credential.
 - **No cookie value is ever logged**, and a session store is filtered to the `unity.com`
   family inside `internal/session`. That file carries credentials for every host the
-  browsing session touched.
+  browsing session touched. Narrowing to a host is not narrowing to an account:
+  Multi-Account Containers gives a container tab its own jar, so one file can hold two `LS`
+  cookies for the same host under two Unity accounts. The default context is taken first
+  and a container fills only the names it did not supply, so a container-only sign-in still
+  resolves and a container never silently outranks the rest of the browser.
+  `Resolved.String` is `Path`, so the default way to print one is the safe one.
 - **No store client follows a redirect.** An unauthenticated download 302s to Unity's
   OAuth page. `selfupdate` is the deliberate exception: it talks to GitHub, whose asset
   API 302s to a signed CDN URL by design.
@@ -98,7 +117,11 @@ each with a package doc comment stating its contract:
   takes hours, so there is no whole-request timeout. A body that goes silent after its
   headers arrive would otherwise block the read forever: the attempt never returns, so the
   retry that would open a fresh connection never runs and the pool slot is never given up.
-  The API calls carry small JSON and are bounded end to end instead.
+  The API calls carry small JSON and are bounded end to end instead. The guard rides on the
+  body `Fetch` hands back, so a *rejected* response — whose body is drained rather than
+  abandoned, to return the connection to the pool — reads under no deadline at all; that
+  drain is bounded by the API call's own, or a captive portal that answers 200 `text/html`
+  and goes quiet wedges the run through the one door the guard is not on.
 - **`resolvedVersionId` is the diff key**, not the advertised `version.id`. The advertised
   value refreshes every run; pairing a refreshed id with an unresolved entry's file would
   mark it current forever. Two entries for one asset id are refused at load — by the
@@ -173,7 +196,9 @@ each with a package doc comment stating its contract:
 - **Only `select` writes the manifest.** `status` and `sync` read it. `manifest.Reconcile`
   refuses an owned set that is empty, and one that shares no id with what was enabled: both
   are what a wrong-org session looks like, and the select page's own would-empty guard is
-  compared against a set `Reconcile` has already rewritten.
+  compared against a set `Reconcile` has already rewritten. A second save is refused as a
+  second save, not as a stale tab: its token is current, and `Serve` has returned, so
+  telling that user to reload is both false and impossible.
 - **An update installs nothing that is not a native binary**, and it sends the GitHub
   token only to the API host it was pointed at, never to a URL a response named. The zip
   reader verifies each entry's CRC; a magic-byte check catches the other failure, a release
@@ -183,7 +208,11 @@ each with a package doc comment stating its contract:
   must never produce. The token is only an optimisation — everything read is public — so
   one the API rejects (401, 403, 404) is retried anonymously rather than failing the
   update, and `gh auth token` is asked for `github.com` by name so an enterprise-only
-  login is not sent to `api.github.com`.
+  login is not sent to `api.github.com`. That marker decides whether to retry and never what
+  to report: only one of the three statuses ever means "this credential", so a 404 for a
+  version that was never tagged is reported as a 404. CI refuses a `uses:` naming a tag, and
+  walks the whole of `.github/` rather than `workflows/`, because a local composite action's
+  own pins run in the same job.
 - **No account data in the repo.** Sessions and raw captures stay out; the
   `internal/fixtures` guard test fails the build if any reaches *any* `testdata/`, package
   local ones included. The scrub is an allowlist projected from `store.SearchDocument`, so

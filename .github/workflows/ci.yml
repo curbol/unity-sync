@@ -38,6 +38,11 @@ jobs:
 
       - run: go vet ./...
 
+      # The whole of .github/, not just workflows/: steps factored into a local composite
+      # action are referenced as `uses: ./.github/actions/<name>`, which the filter below
+      # correctly ignores — but that action's own `uses:` lines run in the same job, and a
+      # walk that stopped at workflows/ would never see them.
+      #
       # These actions run beside contents: write and id-token: write in release.yml, over
       # the workspace it attests and publishes, and `unity-sync update` installs the
       # result unattended. A tag can be repointed at any commit, so the SHA is the only
@@ -46,7 +51,7 @@ jobs:
       # until someone re-reads the YAML.
       - name: third-party actions are pinned by commit SHA
         run: |
-          unpinned=$(grep -rnE '^[[:space:]]*-?[[:space:]]*uses:[[:space:]]' .github/workflows/ \
+          unpinned=$(grep -rnE '^[[:space:]]*-?[[:space:]]*uses:[[:space:]]' .github/ \
             | grep -v 'uses: \./' | grep -vE '@[0-9a-f]{40}([[:space:]]|$)' || true)
           if [ -n "$unpinned" ]; then
             echo "these actions name a tag or branch; pin each to a 40-character commit SHA:"

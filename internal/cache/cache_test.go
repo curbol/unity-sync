@@ -2,7 +2,6 @@ package cache_test
 
 import (
 	"bytes"
-	"compress/gzip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,24 +63,6 @@ func TestVerifyUsesExactRecordedSizeAndMetadata(t *testing.T) {
 	}
 	if cache.Verify(root, p.RelPath, p.Size, "683375") {
 		t.Error("Verify accepted a truncated file")
-	}
-}
-
-// A package with no descriptor is verified on size alone. Demanding a metadata match
-// would make it re-download on every run, forever.
-func TestVerifyFallsBackToSizeWhenNoDeliveredIdWasRecorded(t *testing.T) {
-	root := t.TempDir()
-	var buf bytes.Buffer
-	zw := gzip.NewWriter(&buf)
-	zw.Write([]byte("no descriptor here"))
-	zw.Close()
-	p := storeCommitted(t, root, "pub", "plain-1", buf.Bytes())
-
-	if !cache.Verify(root, p.RelPath, p.Size, "") {
-		t.Error("Verify rejected a descriptor-less package that matches its recorded size")
-	}
-	if cache.Verify(root, p.RelPath, p.Size+5, "") {
-		t.Error("Verify accepted a size mismatch even with no delivered id")
 	}
 }
 

@@ -488,9 +488,15 @@ func TestAdoptRelocatesACandidateFoundOffTheDerivedPath(t *testing.T) {
 }
 
 // A lost lockfile makes every owned asset ask the adopt question at once, and the answer
-// comes from one shared scan of the library rather than a walk per asset. Sharing it is
-// where a mix-up would show: an index keyed or reused wrongly hands an asset another
-// product's file, and adoption is the one route that skips the download guards.
+// comes from one shared scan of the library rather than a walk per asset. Probing per
+// asset is quadratic exactly when adoption matters most — every owned asset asking, over
+// a library that already holds them all — and the outcome is identical either way, so
+// only a count sees the difference.
+//
+// Sharing the scan is also where a mix-up would show: an index keyed or reused wrongly
+// hands an asset another product's file, and adoption is the one route that skips the
+// download guards. Both halves are asserted here over one fixture, so a count cannot go
+// on passing against a run that quietly stopped adopting anything.
 func TestOneScanServesEveryAdoptionInARun(t *testing.T) {
 	root, lockPath := newRun(t)
 	var owned []model.Asset
@@ -500,6 +506,7 @@ func TestOneScanServesEveryAdoptionInARun(t *testing.T) {
 		// Each under a stale slug, so every one of them needs the scan and a relocation.
 		place(t, root, a.PublisherSlug(), "old-slug-"+id, pkg(t, id, "v1", 500))
 	}
+	scans := countScans(t)
 
 	fs := &fakeStore{owned: owned}
 	rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, opts(root, allSelected(owned...)))
@@ -508,6 +515,13 @@ func TestOneScanServesEveryAdoptionInARun(t *testing.T) {
 	}
 	if len(fs.fetched) != 0 {
 		t.Errorf("adoption downloaded %v", fs.fetched)
+	}
+	// Counted here rather than in a second test over an identical fixture, so the count
+	// and the adoptions it is a count *of* cannot drift apart: probing per asset is
+	// quadratic exactly when adoption matters most, and a fixture that stopped adopting
+	// would make a passing count mean nothing.
+	if *scans != 1 {
+		t.Errorf("walked the library %d times for %d adoptions, want 1", *scans, len(owned))
 	}
 	for _, a := range owned {
 		_, e, ok := rep.Lockfile.FindByAssetID(a.ID)
@@ -938,35 +952,6 @@ func countVerifies(t *testing.T) *int {
 	return &n
 }
 
-// One walk of the library serves every adopt probe in a run. Probing per asset is
-// quadratic exactly when adoption matters most — a lost lockfile makes every owned asset
-// ask, over a library that already holds them all — and the outcome is identical either
-// way, so only a count sees the difference.
-func TestTheLibraryIsWalkedOncePerRunAtMost(t *testing.T) {
-	root, lockPath := newRun(t)
-	var owned []model.Asset
-	for _, id := range []string{"1", "2", "3", "4"} {
-		a := asset(id, "Asset "+id, "v1", 500)
-		owned = append(owned, a)
-		place(t, root, a.PublisherSlug(), "old-slug-"+id, pkg(t, id, "v1", 500))
-	}
-	scans := countScans(t)
-
-	fs := &fakeStore{owned: owned}
-	rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, opts(root, allSelected(owned...)))
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	for _, a := range owned {
-		if _, e, ok := rep.Lockfile.FindByAssetID(a.ID); !ok || !e.Tracked {
-			t.Fatalf("asset %s was not adopted, so the count below proves nothing", a.ID)
-		}
-	}
-	if *scans != 1 {
-		t.Errorf("walked the library %d times for %d adoptions, want 1", *scans, len(owned))
-	}
-}
-
 // The ordinary run is the one that must not pay for the walk: everything is current,
 // nothing asks to adopt, and the scan is built on first use precisely so it never happens.
 func TestARunThatAdoptsNothingNeverWalksTheLibrary(t *testing.T) {
@@ -1211,6 +1196,89 @@ func TestDroppedAssetsAreReportedInAStableOrder(t *testing.T) {
 
 // The dry-run test proves the sweep is gated; nothing proved it happens. Deleting the
 // SweepTemps call from Run left the whole suite green.
+// The other sweep, which nothing reached through Run. Save writes a temp beside the
+// lockfile once per resolved asset, so a large sync spends hundreds of windows between the
+// create and the rename; a kill inside one leaves the temp in the directory the user
+// commits, and nothing else would ever remove it. Deleting the call from Run, or moving it
+// out from under the dry-run gate so `status` starts deleting, both left the whole suite
+// green before this existed.
+func TestARealRunSweepsTheLockfilesOwnTemps(t *testing.T) {
+	for _, dry := range []bool{false, true} {
+		name := "sync"
+		if dry {
+			name = "status"
+		}
+		t.Run(name, func(t *testing.T) {
+			root, lockPath := newRun(t)
+			a := asset("1", "Asset", "v1", 500)
+			dir := filepath.Dir(lockPath)
+
+			stale := filepath.Join(dir, ".unity-sync-lock-stale")
+			if err := os.WriteFile(stale, []byte("{}"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// Older than the run start, which opts() pins to 2023-11-14.
+			old := time.Unix(1600000000, 0)
+			if err := os.Chtimes(stale, old, old); err != nil {
+				t.Fatal(err)
+			}
+			// One the sweep must spare either way: a concurrent run's write, in flight.
+			live := filepath.Join(dir, ".unity-sync-lock-live")
+			if err := os.WriteFile(live, []byte("{}"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			o := opts(root, allSelected(a))
+			o.DryRun = dry
+			fs := &fakeStore{owned: []model.Asset{a}, bodies: map[string][]byte{"1": pkg(t, "1", "v1", 500)}}
+			if _, err := Run(context.Background(), fs, lockfile.New(), lockPath, o); err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+
+			_, err := os.Stat(stale)
+			switch {
+			case dry && err != nil:
+				t.Error("a read-only command deleted a lockfile temp")
+			case !dry && !os.IsNotExist(err):
+				t.Error("the abandoned lockfile temp survived the run")
+			}
+			if _, err := os.Stat(live); err != nil {
+				t.Errorf("a temp newer than the run start was swept: %v", err)
+			}
+		})
+	}
+}
+
+// Classes drives the whole per-class tally in main, and String's default arm answers
+// "unchanged" for anything it does not name. A class added to classify but to neither of
+// them is reported as a no-op and dropped from the tally while still counting toward the
+// total, so the summary's lines stop summing and nothing fails. Dropping Undownloadable
+// from Classes left the whole suite green before this existed.
+func TestEveryClassIsListedAndNamed(t *testing.T) {
+	listed := map[Class]int{}
+	for _, c := range Classes() {
+		listed[c]++
+	}
+	names := map[string]Class{}
+	for c := Unchanged; c <= Undownloadable; c++ {
+		switch n := listed[c]; {
+		case n == 0:
+			t.Errorf("class %d (%q) is missing from Classes(), so the summary would omit it "+
+				"from the tally while still counting it in the total", c, c)
+		case n > 1:
+			t.Errorf("class %d (%q) is listed %d times in Classes()", c, c, n)
+		}
+		if first, dup := names[c.String()]; dup {
+			t.Errorf("classes %d and %d both stringify to %q, so String's default arm is "+
+				"swallowing one of them", first, c, c.String())
+		}
+		names[c.String()] = c
+	}
+	if len(Classes()) != int(Undownloadable)+1 {
+		t.Errorf("Classes() has %d entries for %d classes", len(Classes()), int(Undownloadable)+1)
+	}
+}
+
 func TestARealRunSweepsAbandonedTemps(t *testing.T) {
 	root, lockPath := newRun(t)
 	a := asset("1", "Asset", "v1", 500)

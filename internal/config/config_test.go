@@ -240,6 +240,41 @@ func TestMalformedConfigIsAnError(t *testing.T) {
 // decoded, and the manifest already refuses those. Silence is more expensive here:
 // `library-path` for `library_path` mirrors tens of gigabytes into the default directory
 // with no diagnostic at all.
+// main goes to real trouble to tell "typed 0" from "not supplied" for --concurrency,
+// because zero is not a number of simultaneous downloads. overlay's `> 0` merge guard
+// cannot make that distinction, so the same value written here used to fall through to the
+// built-in default with no diagnostic at all — the asymmetry the flag check exists to
+// remove, one level down.
+func TestAZeroConcurrencyInTheFileIsRefusedTheWayTheFlagIs(t *testing.T) {
+	for _, value := range []string{"0", "-1"} {
+		dir := t.TempDir()
+		if err := os.WriteFile(filepath.Join(dir, "config.toml"),
+			[]byte("concurrency = "+value+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		_, err := config.Load(dir, config.Flags{})
+		if err == nil {
+			t.Errorf("concurrency = %s was accepted and silently replaced by the default", value)
+			continue
+		}
+		if !strings.Contains(err.Error(), "concurrency") {
+			t.Errorf("error %q does not name the key at fault", err)
+		}
+	}
+	// An absent key stays the ordinary case rather than being read as a zero.
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("# nothing set\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(dir, config.Flags{})
+	if err != nil {
+		t.Fatalf("a config with no concurrency key was refused: %v", err)
+	}
+	if cfg.Concurrency != 2 {
+		t.Errorf("Concurrency = %d, want the built-in 2", cfg.Concurrency)
+	}
+}
+
 func TestAnUnknownConfigKeyIsRefusedRatherThanIgnored(t *testing.T) {
 	dir := t.TempDir()
 	body := "library-path = \"/mnt/big/unity\"\nconcurrency = 4\n"
@@ -348,7 +383,7 @@ func TestTheExampleConfigStillParses(t *testing.T) {
 	if cfg.LibraryPath != "/path/to/your/unity-library" {
 		t.Errorf("library_path = %q, want the path the example sets", cfg.LibraryPath)
 	}
-	// The example writes a ~-prefixed path, and expandHome resolves it against the home
+	// The example writes a ~-prefixed path, and ExpandHome resolves it against the home
 	// directory, so the suffix is the stable half.
 	if !strings.HasSuffix(cfg.SessionSource, filepath.Join("unity-sync", "session.curl")) {
 		t.Errorf("session_source = %q, want the session.curl path the example sets", cfg.SessionSource)

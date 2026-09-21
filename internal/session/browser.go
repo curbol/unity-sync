@@ -220,6 +220,15 @@ type storeCookie struct {
 	Host  string `json:"host"`
 	Name  string `json:"name"`
 	Value string `json:"value"`
+
+	// OriginAttributes carries the jar a cookie belongs to. Multi-Account Containers gives
+	// a container tab its own, so one file can hold two LS cookies for the same host under
+	// two Unity accounts. Keyed on the name alone they collapse to whichever the document
+	// happens to list last, which is a run against the other account — and Resolved.Path
+	// cannot diagnose it, because both came from the same file.
+	OriginAttributes struct {
+		UserContextID int `json:"userContextId"`
+	} `json:"originAttributes"`
 }
 
 // sessionStore is the slice of recovery.jsonlz4 this needs. Cookies sit under each window;
@@ -257,17 +266,31 @@ func fromSessionStore(raw []byte) (map[string]string, error) {
 	}
 
 	pairs := map[string]string{}
-	take := func(jar []storeCookie) {
+	take := func(jar []storeCookie, wantDefault bool) {
 		for _, c := range jar {
-			if hostMatches(c.Host) {
+			if !hostMatches(c.Host) {
+				continue
+			}
+			if (c.OriginAttributes.UserContextID == 0) != wantDefault {
+				continue
+			}
+			// First wins, so the order is the document's rather than whichever entry the
+			// walk happens to reach last.
+			if _, have := pairs[c.Name]; !have {
 				pairs[c.Name] = c.Value
 			}
 		}
 	}
-	for _, w := range store.Windows {
-		take(w.Cookies)
+	// The default context first, containers only to supply names it did not. A user signed
+	// in only inside a container still resolves, and a container tab left open against a
+	// second Unity account never silently outranks the session the rest of the browser is
+	// using.
+	for _, wantDefault := range []bool{true, false} {
+		for _, w := range store.Windows {
+			take(w.Cookies, wantDefault)
+		}
+		take(store.Cookies, wantDefault)
 	}
-	take(store.Cookies)
 
 	if len(pairs) == 0 {
 		return nil, fmt.Errorf("no %s cookies in the session store", cookieDomain)

@@ -24,6 +24,10 @@ func ForceImageLocked(t *testing.T) {
 	t.Cleanup(func() { runningImageIsLocked = prev })
 }
 
+// Token is the credential lookup, so a test can hold it to asking gh for github.com by
+// name. The anonymous fallback rescues a wrong-host token, so nothing else notices.
+var Token = token
+
 // ExecutableMagicFor reports whether this platform has a signature update checks for, so
 // a test can skip rather than assert nothing on a platform where the check is a no-op.
 func ExecutableMagicFor(goos string) ([][]byte, bool) {

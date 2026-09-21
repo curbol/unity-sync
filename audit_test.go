@@ -31,17 +31,98 @@ import (
 
 // flag.Parse stops at the first positional, so an unchecked one swallows the flags after
 // it: `sync foo --dry-run` would download.
-func TestStrayPositionalIsRejectedAndSuggestsOnly(t *testing.T) {
+//
+// The two groups are split because only sync and status consume --only. Suggesting it to
+// select or list sends the user to a flag those subcommands parse, accept and ignore — so
+// the page renders every owned asset while reading as a filtered one.
+func TestStrayPositionalIsRejected(t *testing.T) {
 	isolate(t)
-	for _, cmd := range []string{"sync", "status", "list", "select"} {
+	for cmd, wantOnly := range map[string]bool{
+		"sync": true, "status": true, "list": false, "select": false,
+	} {
 		code, err := run([]string{cmd, "some-asset", "--dry-run"})
 		if code == 0 || err == nil {
 			t.Errorf("%s with a positional = %d, %v; want a failure", cmd, code, err)
 			continue
 		}
-		if !strings.Contains(err.Error(), "--only") {
-			t.Errorf("%s: error %q does not point at --only", cmd, err)
+		if got := strings.Contains(err.Error(), "--only"); got != wantOnly {
+			t.Errorf("%s: error %q mentions --only = %v, want %v", cmd, err, got, wantOnly)
 		}
+	}
+}
+
+// manifest.Load reads an absent file as an empty allowlist rather than an error, so a
+// --manifest that names nothing selects nothing, mirrors nothing, and exits 0 — while
+// still writing a lockfile beside the path it was given. `unity-sync sync && deploy` then
+// deploys an empty library. It is the harm config.ResolveDir refuses for --config,
+// arriving through the one path flag that used to skip the rule.
+func TestAManifestPathThatNamesNothingIsRefused(t *testing.T) {
+	for _, cmd := range []string{"sync", "status", "list"} {
+		t.Run(cmd, func(t *testing.T) {
+			wd := isolate(t)
+			capture(t)
+			// A real manifest with a selected asset, so a pass here cannot be "nothing was
+			// configured anywhere".
+			project(t, wd)
+			sub := filepath.Join(wd, "cfg")
+			if err := os.MkdirAll(sub, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			typo := filepath.Join(sub, manifest.FileName)
+
+			code, err := run([]string{cmd, "--manifest", typo, "--session", sessionFile(t), "--library", t.TempDir()})
+			if code == 0 || err == nil {
+				t.Fatalf("%s with a manifest that does not exist = %d, %v; want a failure", cmd, code, err)
+			}
+			if !strings.Contains(err.Error(), "does not exist") {
+				t.Errorf("error %q does not say the manifest is not there", err)
+			}
+			if _, statErr := os.Stat(manifest.LockPath(typo)); !os.IsNotExist(statErr) {
+				t.Error("a refused run left a lockfile beside the path it refused")
+			}
+		})
+	}
+}
+
+// select creates the manifest, so the file need not exist — but the directory must, or the
+// page is served, spends the one save it accepts, answers "Saved N selection(s)", and only
+// then fails to write. The user is told their selection was kept when nothing was.
+func TestSelectRefusesAManifestDirectoryThatIsNotThere(t *testing.T) {
+	wd := isolate(t)
+	capture(t)
+	code, err := run([]string{"select", "--manifest", filepath.Join(wd, "nope", manifest.FileName)})
+	if code == 0 || err == nil {
+		t.Fatalf("select into a missing directory = %d, %v; want a failure", code, err)
+	}
+	// Refused before the session is read and before the store is asked anything.
+	if !strings.Contains(err.Error(), "--manifest") {
+		t.Errorf("error %q does not name the flag at fault", err)
+	}
+}
+
+// Every other path the CLI takes runs through the config chain so it cannot skip the "~"
+// expansion; --manifest is resolved outside that chain. Unexpanded, it names a directory
+// literally called "~", which does not exist — so without this the tilde case degrades
+// into the silent empty-allowlist run above.
+func TestAManifestPathExpandsTheTilde(t *testing.T) {
+	isolate(t)
+	capture(t)
+	// isolate redirects the home directory; the tilde has to land in that one, not in the
+	// working directory it also creates.
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(home, "game")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, manifest.FileName)
+	if err := os.WriteFile(path, []byte("[[asset]]\nid = \"115488\"\nenabled = true\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := run([]string{"list", "--manifest", "~/game/" + manifest.FileName}); code != 0 || err != nil {
+		t.Fatalf("list with a ~-prefixed manifest = %d, %v; the tilde was not expanded", code, err)
 	}
 }
 
@@ -347,6 +428,16 @@ func TestStatusAndDryRunReachClassificationAndStillWriteNothing(t *testing.T) {
 			lib := t.TempDir()
 			manifestPath := project(t, wd)
 
+			// Captured before the run, which is what makes the comparison below mean
+			// anything: read afterwards it was compared with strings.Contains against an
+			// asset id, so a re-encode through manifest.Save — entries reordered, enabled
+			// flipped, the comments stripped out of a hand-curated file — still contained
+			// it and still passed.
+			before, err := os.ReadFile(manifestPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+
 			code, err := run(append(append([]string{}, args...),
 				"--session", sessionFile(t), "--library", lib))
 			if err != nil {
@@ -363,12 +454,12 @@ func TestStatusAndDryRunReachClassificationAndStillWriteNothing(t *testing.T) {
 			if len(entries) != 0 {
 				t.Errorf("a read-only command wrote %d entries into the library", len(entries))
 			}
-			before, err := os.ReadFile(manifestPath)
+			after, err := os.ReadFile(manifestPath)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(string(before), "115488") {
-				t.Error("a read-only command rewrote the manifest")
+			if !bytes.Equal(before, after) {
+				t.Errorf("a read-only command rewrote the manifest:\nbefore %q\nafter  %q", before, after)
 			}
 		})
 	}

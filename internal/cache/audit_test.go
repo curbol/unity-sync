@@ -619,6 +619,47 @@ func TestCommitReplacesThisAssetsSupersededCopyAndSettlesItsMode(t *testing.T) {
 // Without that, an asset whose commit keeps failing leaves an empty <publisher>/<asset>/
 // behind on every attempt, in a tree quarry walks. The trigger here is the temp going
 // missing under Commit, which is what a second run sweeping with a stale clock does.
+// Relocate was the one directory-creating path here that did not unwind. MkdirAll makes
+// the destination's parents before the rename, and a rename fails with the source held
+// open — an editor, an on-access scanner, which on Windows is a refusal rather than a
+// retry — so every attempt left an empty <publisher>/<asset>/ in the tree quarry walks,
+// on every run, reported only as a per-asset warning.
+func TestAFailedRelocateUnwindsTheDirectoriesItCreated(t *testing.T) {
+	root := t.TempDir()
+	// A source that is not there is the same shape a sharing violation produces: the
+	// destination's parents are made, then the rename fails.
+	err := cache.Relocate(root, "pub/old-1/old-1.unitypackage", "pub/new-1/new-1.unitypackage")
+	if err == nil {
+		t.Fatal("Relocate accepted a source that does not exist")
+	}
+	for _, dir := range []string{
+		filepath.Join(root, "pub", "new-1"),
+		filepath.Join(root, "pub"),
+	} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("%s survived a failed relocate", dir)
+		}
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Errorf("the prune walked past the library root: %v", err)
+	}
+}
+
+// The other half: a destination directory that already held something must survive, or a
+// failed move takes a sibling asset's directory with it.
+func TestAFailedRelocateLeavesAnOccupiedDestinationDirectoryAlone(t *testing.T) {
+	root := t.TempDir()
+	storeCommitted(t, root, "pub", "sibling-2", []byte("a body"))
+	// Same publisher directory, so the prune walks up into one that is not empty.
+	err := cache.Relocate(root, "pub/old-1/old-1.unitypackage", "pub/new-1/new-1.unitypackage")
+	if err == nil {
+		t.Fatal("Relocate accepted a source that does not exist")
+	}
+	if _, err := os.Stat(filepath.Join(root, "pub", "sibling-2", "sibling-2.unitypackage")); err != nil {
+		t.Errorf("a failed relocate removed a sibling asset's directory: %v", err)
+	}
+}
+
 func TestAFailedCommitUnwindsTheDirectoriesStoreCreated(t *testing.T) {
 	root := t.TempDir()
 	p, err := cache.Store(root, "pub", "asset-1", strings.NewReader("a body"))
@@ -662,6 +703,11 @@ func TestVerifyFailsWhenARecordedDeliveredIdHasNoDescriptor(t *testing.T) {
 	}
 	if cache.Verify(root, p.RelPath, int64(len(body)), "683375") {
 		t.Error("a package with no descriptor verified against a recorded delivered id")
+	}
+	// Falling back to size does not mean falling back to nothing: the size still has to
+	// match exactly, or truncation stops being detectable for descriptor-less packages.
+	if cache.Verify(root, p.RelPath, int64(len(body))+5, "") {
+		t.Error("Verify accepted a size mismatch even with no delivered id recorded")
 	}
 }
 

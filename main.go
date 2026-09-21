@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net"
 	"os"
 	"os/signal"
@@ -123,8 +124,14 @@ func run(args []string) (int, error) {
 		return 0, nil
 	}
 	if fs.NArg() > 0 {
-		return 1, fmt.Errorf("%s takes no positional arguments (got %q); to limit assets use --only %s",
-			cmd, fs.Arg(0), fs.Arg(0))
+		// --only reaches syncOrStatus and nothing else, so suggesting it to select or list
+		// points at a flag they parse, accept and ignore: the page would render every owned
+		// asset while reading as filtered.
+		if cmd == "sync" || cmd == "status" {
+			return 1, fmt.Errorf("%s takes no positional arguments (got %q); to limit assets use --only %s",
+				cmd, fs.Arg(0), fs.Arg(0))
+		}
+		return 1, fmt.Errorf("%s takes no positional arguments (got %q)", cmd, fs.Arg(0))
 	}
 	// Beside the other input checks rather than at the point of use: --addr depends on
 	// neither the session nor the store, and refusing it later means reading the user's
@@ -251,7 +258,7 @@ func checkLoopback(addr string) error {
 // which creates it in the working directory when no ancestor has one.
 func resolveManifest(flagValue, cmd string) (string, error) {
 	if flagValue != "" {
-		return flagValue, nil
+		return namedManifest(config.ExpandHome(flagValue), cmd)
 	}
 	wd, err := os.Getwd()
 	if err != nil {
@@ -265,6 +272,41 @@ func resolveManifest(flagValue, cmd string) (string, error) {
 	}
 	return "", fmt.Errorf("no %s found in this directory or its parents; run `unity-sync select` to create one",
 		manifest.FileName)
+}
+
+// namedManifest checks a manifest path the user typed, the way config.ResolveDir checks a
+// config directory they named and for the same reason. A discovered path exists by
+// construction; a typed one can be a typo, and manifest.Load reads an absent file as an
+// empty allowlist rather than an error — so `sync --manifest <typo>` selects nothing,
+// mirrors nothing, exits 0, and still writes a lockfile into the directory it was pointed
+// at. In a script that reads as a successful sync of an empty library.
+//
+// It is also where --manifest gets the "~" expansion the other path flags get from the
+// config chain, which they go through Flags to reach.
+func namedManifest(path, cmd string) (string, error) {
+	if cmd == "select" {
+		// select creates the manifest, so the file itself need not be there yet — but the
+		// directory that would hold it must be, or the page renders, takes the one save it
+		// accepts, answers "Saved", and only then fails to write.
+		dir := filepath.Dir(path)
+		fi, err := os.Stat(dir)
+		if err != nil {
+			return "", fmt.Errorf("--manifest names %s, whose directory cannot be read: %w", path, err)
+		}
+		if !fi.IsDir() {
+			return "", fmt.Errorf("--manifest names %s, but %s is not a directory", path, dir)
+		}
+		return path, nil
+	}
+	if _, err := os.Stat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", fmt.Errorf("--manifest names %s, which does not exist; a manifest that is not "+
+				"there reads as an empty allowlist, so %s would mirror nothing and still succeed "+
+				"(run `unity-sync select` to create one)", path, cmd)
+		}
+		return "", fmt.Errorf("--manifest names %s: %w", path, err)
+	}
+	return path, nil
 }
 
 func resolveSession(cfg config.Config, configDir string) (string, error) {

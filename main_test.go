@@ -215,9 +215,24 @@ func TestStatusThenSyncThroughTheCommandLayer(t *testing.T) {
 
 	// sync downloads it and records it.
 	out.Reset()
+	// The load-bearing half of "only select writes the manifest": status not touching it
+	// is covered elsewhere, but a successful sync is the pass that actually has the
+	// manifest open, and nothing held it to leaving the file alone.
+	manifestBefore, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	code, err = syncOrStatus(context.Background(), fake, cfg, manifestPath, lockPath, "", false, false)
 	if code != 0 || err != nil {
 		t.Fatalf("sync = %d, %v", code, err)
+	}
+	manifestAfter, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(manifestBefore, manifestAfter) {
+		t.Errorf("a successful sync rewrote the manifest:\nbefore %q\nafter  %q",
+			manifestBefore, manifestAfter)
 	}
 	lf, err := lockfile.Load(lockPath)
 	if err != nil {

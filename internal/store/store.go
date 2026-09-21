@@ -121,32 +121,13 @@ const (
 	defaultRequestTimeout = 60 * time.Second
 )
 
-// Option adjusts a Client for tests.
+// Option adjusts a Client. WithBaseURL is the only one this package ships; the four that
+// shorten a timeout or a backoff exist so a test need not wait out the real value, and
+// live in export_test.go rather than on the package's surface.
 type Option func(*Client)
-
-// WithStallTimeout shortens the download body's silence budget so a test need not wait
-// out the real one.
-func WithStallTimeout(d time.Duration) Option { return func(c *Client) { c.stallTimeout = d } }
-
-// WithRequestTimeout shortens the per-call deadline the API requests carry.
-func WithRequestTimeout(d time.Duration) Option { return func(c *Client) { c.requestTimeout = d } }
 
 // WithBaseURL points the client at a test server.
 func WithBaseURL(u string) Option { return func(c *Client) { c.base = strings.TrimSuffix(u, "/") } }
-
-// WithRetryPolicy replaces the backoff policy for the API calls, so tests need not
-// sleep. It does not govern downloads: Fetch makes one attempt and the syncer owns the
-// retry, because a retried download has to reopen the cache's temp file and hasher with
-// it rather than resume into a partial one.
-func WithRetryPolicy(p retry.Policy) Option { return func(c *Client) { c.retries = p } }
-
-// WithResponseHeaderTimeout shortens the header deadline so a test can prove the
-// difference between bounding the headers and bounding the whole transfer.
-func WithResponseHeaderTimeout(d time.Duration) Option {
-	return func(c *Client) {
-		c.http.Transport.(*http.Transport).ResponseHeaderTimeout = d
-	}
-}
 
 // New builds a client for the given session Cookie header.
 //
@@ -524,8 +505,19 @@ func (c *Client) Fetch(ctx context.Context, id string) (*Download, error) {
 	}
 	// Every rejection below both drains the body and releases the context: only the one
 	// path that hands the body back passes cancel on to whoever closes it.
+	//
+	// The drain is bounded because nothing else here bounds it. This context deliberately
+	// carries no deadline, and the stall guard is installed only on the path that hands the
+	// body back — so a rejected response whose body then goes quiet blocks the read
+	// forever: Fetch never returns, the retry that would open a fresh connection never
+	// runs, and the pool slot is never given up. Cancelling before the drain instead would
+	// sever the connection rather than return it to the pool, which is what the drain is
+	// for. requestTimeout is the right bound: this is a short error body, the same class
+	// searchOnce bounds end to end.
 	reject := func(err error) (*Download, error) {
+		bound := time.AfterFunc(c.requestTimeout, cancel)
 		drain(resp)
+		bound.Stop()
 		cancel()
 		return nil, err
 	}

@@ -693,6 +693,12 @@ func Relocate(root, fromRel, toRel string) error {
 		}
 	}
 	if err := r.Rename(fromName, toName); err != nil {
+		// Unwound the way Store and Commit unwind theirs. MkdirAll has already made the
+		// destination's parents, and a rename fails with the source held open — an editor,
+		// an on-access scanner, which on Windows is a refusal rather than a retry — so
+		// without this every attempt leaves an empty <publisher>/<asset>/ in the tree
+		// quarry walks, and the move is only ever reported as a per-asset warning.
+		pruneEmptyParents(r, path.Dir(to))
 		return err
 	}
 	pruneEmptyParents(r, path.Dir(from))

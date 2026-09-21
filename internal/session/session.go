@@ -63,6 +63,13 @@ type Resolved struct {
 	Path string
 }
 
+// String is Path, so the default way to print this value is the safe one. Header is an
+// exported field holding the live session, and a %v, %+v or a wrapped error anywhere
+// downstream would otherwise carry it into a log line — the same bug this type's own
+// doc records as having shipped once already, in the two-bare-strings form. Only %#v
+// still reaches Header.
+func (r Resolved) String() string { return r.Path }
+
 // ResolveFrom turns a session source into the Cookie header for the store, and reports
 // which file the credential came from. It asserts the credential is present, whatever the
 // source, so the diagnostic names the real problem instead of leaving it to a 500. The

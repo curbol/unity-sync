@@ -91,6 +91,15 @@ The session store is read narrowly on purpose. It holds credentials for every ho
 session touched, so `internal/session` filters to the `unity.com` family before anything
 leaves the package, and no cookie value is ever logged.
 
+Narrowing to a host is not quite narrowing to an account. Gecko records each cookie's
+`originAttributes`, and Multi-Account Containers gives a container tab its own jar, so one
+file can hold two `LS` cookies for the same host under two Unity accounts. Keyed on the name
+alone they collapse to whichever the document happens to list last, and the run then
+mirrors the other account's library — which `Resolved.Path` cannot diagnose, because both
+came from the same file. The default context is taken first and a container fills only the
+names it did not supply, so a container-only sign-in still resolves and a container tab
+left open never silently outranks the session the rest of the browser is using.
+
 The `_csrf` cookie is a double-submit token required by the GraphQL endpoint only. Not
 every storefront route issues it — `/` and `/publishers/{id}` answer 200 and set nothing,
 while `/packages` answers 404 and sets it. The bootstrap route is pinned to `/packages`,
@@ -236,6 +245,16 @@ slow-but-live transfer must survive indefinitely; what it bounds is silence, not
 The failure is named `ErrStalled` rather than left as the context cancellation underneath
 it, which would read as an interrupt the user caused. It is retryable, because a fresh
 connection is exactly what fixes it.
+
+The guard rides on the body the download hands back, so it covers the accepted response and
+nothing else — and a *rejected* one still has an open body. That body is drained rather than
+abandoned, so the connection returns to the pool instead of being torn down, which means the
+rejection path reads from a response this request carries no deadline for. A proxy or a
+captive portal that answers 200 `text/html`, flushes, and then goes quiet lands exactly the
+failure above, through the one door the guard is not on: a run that prints `fetching …` and
+stops. The drain is therefore bounded by the API call's own deadline — a rejection body is
+small, and a short one is the only kind that should ever arrive there. Cancelling before the
+drain instead would sever the connection, which is the thing the drain exists to avoid.
 
 The API calls are bounded end to end instead. They carry a few kilobytes of JSON, so a
 body that stops arriving there is a server that will not finish rather than a slow link.
@@ -529,14 +548,25 @@ both read under a ceiling, so an artifact that is not one of the published zips 
 error naming the size rather than an update the kernel kills.
 
 Because the credential is only an optimisation, one the API rejects must not be worse than
-none: both readers retry anonymously on a 401, a 403 or a 404 and keep the authenticated
-error only if that fails too. An expired token left in `GITHUB_TOKEN` would otherwise kill
-the documented upgrade path with "Bad credentials", and a fine-grained one never granted
-public-repository read answers 404 — which reads as "no release exists" rather than as
-anything to do with the token. For the same reason both ask `gh` for `github.com`
-explicitly: `gh auth token` otherwise answers for whichever host is logged in, so a user
-authenticated only against their company's GitHub Enterprise would have that token sent to
-`api.github.com`.
+none: both readers retry anonymously on a 401, a 403 or a 404. That marker decides whether
+to retry and never what to report. Only one of those three statuses ever means "this
+credential", so `unity-sync update 0.2.9` for a version that was never tagged answers 404
+and must say so — reporting it as a rejected credential sends a user who has none looking
+for one, with the real cause buried behind a claim about a thing they do not have. When the
+anonymous attempt fails too, the credential is demonstrably not what is in the way, so what
+that attempt said is what gets reported. An expired token left in `GITHUB_TOKEN` would
+otherwise kill the documented upgrade path with "Bad credentials", and a fine-grained one
+never granted public-repository read answers 404 — which reads as "no release exists"
+rather than as anything to do with the token. For the same reason both ask `gh` for
+`github.com` explicitly: `gh auth token` otherwise answers for whichever host is logged in,
+so a user authenticated only against their company's GitHub Enterprise would have that
+token sent to `api.github.com`.
+
+Every third-party action is pinned by commit, and CI refuses a tag. The check walks the
+whole of `.github/`, not just `workflows/`: steps factored into a local composite action
+are referenced as `uses: ./.github/actions/<name>`, which the check ignores by design — but
+that action's own `uses:` lines run in the same job, beside `contents: write` and
+`id-token: write`, and a walk that stopped at `workflows/` would never see them.
 
 The release attests build provenance, because `update` replaces the binary on PATH
 unattended and TLS to GitHub was otherwise the only thing vouching for the bytes. The

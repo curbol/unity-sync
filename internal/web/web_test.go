@@ -134,6 +134,15 @@ func TestOnlyTheFirstSaveIsAccepted(t *testing.T) {
 		t.Errorf("second POST = %d, want %d: it must not report a save nobody reads",
 			second.Code, http.StatusConflict)
 	}
+	// A second tab of *this* run carries a token that is perfectly current, so the
+	// stale-tab wording would be false — and its advice impossible, since Serve has
+	// returned and there is no page left to reload.
+	if body := second.Body.String(); !strings.Contains(body, "another tab saved first") {
+		t.Errorf("second POST said %q, which does not say what happened", strings.TrimSpace(body))
+	}
+	if strings.Contains(second.Body.String(), "earlier run") {
+		t.Error("a second tab of this run was diagnosed as a stale tab from an earlier one")
+	}
 	select {
 	case stranded := <-h.Selection():
 		t.Errorf("a second selection %v was accepted and stranded in the channel", stranded)

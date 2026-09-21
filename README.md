@@ -126,10 +126,12 @@ unity-sync sync     # download the delta and update the lockfile
 unity-sync list     # print the current lockfile
 ```
 
-Useful flags: `--manifest <path>`, `--only <asset-slug-glob>`, `--library <dir>`,
-`--concurrency <n>`, `--verify`, `--dry-run` (makes `sync` behave like `status`),
-`--config <dir>`, `--session <file>`, `--addr <host:port>` (the `select` page's address;
-it must name an address on this machine, since the page lists everything the account owns).
+Useful flags: `--manifest <path>` (must name a manifest that exists, since an absent one
+would read as an empty allowlist and mirror nothing), `--only <asset-slug-glob>`,
+`--library <dir>`, `--concurrency <n>`, `--verify`, `--dry-run` (makes `sync` behave like
+`status`), `--config <dir>`, `--session <file>`, `--addr <host:port>` (the `select` page's
+address; it must name an address on this machine, since the page lists everything the
+account owns).
 
 ## Selecting assets
 

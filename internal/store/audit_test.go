@@ -711,6 +711,44 @@ func TestAStalledBodyFailsRatherThanBlockingForever(t *testing.T) {
 	}
 }
 
+// The stall guard is installed on the body Fetch hands back, so it covers the successful
+// download and nothing else — and this request deliberately carries no deadline, because a
+// 23 GB package legitimately takes hours. That leaves the rejection path: a response whose
+// headers are refused still has an open body, and drain reads it so the connection can go
+// back to the pool. A captive portal or a proxy that answers 200 text/html, flushes, and
+// then goes quiet would otherwise block that read forever, with exactly the blast radius
+// the stalled-download case has — Fetch never returns, the pool slot is never given up,
+// and two of them stop a run at the default concurrency with no error and no exit.
+//
+// Neither timeout the client is configured with applies here unless the drain is bounded,
+// so the short ones below prove the bound rather than the client.
+func TestAStalledBodyOnARejectedResponseDoesNotBlockForever(t *testing.T) {
+	release := make(chan struct{})
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		// Refused by the content-type guard, so the body is drained rather than returned.
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, "<html>sign in")
+		w.(http.Flusher).Flush()
+		<-release // and then nothing, without ending the response
+	}, store.WithRequestTimeout(100*time.Millisecond), store.WithStallTimeout(100*time.Millisecond))
+	defer close(release)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.Fetch(context.Background(), "1")
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Fetch accepted an HTML body as a package")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Fetch never returned; a rejected response whose body stalls still hangs the run")
+	}
+}
+
 // The other half, and the one that makes the guard safe to have: a transfer that is slow
 // but alive must not be cut off. The window resets on every read that returns bytes, so a
 // package trickling in over a poor link survives indefinitely — which is the case the

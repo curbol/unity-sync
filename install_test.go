@@ -166,6 +166,115 @@ func TestTheGitHubTokenNeverReachesACommandLine(t *testing.T) {
 	}
 }
 
+// The credential is only an optimisation — everything the installer reads is public — so
+// one the API rejects must not be worse than none. An expired PAT left in GITHUB_TOKEN, or
+// a fine-grained one never granted public-repository read, would otherwise kill the
+// documented `curl | bash` path over a variable the user has forgotten is set.
+//
+// The Go half of this is pinned by TestACredentialGitHubRejectsFallsBackToAnAnonymousRequest;
+// nothing held the shell half, so rewriting fetch() to return on a failed authenticated
+// request left every test here green.
+func TestInstallerRetriesWithoutACredentialTheApiRejects(t *testing.T) {
+	requireShell(t)
+	var anonymous int
+	srv := stubReleaseRejectingCredentials(t, installerZip(t, nativeBinary(t)), &anonymous)
+
+	home := t.TempDir()
+	// The script ends by running what it installed, which here is not a real binary, so a
+	// non-zero exit is expected. What the credential decides is everything before that.
+	out, _ := runInstaller(t, home,
+		"UNITY_SYNC_INSTALL_API="+srv.URL, "UNITY_SYNC_INSTALL_DOWNLOAD="+srv.URL,
+		"GITHUB_TOKEN=stale-token")
+
+	if anonymous == 0 {
+		t.Errorf("no unauthenticated request was made, so the rejected token was never "+
+			"retried without:\n%s", out)
+	}
+	if !strings.Contains(out, "retrying without it") {
+		t.Errorf("the fallback happened without saying so, so a user cannot tell why:\n%s", out)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".local", "bin", "unity-sync")); err != nil {
+		t.Errorf("nothing was installed, so the stale token killed the documented upgrade "+
+			"path: %v\n%s", err, out)
+	}
+}
+
+// stubReleaseRejectingCredentials answers 401 to any request carrying an Authorization
+// header and serves the release to any request without one, which is what a stale or
+// foreign token looks like against a public repository.
+func stubReleaseRejectingCredentials(t *testing.T, asset []byte, anonymous *int) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	reject := func(w http.ResponseWriter, r *http.Request) bool {
+		if r.Header.Get("Authorization") != "" {
+			http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+			return true
+		}
+		*anonymous++
+		return false
+	}
+	mux.HandleFunc("/repos/curbol/unity-sync/releases/latest", func(w http.ResponseWriter, r *http.Request) {
+		if reject(w, r) {
+			return
+		}
+		fmt.Fprint(w, `{"tag_name": "v9.9.9"}`)
+	})
+	mux.HandleFunc("/curbol/unity-sync/releases/download/", func(w http.ResponseWriter, r *http.Request) {
+		if reject(w, r) {
+			return
+		}
+		w.Write(asset)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// nativeBinary is bytes install.sh will accept as an executable for this platform.
+func nativeBinary(t *testing.T) []byte {
+	t.Helper()
+	return append(nativeMagic(t), []byte("a working binary")...)
+}
+
+// gh answers for whichever host is logged in unless one is named, so `gh auth token` alone
+// sends a user authenticated only against their company's GitHub Enterprise that token to
+// api.github.com. The anonymous retry above rescues the request, so a regression here has
+// no functional symptom at all — the argv is the only thing that can catch it.
+func TestInstallerAsksGhForGitHubComByName(t *testing.T) {
+	requireShell(t)
+	dir := t.TempDir()
+	record := filepath.Join(dir, "argv")
+	gh := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> " + record + "\nprintf 'a-token\\n'\n"
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte(gh), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// curl fails at once: this test is about how the credential was looked up, not about
+	// what happened to the request carrying it.
+	stub := strings.NewReplacer("ARGV_PATH", filepath.Join(dir, "curl-argv"),
+		"STDIN_PATH", filepath.Join(dir, "curl-stdin")).Replace(curlStub)
+	if err := os.WriteFile(filepath.Join(dir, "curl"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := exec.Command("bash", "install.sh")
+	cmd.Env = []string{
+		"HOME=" + t.TempDir(),
+		"PATH=" + dir + ":/usr/bin:/bin",
+		// Both cleared, or auth_token never reaches the gh branch.
+		"GITHUB_TOKEN=", "GH_TOKEN=",
+	}
+	cmd.CombinedOutput() // fails at the first fetch by design
+
+	argv, err := os.ReadFile(record)
+	if err != nil {
+		t.Fatalf("the installer never fell back to gh, so nothing was observed: %v", err)
+	}
+	if !strings.Contains(string(argv), "--hostname github.com") {
+		t.Errorf("gh was called as %q, without naming the host; an enterprise-only login "+
+			"would have its token sent to api.github.com", strings.TrimSpace(string(argv)))
+	}
+}
+
 // The ordinary no-credential case must say what went wrong. Every version lookup here
 // assigns from a pipeline, and under `set -euo pipefail` an unguarded one kills the
 // script before the message written for this case can print.

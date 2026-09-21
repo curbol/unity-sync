@@ -57,16 +57,14 @@ func fixture(t *testing.T, name string) string {
 	return string(raw)
 }
 
-func TestBootstrapAcceptsA404AndRequiresAToken(t *testing.T) {
+// The bootstrap route answers 404 by design — the uncached routes are the ones that issue
+// the token — so a non-2xx here is normal rather than a failure. The other half, a route
+// that answers without issuing anything, is TestABootstrapRouteThatIssuesNoTokenIsNotRetried,
+// which pins the refusal and the attempt count together.
+func TestBootstrapAcceptsA404ThatSetsTheCookie(t *testing.T) {
 	c, _ := serve(t, csrfRouter(func(w http.ResponseWriter, r *http.Request) {}))
 	if err := c.Bootstrap(context.Background()); err != nil {
 		t.Fatalf("Bootstrap on a 404-that-sets-the-cookie: %v", err)
-	}
-
-	// A response that issues no token must fail here rather than guaranteeing ErrCSRF later.
-	silent, _ := serve(t, func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNotFound) })
-	if err := silent.Bootstrap(context.Background()); err == nil {
-		t.Error("Bootstrap accepted a response that issued no _csrf cookie")
 	}
 }
 

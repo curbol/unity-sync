@@ -768,6 +768,94 @@ func TestMozLZ4ReadsBothBytesOfAMatchOffset(t *testing.T) {
 
 // writeRestingProfile lays out a profile the way Gecko leaves one after a clean exit: the
 // session in sessionstore.jsonlz4 at the profile root, and no sessionstore-backups at all.
+// Live beats resting across *roots*, not only within one. A browser closed cleanly leaves
+// a resting jar whose credential can have expired while it was shut; a browser running and
+// signed in right now has a live one. The keyword arm collects every root's live stores
+// before any root's resting ones for exactly that reason.
+//
+// The existing live-beats-resting test enters through ResolveFrom(root), which takes the
+// named arm and consults one root, so rewriting the keyword arm as the obvious per-root
+// append left the whole suite green: with Zen closed and Firefox signed in, the run would
+// resolve the stale credential and fail with an expired session while a live one sat
+// there.
+func TestALiveStoreInALaterRootBeatsARestingOneInAnEarlier(t *testing.T) {
+	home := t.TempDir()
+	redirectHome(t, home)
+
+	roots := geckoRoots()
+	if len(roots) < 2 {
+		t.Skipf("this platform has %d Gecko root(s), so cross-root ordering is not expressible", len(roots))
+	}
+	for _, r := range roots {
+		// Fatal, not Error: this plants under two of these roots, so one outside the
+		// sandbox is a write into a real browser directory rather than a wrong assertion.
+		if !strings.HasPrefix(r, home) {
+			t.Fatalf("root %q is not under the home directory", r)
+		}
+	}
+	resting := roots[0]
+	writeRestingProfile(t, resting, "p1", []storeCookie{
+		{Host: "assetstore.unity.com", Name: credentialCookie, Value: "stale"},
+	})
+	// The last root, so the order cannot come from the roots themselves.
+	running := roots[len(roots)-1]
+	live := writeProfile(t, running, "p1", []storeCookie{
+		{Host: "assetstore.unity.com", Name: credentialCookie, Value: "current"},
+	})
+	for _, root := range []string{resting, running} {
+		if err := os.WriteFile(filepath.Join(root, "profiles.ini"),
+			[]byte("[Profile0]\nName=default\nIsRelative=1\nPath=p1\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := ResolveFrom(BrowserKeyword)
+	if err != nil {
+		t.Fatalf("ResolveFrom(browser): %v", err)
+	}
+	if got.Path != live {
+		t.Errorf("read from %q, want the live store at %q: a resting jar in an earlier root "+
+			"outranked a signed-in browser in a later one", got.Path, live)
+	}
+	if !strings.Contains(got.Header, credentialCookie+"=current") {
+		t.Errorf("header carries the stale credential rather than the live one")
+	}
+}
+
+// Multi-Account Containers gives a container tab its own cookie jar, so one session store
+// can hold two LS cookies for the same host under two Unity accounts. Keyed on the name
+// alone they collapse to whichever the document lists last, which is a run against the
+// other account — and Resolved.Path cannot diagnose it, because both came from one file.
+//
+// The default context wins, and a container fills only the names it did not supply, so a
+// user signed in only inside a container still resolves.
+func TestTheDefaultContextOutranksAContainerForTheSameCookie(t *testing.T) {
+	container := storeCookie{Host: "assetstore.unity.com", Name: credentialCookie, Value: "container"}
+	container.OriginAttributes.UserContextID = 4
+	dflt := storeCookie{Host: "assetstore.unity.com", Name: credentialCookie, Value: "default"}
+
+	// Listed last, where "whichever came last wins" would have picked it.
+	pairs, err := fromSessionStore(mozlz4Stored(t, storeJSON(t, []storeCookie{dflt, container})))
+	if err != nil {
+		t.Fatalf("fromSessionStore: %v", err)
+	}
+	if pairs[credentialCookie] != "default" {
+		t.Errorf("%s = %q, want the default context's; a container tab outranked the session "+
+			"the rest of the browser is using", credentialCookie, pairs[credentialCookie])
+	}
+
+	// The other half: with no default-context cookie there is nothing to outrank, and a
+	// container-only sign-in must still work rather than being filtered away.
+	only, err := fromSessionStore(mozlz4Stored(t, storeJSON(t, []storeCookie{container})))
+	if err != nil {
+		t.Fatalf("fromSessionStore (container only): %v", err)
+	}
+	if only[credentialCookie] != "container" {
+		t.Errorf("%s = %q, want the container's; a container-only sign-in was dropped",
+			credentialCookie, only[credentialCookie])
+	}
+}
+
 func writeRestingProfile(t *testing.T, root, profile string, cookies []storeCookie) string {
 	t.Helper()
 	dir := filepath.Join(root, profile)

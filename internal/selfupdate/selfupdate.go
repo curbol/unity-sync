@@ -156,16 +156,38 @@ func (c *client) sameHost(raw string) error {
 // that way is a network failure, which is returned as itself.
 func (c *client) get(ctx context.Context, url, accept string) (*http.Response, error) {
 	resp, err := c.getWith(ctx, url, accept, c.token)
-	if err == nil || c.token == "" || !rejectedCredential(err) {
+	if err == nil || !rejectedCredential(err) {
 		return resp, err
+	}
+	if c.token == "" {
+		// The marker is a retry signal, not a diagnosis. With no credential sent there is
+		// nothing to retry and nothing to blame, and `unity-sync update 0.2.9` for a
+		// version that was never tagged must not answer "github rejected the credential"
+		// to a user who has none.
+		return nil, statusOf(err)
 	}
 	anon, anonErr := c.getWith(ctx, url, accept, "")
 	if anonErr != nil {
-		// The authenticated error is the more informative of the two, and the one that
-		// names what the user can change.
-		return nil, err
+		// Both attempts failed, so the credential is not what is in the way: report what
+		// the unauthenticated request said, which is what a user with no token at all
+		// would see. Blaming the token instead sends someone who mistyped a version
+		// looking at their GITHUB_TOKEN.
+		return nil, statusOf(anonErr)
 	}
 	return anon, nil
+}
+
+// statusOf strips the credential marker, leaving the status error getWith paired it with.
+// 401, 403 and 404 are all worth one anonymous retry, but only one of the three ever means
+// "this credential" — so the marker decides whether to retry and never what to report.
+func statusOf(err error) error {
+	var joined interface{ Unwrap() []error }
+	if errors.As(err, &joined) {
+		if parts := joined.Unwrap(); len(parts) == 2 && errors.Is(parts[0], errUnauthorized) {
+			return parts[1]
+		}
+	}
+	return err
 }
 
 // errUnauthorized marks the statuses that can mean "this credential", not "this request".

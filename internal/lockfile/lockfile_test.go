@@ -1,8 +1,10 @@
 package lockfile_test
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -135,8 +137,9 @@ func TestAdvertisedAndReceivedSizesAreSeparateFields(t *testing.T) {
 // omitempty — so the block it inspected ended at the close of the empty "publisher"
 // object, before "version", and could not contain the keys it forbade whatever Save
 // wrote. Dropping omitempty from all eight Resolution fields left the whole suite green.
-// Decoding the entry and comparing key sets is what makes the assertion real, and it
-// pins the field-order contract the Resolution embedding comment depends on besides.
+// Decoding the entry and comparing key sets is what makes the assertion real. It says
+// nothing about field *order*, because a map discards it; that half is
+// TestEntryKeysKeepTheirPlaces.
 func TestUntrackedEntriesOmitResolutionFields(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "lock.json")
 	if err := lockfile.Save(path, sample()); err != nil {
@@ -183,6 +186,90 @@ func TestUntrackedEntriesOmitResolutionFields(t *testing.T) {
 			t.Errorf("tracked entry is missing %q", field)
 		}
 	}
+}
+
+// The byte placement of every key, which the Resolution embedding exists to hold still:
+// encoding/json emits an embedded struct's fields at the embedded field's own index, so
+// moving Resolution above the advertised half shifts every key in every entry.
+//
+// Nothing else notices. TestRoundTrip compares structs and TestSaveIsByteStableAcrossRuns
+// compares two saves from the same binary, so both stay green while the first sync after
+// such a change rewrites the whole committed file — a diff touching every line of a
+// three-thousand-asset lockfile, which is the end of the "a month's diff reads like a
+// changelog" property the file exists for.
+func TestEntryKeysKeepTheirPlaces(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lock.json")
+	if err := lockfile.Save(path, sample()); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := keyOrder(raw, "quick-outline-115488")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"assetId", "name", "state", "publisher", "version", "advertisedSize",
+		"tracked", "resolvedVersionId", "deliveredVersionId", "sizeBytes",
+		"sha256", "cachePath", "downloadedAt", "storeFilename",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("entry has keys %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("entry keys are %v, want %v (the advertised half comes first and the "+
+				"resolution half follows it, in the order Resolution declares)", got, want)
+		}
+	}
+}
+
+// keyOrder reads one entry's keys in the order they were written, which is the thing a
+// map cannot answer.
+func keyOrder(raw []byte, key string) ([]string, error) {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	// Into "assets", then into the entry, then collect its field names. Every Token call
+	// below is a step down one level of a document this test just wrote.
+	depth := 0
+	var inEntry bool
+	var keys []string
+	for {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", key, err)
+		}
+		switch t := tok.(type) {
+		case json.Delim:
+			switch t {
+			case '{', '[':
+				depth++
+			case '}', ']':
+				depth--
+				if inEntry && depth == 2 {
+					return keys, nil
+				}
+			}
+		case string:
+			switch {
+			case inEntry && depth == 3:
+				keys = append(keys, t)
+				if err := skipValue(dec); err != nil {
+					return nil, err
+				}
+			case depth == 2 && t == key:
+				inEntry = true
+			}
+		}
+	}
+}
+
+// skipValue consumes the value after a key, so the next token is the following key rather
+// than something nested inside it.
+func skipValue(dec *json.Decoder) error {
+	var v json.RawMessage
+	return dec.Decode(&v)
 }
 
 // A rename changes the key by construction, so lookups that must survive one go by id.

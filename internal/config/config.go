@@ -39,7 +39,7 @@ type fileConfig struct {
 
 // Flags are the command-line overrides. They are the highest-precedence source, and they
 // are applied here rather than by the caller so that every level of the chain gets the
-// same treatment: a flag assigned after Load returned would skip expandHome, and a
+// same treatment: a flag assigned after Load returned would skip ExpandHome, and a
 // `--library '~/lib'` the shell did not expand would mirror into a directory named "~".
 type Flags struct {
 	LibraryPath   string
@@ -68,13 +68,13 @@ type Flags struct {
 // degrades where defaultLibraryPath refuses.
 func ResolveDir(flag string) (string, error) {
 	if flag != "" {
-		return named(expandHome(flag), "--config")
+		return named(ExpandHome(flag), "--config")
 	}
 	if v := os.Getenv("UNITY_SYNC_CONFIG_DIR"); v != "" {
-		return named(expandHome(v), "$UNITY_SYNC_CONFIG_DIR")
+		return named(ExpandHome(v), "$UNITY_SYNC_CONFIG_DIR")
 	}
 	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
-		return filepath.Join(expandHome(v), "unity-sync"), nil
+		return filepath.Join(ExpandHome(v), "unity-sync"), nil
 	}
 	if home, err := os.UserHomeDir(); err == nil {
 		return filepath.Join(home, ".config", "unity-sync"), nil
@@ -104,7 +104,7 @@ func named(dir, source string) (string, error) {
 // worse outcome than an error naming the four ways to say where it should go.
 func defaultLibraryPath() (string, error) {
 	if v := os.Getenv("XDG_DATA_HOME"); v != "" {
-		return filepath.Join(expandHome(v), "unity-sync"), nil
+		return filepath.Join(ExpandHome(v), "unity-sync"), nil
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -159,6 +159,14 @@ func Load(dir string, f Flags) (Config, error) {
 			}
 			return Config{}, fmt.Errorf("%s: unknown key(s): %s", path, strings.Join(keys, ", "))
 		}
+		// The refusal --concurrency already gets, for the same reason: zero is not a number
+		// of simultaneous downloads, and overlay's merge guard cannot tell a zero someone
+		// typed from a key nobody wrote. Asked of the metadata rather than the value, so an
+		// absent key stays the ordinary case.
+		if md.IsDefined("concurrency") && fc.Concurrency < 1 {
+			return Config{}, fmt.Errorf("%s: concurrency = %d is not a number of simultaneous "+
+				"downloads; set 1 or more, or remove the key to use the default", path, fc.Concurrency)
+		}
 		overlay(&c, fc)
 	}
 	if v := os.Getenv("UNITY_SYNC_LIBRARY"); v != "" {
@@ -185,8 +193,8 @@ func Load(dir string, f Flags) (Config, error) {
 		}
 		c.LibraryPath = p
 	}
-	c.LibraryPath = expandHome(c.LibraryPath)
-	c.SessionSource = expandHome(c.SessionSource)
+	c.LibraryPath = ExpandHome(c.LibraryPath)
+	c.SessionSource = ExpandHome(c.SessionSource)
 	return c, nil
 }
 
@@ -202,7 +210,7 @@ func overlay(c *Config, fc fileConfig) {
 	}
 }
 
-// expandHome resolves a leading "~", which no shell expands when the value came out of
+// ExpandHome resolves a leading "~", which no shell expands when the value came out of
 // an environment variable, a config file, or PowerShell's own tab completion.
 //
 // The separator is tested with os.IsPathSeparator rather than against "/", because the
@@ -210,7 +218,11 @@ func overlay(c *Config, fc fileConfig) {
 // Matching only "~/" leaves it alone, and the run then mirrors tens of gigabytes into a
 // directory literally named "~". On Linux a backslash is an ordinary filename character
 // and IsPathSeparator says so, so nothing changes there.
-func expandHome(p string) string {
+//
+// Exported because --manifest is resolved outside this package and has to expand the same
+// way the paths inside it do. Re-implementing it there is how one flag ends up matching
+// only "~/" while the rest match both separators.
+func ExpandHome(p string) string {
 	if p == "~" || (len(p) > 1 && p[0] == '~' && os.IsPathSeparator(p[1])) {
 		if home, err := os.UserHomeDir(); err == nil {
 			return filepath.Join(home, p[1:])

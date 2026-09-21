@@ -235,18 +235,35 @@ func curlArguments(content string) []string {
 	return args
 }
 
-// cookieArgument returns the value of a Cookie header argument in a pasted curl command.
+// cookieArgument returns the cookie string from a pasted curl command.
+//
+// Two spellings carry it, and reading only one drops exactly the credential. A browser
+// that writes the jar as a header emits `-H 'cookie: …'`; one that uses curl's own cookie
+// flag emits `-b '…'`, whose value is the cookie string itself rather than a
+// `Name: value` header. Matching only the header form leaves the paste path — the path
+// that exists for the browsers the session store cannot serve — reporting "no Cookie
+// header" for a file that plainly carries LS, which reads as "you are not signed in".
 func cookieArgument(content string) (string, bool) {
 	args := curlArguments(content)
 	for i, a := range args {
-		if !strings.EqualFold(a, "-H") && !strings.EqualFold(a, "--header") {
-			continue
-		}
 		if i+1 >= len(args) {
 			continue
 		}
-		if v, ok := cutHeader(args[i+1], "Cookie"); ok {
-			return v, true
+		switch {
+		case strings.EqualFold(a, "-H"), strings.EqualFold(a, "--header"):
+			if v, ok := cutHeader(args[i+1], "Cookie"); ok {
+				return v, true
+			}
+		case a == "-b", a == "--cookie":
+			// curl's own rule, not a guess: -b treats a value holding no "=" as the name
+			// of a cookie jar to read. A filename is not a credential, and taking one as
+			// the header would send the store the literal path.
+			//
+			// Matched case-sensitively because curl is: -B is --use-ascii, and a paste
+			// carrying it would otherwise have its next argument read as cookies.
+			if strings.Contains(args[i+1], "=") {
+				return args[i+1], true
+			}
 		}
 	}
 	return "", false

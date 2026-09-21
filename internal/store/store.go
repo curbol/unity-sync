@@ -178,10 +178,27 @@ func New(cookieHeader, version string, opts ...Option) *Client {
 }
 
 // Bootstrap obtains the _csrf token the GraphQL endpoint requires and folds it into the
-// cookie header. Its own route answers 404 by design, so a non-2xx here is normal and a
-// 3xx is not the expired-session signal it is everywhere else — but a response that
-// issues no token is a hard failure, since proceeding guarantees ErrCSRF.
+// cookie header.
+//
+// It retries on the same terms every other store call does. This is the first request a
+// run makes, so a 503 from the CDN in front of the store used to end the run before any
+// work was done — while the identical fault one call later was retried four times with
+// backoff. The failure model has no clause for "except the first request".
+//
+// What does not retry is the route answering without a token: that status is not one
+// retry.Retryable accepts, and proceeding guarantees ErrCSRF.
 func (c *Client) Bootstrap(ctx context.Context) error {
+	return retry.Do(ctx, c.retries, func(int) error { return c.bootstrapOnce(ctx) })
+}
+
+// bootstrapOnce is one attempt. search calls it directly rather than through Bootstrap,
+// because a mid-flight re-bootstrap is deliberately worth exactly one more go: the token
+// can expire between the bootstrap and the call that uses it, but a route that has just
+// stopped issuing will not start again inside one backoff schedule.
+//
+// Its own route answers 404 by design, so a non-2xx here is normal and a 3xx is not the
+// expired-session signal it is everywhere else.
+func (c *Client) bootstrapOnce(ctx context.Context) error {
 	// Bounded end to end, unlike a download: this route answers with a short page, so a
 	// body that goes quiet here is a server that will not finish rather than a slow link.
 	ctx, cancel := context.WithTimeout(ctx, c.requestTimeout)
@@ -206,7 +223,13 @@ func (c *Client) Bootstrap(ctx context.Context) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("csrf bootstrap: %s issued no _csrf cookie (status %d)", csrfRoute, resp.StatusCode)
+	err = fmt.Errorf("csrf bootstrap: %s issued no _csrf cookie (status %d)", csrfRoute, resp.StatusCode)
+	// A 5xx or a 429 here is the store not answering yet, which is what backoff is for.
+	// Anything else is the route itself, and a second identical request says the same.
+	if retry.Retryable(resp.StatusCode) {
+		return err
+	}
+	return retry.Permanent(err)
 }
 
 // Enumerate walks every page of owned assets. It compares the raw row count against the
@@ -351,7 +374,7 @@ func (c *Client) search(ctx context.Context, vars map[string]any) (searchResult,
 		// mismatch is a real problem and is reported.
 		if errors.Is(err, ErrCSRF) && !csrfRetried {
 			csrfRetried = true
-			if boot := c.Bootstrap(ctx); boot != nil {
+			if boot := c.bootstrapOnce(ctx); boot != nil {
 				// Wrapped, not swallowed: "csrf token mismatch" sends the user looking at
 				// the token, when what actually happened is that the bootstrap route
 				// stopped issuing one.

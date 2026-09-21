@@ -135,8 +135,19 @@ func run(args []string) (int, error) {
 			return 2, err
 		}
 	}
+	// A zero is how the config chain spells "not supplied", so it cannot also mean the
+	// number the user typed: --concurrency 0 would otherwise run at the configured
+	// default and say nothing. flag.Int alone cannot tell the two apart, so ask the
+	// FlagSet which flags were actually visited.
+	if flagSet(fs, "concurrency") && *concurrency < 1 {
+		return 2, fmt.Errorf("--concurrency %d is not a number of simultaneous downloads; "+
+			"pass 1 or more, or omit it to use the configured default", *concurrency)
+	}
 
-	configDir := config.ResolveDir(*cfgDir)
+	configDir, err := config.ResolveDir(*cfgDir)
+	if err != nil {
+		return 1, err
+	}
 	cfg, err := config.Load(configDir, config.Flags{
 		LibraryPath:   *library,
 		SessionSource: *sessionFlag,
@@ -186,6 +197,19 @@ func run(args []string) (int, error) {
 		return 0, nil
 	}
 	return syncOrStatus(ctx, client, cfg, manifestPath, lockPath, *only, *verify, cmd == "status" || *dryRun)
+}
+
+// flagSet reports whether a flag was given on the command line, as opposed to holding its
+// zero default. flag.Value cannot answer that for a numeric flag whose zero is also a
+// meaningful thing to type.
+func flagSet(fs *flag.FlagSet, name string) bool {
+	var seen bool
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			seen = true
+		}
+	})
+	return seen
 }
 
 // checkLoopback refuses a select address that is not this machine's own.
@@ -382,6 +406,14 @@ func printReport(w io.Writer, rep syncer.Report, dry bool, libraryPath string) {
 		if r.Err != nil {
 			fmt.Fprintf(w, "failed: %s: %v\n", r.Asset.Name, r.Err)
 		}
+	}
+	// A permanently gone asset is reported and then deliberately left out of the exit
+	// status, or one dead product would fail every run forever. Without this line the
+	// summary prints "failed:" and the command exits 0, which reads as a tool that gave
+	// up and lied about it rather than as the one outcome re-running cannot change.
+	if rep.Permanent > 0 {
+		fmt.Fprintf(w, "%d of those are permanent: the store no longer serves those bytes, "+
+			"so another run will not fix them and they do not fail this one\n", rep.Permanent)
 	}
 	// One line, not one per asset. An expired session cancels the pool with hundreds of
 	// assets still queued, and naming each as its own failure buries the one line that

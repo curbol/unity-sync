@@ -17,6 +17,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -503,15 +504,32 @@ type Index struct {
 // Nothing here fails. An unreadable subtree, a file whose header will not parse, or a root
 // that does not exist yet on a first run simply yields no candidate, and the caller falls
 // back to a download, where the full set of guards applies.
+//
+// The walk goes through the root's own FS rather than over the path, because
+// filepath.WalkDir begins with an Lstat and stops at anything that is not a directory:
+// point library_path at a symlink — reasonable for a 75 GB mirror, and what a Windows
+// junction is — and it visits the link, descends nothing, and returns an empty index.
+// Every other operation here keeps working, since os.OpenRoot resolves the link like any
+// other directory, so the failure is silent: adoption finds nothing and re-downloads the
+// whole library, a delisted asset already on disk is reported unavailable, and abandoned
+// temps are never reclaimed. fs.WalkDir stats "." through the FS instead, so the case
+// cannot arise. A symlinked directory *inside* the library is still not descended, which
+// is the behaviour the confinement rule depends on.
 func Scan(ctx context.Context, root string) *Index {
 	ix := &Index{root: root, byProduct: map[string][]Candidate{}}
-	filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+	rt, err := os.OpenRoot(root)
+	if err != nil {
+		return ix
+	}
+	defer rt.Close()
+
+	fs.WalkDir(rt.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		// A header parse per package over a 75 GB library is long enough that a run
 		// cancelled here would otherwise go on reading for minutes after being told to
 		// stop. A short index is safe: a candidate the walk never reached is one the
 		// caller falls back to downloading, where the full set of guards applies.
 		if ctx.Err() != nil {
-			return filepath.SkipAll
+			return fs.SkipAll
 		}
 		if err != nil || d.IsDir() {
 			return nil
@@ -520,7 +538,7 @@ func Scan(ctx context.Context, root string) *Index {
 		if strings.HasPrefix(name, ".") || !strings.HasSuffix(name, packageExt) {
 			return nil
 		}
-		m, err := unitypackage.ReadFile(p)
+		m, err := descriptorAt(rt, p)
 		if err != nil || m.ID == "" {
 			return nil
 		}
@@ -528,15 +546,24 @@ func Scan(ctx context.Context, root string) *Index {
 		if err != nil {
 			return nil
 		}
-		rel, err := filepath.Rel(root, p)
-		if err != nil {
-			return nil
-		}
+		// fs.WalkDir already yields a slash-separated path relative to the root, which
+		// is the spelling a lockfile records.
 		ix.byProduct[m.ID] = append(ix.byProduct[m.ID],
-			Candidate{RelPath: filepath.ToSlash(rel), Size: fi.Size(), Metadata: m})
+			Candidate{RelPath: p, Size: fi.Size(), Metadata: m})
 		return nil
 	})
 	return ix
+}
+
+// descriptorAt reads one candidate's store descriptor through the root, so a package that
+// is itself a symlink out of the library is refused rather than followed and indexed.
+func descriptorAt(rt *os.Root, rel string) (unitypackage.Metadata, error) {
+	f, err := rt.Open(filepath.FromSlash(rel))
+	if err != nil {
+		return unitypackage.Metadata{}, err
+	}
+	defer f.Close()
+	return unitypackage.Read(f)
 }
 
 // Find returns a package whose own metadata claims the given product id. It answers from
@@ -708,14 +735,24 @@ func pruneEmptyParents(rt *os.Root, relDir string) {
 // Nothing here fails: a subtree that cannot be read, or a root that does not exist yet on
 // a first run, is skipped. One unreadable directory must not stop a 75 GB mirror over a
 // housekeeping pass.
+//
+// It walks and deletes through the root for the reason Scan walks through it: over a path,
+// a symlinked library_path stops the walk at the link and reclaims nothing, silently, on
+// exactly the libraries big enough to be moved onto another disk.
 func SweepTemps(ctx context.Context, root string, olderThan time.Time) (int, int64) {
 	var count int
 	var bytes int64
-	filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+	rt, err := os.OpenRoot(root)
+	if err != nil {
+		return 0, 0
+	}
+	defer rt.Close()
+
+	fs.WalkDir(rt.FS(), ".", func(p string, d fs.DirEntry, err error) error {
 		// Housekeeping, so a cancelled run stops here rather than finishing a walk of the
 		// whole library first. Whatever is left is swept by the next run.
 		if ctx.Err() != nil {
-			return filepath.SkipAll
+			return fs.SkipAll
 		}
 		if err != nil {
 			return nil
@@ -727,7 +764,7 @@ func SweepTemps(ctx context.Context, root string, olderThan time.Time) (int, int
 		if err != nil || !fi.ModTime().Before(olderThan) {
 			return nil
 		}
-		if os.Remove(p) == nil {
+		if rt.Remove(filepath.FromSlash(p)) == nil {
 			count++
 			bytes += fi.Size()
 		}

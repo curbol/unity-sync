@@ -84,6 +84,56 @@ func storeJSON(t *testing.T, cookies []storeCookie) []byte {
 	return raw
 }
 
+// redirectHome points every input geckoRoots reads at a sandbox directory.
+//
+// Three variables, not one: os.UserHomeDir reads HOME on Unix and USERPROFILE on Windows,
+// and geckoRootsFor takes %APPDATA% separately because it is a known folder that Folder
+// Redirection can move off the profile entirely. Setting only the first two leaves the
+// Windows roots pointing at the real %APPDATA%, where a test that plants a profile
+// overwrites the profiles.ini of whichever browser is installed there.
+func redirectHome(t *testing.T, home string) {
+	t.Helper()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+}
+
+// Two tests below plant a profile under a root geckoRoots hands back, so every root has
+// to be inside the sandbox on every platform — not just the one running the suite.
+//
+// This is the assertion that was missing. geckoRoots reads three variables and the tests
+// redirected two, so on Windows alone the roots came back under the real %APPDATA%: the
+// prefix check failed, and because it was an Errorf the test carried on and overwrote the
+// profiles.ini of whichever Gecko browser was installed there. A run on Linux or macOS
+// could never see it, since both of those branches are built from the home directory.
+func TestRedirectingTheHomeDirectoryMovesEveryRootIntoTheSandbox(t *testing.T) {
+	home := t.TempDir()
+	redirectHome(t, home)
+
+	roots := geckoRoots()
+	if len(roots) == 0 {
+		t.Fatal("geckoRoots is empty on this platform, so the browser keyword can never work")
+	}
+	for _, r := range roots {
+		if !strings.HasPrefix(r, home) {
+			t.Errorf("root %q escapes the redirected home %q", r, home)
+		}
+	}
+
+	// Every platform, not only the one running the suite. The branch that broke was
+	// Windows', which no Linux or macOS run can reach through geckoRoots — so the value
+	// redirectHome sets is fed to each branch directly, and a redirection that covers the
+	// running platform and not the others fails here rather than on one CI leg.
+	appData := os.Getenv("APPDATA")
+	for _, goos := range []string{"windows", "darwin", "linux"} {
+		for _, r := range geckoRootsFor(goos, home, appData) {
+			if !strings.HasPrefix(r, home) {
+				t.Errorf("%s root %q escapes the redirected home %q", goos, r, home)
+			}
+		}
+	}
+}
+
 // writeProfile lays out a Gecko root the way a real install does.
 func writeProfile(t *testing.T, root, profile string, cookies []storeCookie) string {
 	t.Helper()
@@ -475,17 +525,19 @@ func TestMozLZ4RefusesAZeroMatchOffset(t *testing.T) {
 // itself unexercised, including whether a platform's branch names paths that can exist.
 func TestTheBrowserKeywordFindsAProfileUnderAKnownRoot(t *testing.T) {
 	home := t.TempDir()
-	// os.UserHomeDir reads a different variable per platform, so both are set.
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	redirectHome(t, home)
 
 	roots := geckoRoots()
 	if len(roots) == 0 {
 		t.Fatal("geckoRoots is empty on this platform, so the browser keyword can never work")
 	}
 	for _, r := range roots {
+		// Fatal, not Error: this test plants a profile under the last root it is given,
+		// so a root outside the sandbox is not a wrong assertion to record and carry on
+		// from — it is a write into the real browser directory the loop just named.
 		if !strings.HasPrefix(r, home) {
-			t.Errorf("root %q is not under the home directory", r)
+			t.Fatalf("root %q is not under the home directory, so planting under it would "+
+				"write outside the test sandbox", r)
 		}
 	}
 	// Planted under the last root, so finding it also proves the sweep does not stop at
@@ -514,13 +566,18 @@ func TestTheBrowserKeywordFindsAProfileUnderAKnownRoot(t *testing.T) {
 // the run would report a profile the user never pointed at.
 func TestANamedSourceNeverFallsThroughToAnotherBrowser(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
+	redirectHome(t, home)
 
 	// A perfectly good profile under a known root, which must not be reached.
 	roots := geckoRoots()
 	if len(roots) == 0 {
 		t.Skip("no gecko roots on this platform")
+	}
+	// Planted under a real browser root otherwise: this test writes a decoy profile and a
+	// profiles.ini under roots[0], and on Windows that is %APPDATA%\zen.
+	if !strings.HasPrefix(roots[0], home) {
+		t.Fatalf("root %q is not under the home directory, so planting the decoy under it "+
+			"would write outside the test sandbox", roots[0])
 	}
 	decoy := writeProfile(t, roots[0], "signed-in", []storeCookie{
 		{Host: "assetstore.unity.com", Name: credentialCookie, Value: "decoy"},

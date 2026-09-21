@@ -28,22 +28,73 @@ func isolate(t *testing.T) string {
 	return home
 }
 
+// resolveDir is ResolveDir where the directory is expected to resolve. The two named
+// sources refuse one that is not there, so a test asserting precedence has to supply
+// directories that exist; the fallbacks are not checked and need none.
+func resolveDir(t *testing.T, flag string) string {
+	t.Helper()
+	dir, err := config.ResolveDir(flag)
+	if err != nil {
+		t.Fatalf("ResolveDir(%q): %v", flag, err)
+	}
+	return dir
+}
+
+func mkdir(t *testing.T, path string) string {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
 func TestResolveDirPrecedence(t *testing.T) {
 	home := isolate(t)
 
-	if got, want := config.ResolveDir(""), filepath.Join(home, ".config", "unity-sync"); got != want {
+	if got, want := resolveDir(t, ""), filepath.Join(home, ".config", "unity-sync"); got != want {
 		t.Errorf("bare default = %q, want %q", got, want)
 	}
 	t.Setenv("XDG_CONFIG_HOME", "/xdg")
-	if got, want := config.ResolveDir(""), filepath.Join("/xdg", "unity-sync"); got != want {
+	if got, want := resolveDir(t, ""), filepath.Join("/xdg", "unity-sync"); got != want {
 		t.Errorf("XDG_CONFIG_HOME = %q, want %q", got, want)
 	}
-	t.Setenv("UNITY_SYNC_CONFIG_DIR", "/envdir")
-	if got := config.ResolveDir(""); got != "/envdir" {
-		t.Errorf("UNITY_SYNC_CONFIG_DIR = %q, want /envdir (env beats XDG)", got)
+	envDir := mkdir(t, filepath.Join(t.TempDir(), "envdir"))
+	flagDir := mkdir(t, filepath.Join(t.TempDir(), "flagdir"))
+	t.Setenv("UNITY_SYNC_CONFIG_DIR", envDir)
+	if got := resolveDir(t, ""); got != envDir {
+		t.Errorf("UNITY_SYNC_CONFIG_DIR = %q, want %q (env beats XDG)", got, envDir)
 	}
-	if got := config.ResolveDir("/flagdir"); got != "/flagdir" {
-		t.Errorf("flag = %q, want /flagdir (flag beats env)", got)
+	if got := resolveDir(t, flagDir); got != flagDir {
+		t.Errorf("flag = %q, want %q (flag beats env)", got, flagDir)
+	}
+}
+
+// A config directory the user named and misspelled is the likeliest spelling of the one
+// mistake this package already refuses three other ways. Absent, it reads as "no config
+// here", so library_path is dropped and the run mirrors tens of gigabytes into the
+// default directory, said out loud only by the summary line printed after the download
+// pass has finished.
+func TestANamedConfigDirThatIsNotThereIsRefused(t *testing.T) {
+	isolate(t)
+	missing := filepath.Join(t.TempDir(), "unity-snyc")
+
+	if _, err := config.ResolveDir(missing); err == nil {
+		t.Error("a --config naming a directory that does not exist was accepted")
+	} else if !strings.Contains(err.Error(), missing) {
+		t.Errorf("error %q does not name the directory", err)
+	}
+
+	t.Setenv("UNITY_SYNC_CONFIG_DIR", missing)
+	if _, err := config.ResolveDir(""); err == nil {
+		t.Error("a $UNITY_SYNC_CONFIG_DIR naming a directory that does not exist was accepted")
+	}
+
+	// The fallbacks are a different case: no config file is the ordinary first run, and
+	// refusing there would make the tool unusable until a directory is created by hand.
+	t.Setenv("UNITY_SYNC_CONFIG_DIR", "")
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(t.TempDir(), "nothing-here"))
+	if _, err := config.ResolveDir(""); err != nil {
+		t.Errorf("the XDG fallback refused a directory that does not exist yet: %v", err)
 	}
 }
 
@@ -150,11 +201,13 @@ func TestTildeExpandsFromEverySource(t *testing.T) {
 
 	t.Run("config dir", func(t *testing.T) {
 		home := isolate(t)
-		if got, want := config.ResolveDir("~/cfg"), filepath.Join(home, "cfg"); got != want {
+		mkdir(t, filepath.Join(home, "cfg"))
+		mkdir(t, filepath.Join(home, "envcfg"))
+		if got, want := resolveDir(t, "~/cfg"), filepath.Join(home, "cfg"); got != want {
 			t.Errorf("ResolveDir(flag) = %q, want %q", got, want)
 		}
 		t.Setenv("UNITY_SYNC_CONFIG_DIR", "~/envcfg")
-		if got, want := config.ResolveDir(""), filepath.Join(home, "envcfg"); got != want {
+		if got, want := resolveDir(t, ""), filepath.Join(home, "envcfg"); got != want {
 			t.Errorf("ResolveDir($UNITY_SYNC_CONFIG_DIR) = %q, want %q", got, want)
 		}
 	})

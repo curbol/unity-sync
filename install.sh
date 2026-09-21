@@ -27,10 +27,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# auth_token finds a GitHub credential, which is optional: the releases this reads are
+# public, and a token buys only the authenticated rate limit.
+#
+# --hostname github.com because `gh auth token` otherwise answers for the default host,
+# which is $GH_HOST or whichever single host is logged in. A user authenticated only
+# against their company's GitHub Enterprise would have that token sent to api.github.com,
+# where it is worth nothing and fails the request that would have succeeded without it.
 auth_token() {
   local token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
   if [[ -z "$token" ]] && command -v gh >/dev/null 2>&1; then
-    token=$(gh auth token 2>/dev/null || true)
+    token=$(gh auth token --hostname github.com 2>/dev/null || true)
   fi
   printf '%s' "$token"
 }
@@ -44,10 +51,15 @@ fetch() {
   local url="$1"; shift
   local token; token=$(auth_token)
   if [[ -n "$token" ]]; then
-    printf 'header = "Authorization: token %s"\n' "$token" | curl -fsSL -K - "$@" "$url"
-  else
-    curl -fsSL "$@" "$url"
+    if printf 'header = "Authorization: token %s"\n' "$token" | curl -fsSL -K - "$@" "$url"; then
+      return 0
+    fi
+    # A stale or foreign credential is worse than none: the release is public, so the
+    # same request unauthenticated succeeds. Failing here would kill the install over an
+    # environment variable the user has forgotten is set.
+    err "the GitHub token in the environment was rejected; retrying without it"
   fi
+  curl -fsSL "$@" "$url"
 }
 
 detect_platform() {

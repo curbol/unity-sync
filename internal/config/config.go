@@ -53,24 +53,47 @@ type Flags struct {
 // it comes out of an environment variable, so each one is expanded here rather than
 // reaching filepath as a directory literally named "~".
 //
+// A directory the user named has to exist; one this function fell back to does not. That
+// asymmetry is the whole reason provenance is settled here rather than in Load, which sees
+// only a string. An absent config is the ordinary first-run case, so Load treats it as
+// nothing to read — and a misspelled --config is indistinguishable from it, which drops
+// library_path and mirrors tens of gigabytes into the default directory, announced only by
+// the "library:" line the summary prints once the download pass is over. It is the same
+// harm the unreadable-file and unknown-key checks in Load already refuse, arriving by the
+// likeliest route of the three.
+//
 // With no home and no XDG variable it falls back to a relative "unity-sync". That only
 // ever decides where an optional file is looked for, so a wrong answer costs a config
 // that is not found rather than data written somewhere unintended, which is why this one
 // degrades where defaultLibraryPath refuses.
-func ResolveDir(flag string) string {
+func ResolveDir(flag string) (string, error) {
 	if flag != "" {
-		return expandHome(flag)
+		return named(expandHome(flag), "--config")
 	}
 	if v := os.Getenv("UNITY_SYNC_CONFIG_DIR"); v != "" {
-		return expandHome(v)
+		return named(expandHome(v), "$UNITY_SYNC_CONFIG_DIR")
 	}
 	if v := os.Getenv("XDG_CONFIG_HOME"); v != "" {
-		return filepath.Join(expandHome(v), "unity-sync")
+		return filepath.Join(expandHome(v), "unity-sync"), nil
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".config", "unity-sync")
+		return filepath.Join(home, ".config", "unity-sync"), nil
 	}
-	return "unity-sync"
+	return "unity-sync", nil
+}
+
+// named checks a config directory the user chose. Load's own "not a directory" message
+// covers the file case, so this one is only about a path that is not there at all.
+func named(dir, source string) (string, error) {
+	if _, err := os.Stat(dir); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", fmt.Errorf("%s names %s, which does not exist; "+
+				"a config directory that is not there reads as no config at all, so "+
+				"library_path and session_source would both be silently ignored", source, dir)
+		}
+		return "", fmt.Errorf("%s names %s: %w", source, dir, err)
+	}
+	return dir, nil
 }
 
 // defaultLibraryPath is $XDG_DATA_HOME/unity-sync, else ~/.local/share/unity-sync. App

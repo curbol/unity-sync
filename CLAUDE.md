@@ -36,7 +36,11 @@ each with a package doc comment stating its contract:
 
 - `model` — domain types and the identity rules. Carries `id` (the store product id) and
   deliberately not `productId`, which is a different value no endpoint accepts.
-- `config` — user settings by precedence: defaults → `config.toml` → env → flags.
+- `config` — user settings by precedence: defaults → `config.toml` → env → flags. A config
+  dir the user named (`--config`, `$UNITY_SYNC_CONFIG_DIR`) must exist; the XDG and
+  `~/.config` fallbacks need not, since no config file is the ordinary first run. Absent,
+  the two are indistinguishable, and a misspelled one silently drops `library_path` and
+  mirrors tens of gigabytes into the default directory.
 - `session` — builds the Cookie header from a Firefox-family session store, a pasted curl
   file, or a `cookies.txt`, and asserts the `LS` cookie is present before any request. The
   source is identified by reading it, not by configuration. Both the running browser's
@@ -69,7 +73,10 @@ each with a package doc comment stating its contract:
   Gecko session store, which is what makes the browser source possible. A pasted curl
   command is unquoted the way the shell it was copied for quoted it — POSIX, ANSI-C
   `$'…'`, and the Windows cmd form with its `^"` wrapper and caret escapes — because
-  matching one quote style drops the credential from the others.
+  matching one quote style drops the credential from the others. The flag is read the same
+  way: both `-H 'cookie: …'` and curl's own `-b '…'`, whose value is the cookie string
+  rather than a header, and where a value holding no `=` is a jar filename and not a
+  credential.
 - **No cookie value is ever logged**, and a session store is filtered to the `unity.com`
   family inside `internal/session`. That file carries credentials for every host the
   browsing session touched.
@@ -78,6 +85,12 @@ each with a package doc comment stating its contract:
   API 302s to a signed CDN URL by design.
 - **`store.Fetch` marks its own sentinels permanent.** A pulled asset and an expired
   session must not be retried by a caller that did not think to convert them.
+- **Every store call retries on the same terms, the bootstrap included.** It is the first
+  request a run makes, so a 5xx there would otherwise end the run before any work was done
+  while the identical fault one call later gets a full schedule. A route that answers
+  *without* a token is not retried: that status is not retryable and proceeding guarantees
+  `ErrCSRF`. The mid-run re-bootstrap stays deliberately single-shot, which is why `search`
+  calls `bootstrapOnce` rather than `Bootstrap`.
 - **Downloads ask for `Accept-Encoding: identity`.** The endpoint honours gzip by
   gzipping the already-gzipped package, and Go will not decode an encoding the caller
   requested.
@@ -122,12 +135,21 @@ each with a package doc comment stating its contract:
   about symlinks, with the write as the permissive side, so a symlinked publisher directory
   was writable and then unreadable and the asset re-downloaded in full forever, reported
   only as `cache-missing`. `pruneEmptyParents` goes through the root too, or walking up
-  removes the user's link and leaves the directory it pointed at.
+  removes the user's link and leaves the directory it pointed at. `Scan` and `SweepTemps`
+  walk `rt.FS()` rather than the path for a different reason: `filepath.WalkDir` opens with
+  an `Lstat` and stops at anything that is not a directory, so a `library_path` that is
+  itself a symlink — a Windows junction included — made both visit the link and descend
+  nothing, silently, while every other operation kept working. A symlinked directory
+  *inside* the library is still not descended, which is the half the write gate relies on.
 - **The lockfile is rewritten as each asset resolves, in every pass.** Not only the
   downloads: the classification pass relocates and deletes whole packages, so a run that
   adopts and fetches nothing would otherwise ride on one closing write. Lose it and the
   library has moved while the record names the old path with a digest that no longer
-  matches, which the next run reads as `Unchanged` and carries forward.
+  matches, which the next run reads as `Unchanged` and carries forward. The flush before
+  the rename is what makes that record durable, and `syncFile` is indirected so a test can
+  hold `Save` to it: nothing observable distinguishes a save that skipped it until the
+  machine loses power. A kill between the create and the rename orphans a temp in the
+  directory the user commits, so a run sweeps those alongside the cache's.
 - **Nothing unverified reaches a real cache path.** `cache.Store` does not rename;
   `Commit` does, after the syncer's guards pass. `Store` also refuses every path a later
   read would refuse — one `Canonical` will not resolve, and one that leaves the library
@@ -158,7 +180,10 @@ each with a package doc comment stating its contract:
   that shipped an error page or the wrong artifact under the right name. It runs *before*
   the rename, in `selfupdate` and in `install.sh` alike, because past that point the
   working binary is gone and leaving nothing usable on PATH is the one outcome an updater
-  must never produce.
+  must never produce. The token is only an optimisation — everything read is public — so
+  one the API rejects (401, 403, 404) is retried anonymously rather than failing the
+  update, and `gh auth token` is asked for `github.com` by name so an enterprise-only
+  login is not sent to `api.github.com`.
 - **No account data in the repo.** Sessions and raw captures stay out; the
   `internal/fixtures` guard test fails the build if any reaches *any* `testdata/`, package
   local ones included. The scrub is an allowlist projected from `store.SearchDocument`, so

@@ -121,3 +121,19 @@ func TestAWindowsPasteIsNeverMisreportedAsACookiesTxt(t *testing.T) {
 		t.Errorf("a curl paste was diagnosed as a cookies.txt: %v", err)
 	}
 }
+
+// -b takes either a cookie string or the name of a jar file to read, and curl tells them
+// apart by whether the value holds an "=". Reading a filename as the cookie string sends
+// the store a Cookie header whose whole content is a path, which comes back as the same
+// opaque 500 a missing LS does — so the one diagnostic the user can act on is replaced by
+// one that points at the server.
+func TestACookieJarFilenameIsNotReadAsTheCredential(t *testing.T) {
+	body := `curl 'https://assetstore.unity.com/' -b cookies.txt`
+	_, err := session.ResolveFrom(write(t, "session.curl", body))
+	if err == nil {
+		t.Fatal("a -b naming a jar file resolved as though it were a cookie string")
+	}
+	if strings.Contains(err.Error(), "cookies.txt") && !strings.Contains(err.Error(), "Cookie") {
+		t.Errorf("the filename was carried into the diagnostic as a credential: %v", err)
+	}
+}

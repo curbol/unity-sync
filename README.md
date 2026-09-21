@@ -41,7 +41,10 @@ Two kinds of state, kept apart:
 
 - **User config** (session, machine defaults) lives *outside* any project, resolved as
   `--config <dir>` › `$UNITY_SYNC_CONFIG_DIR` › `$XDG_CONFIG_HOME/unity-sync` ›
-  `~/.config/unity-sync`.
+  `~/.config/unity-sync`. The first two have to exist if you set them: a directory that is
+  not there is indistinguishable from having no config, so a misspelled one would silently
+  drop `library_path` and mirror into the default location. The fallbacks need not exist,
+  because having no config file at all is the ordinary first run.
 
   ```bash
   mkdir -p ~/.config/unity-sync
@@ -87,7 +90,9 @@ are not supported.
 
 **Otherwise, paste a session.** In DevTools → Network, right-click any
 `assetstore.unity.com` request → Copy → Copy as cURL, and save the whole thing verbatim —
-no extracting values, no escaping:
+no extracting values, no escaping. Every shell's quoting is understood, and so is either
+way a browser writes the cookies, as a `-H 'cookie: …'` header or as curl's own
+`-b '…'` flag:
 
 ```bash
 $EDITOR ~/.config/unity-sync/session.curl     # paste, save

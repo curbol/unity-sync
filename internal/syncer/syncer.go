@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"path/filepath"
 	"sort"
 	"sync"
 	"time"
@@ -33,14 +34,22 @@ const sweepGrace = time.Minute
 var ErrEmptyLibrary = errors.New("the store reported no owned assets while the lockfile holds entries; " +
 	"refusing to treat that as the truth (check which Unity organisation the session belongs to)")
 
-// scanLibrary and verifyDeep are indirected so a test can count the calls. What has to
-// hold about these two is their cost, not their result, and a counter is the only thing
-// that notices: a scan per adopt probe is quadratic exactly when adoption matters most,
-// and a second deep verify of the same file doubles the cost of re-hashing 75 GB. Both
-// regressions leave every assertion about outcomes green.
+// scanLibrary, verifyDeep and saveLockfile are indirected so a test can observe the calls
+// themselves. What has to hold about all three is not their result but when and how often
+// they run, and only a counter notices: a scan per adopt probe is quadratic exactly when
+// adoption matters most, a second deep verify of the same file doubles the cost of
+// re-hashing 75 GB, and two saves overlapping means the write left the critical section
+// that keeps the last writer's snapshot the newest one. Every such regression leaves each
+// assertion about outcomes green.
+//
+// saveLockfile earns the indirection the hard way. Watching the directory for temp files
+// was the previous answer, and it could not see the regression it existed for: with the
+// save moved out from under mu the sampler simply never landed inside the window, so the
+// test passed having observed nothing at all.
 var (
-	scanLibrary = cache.Scan
-	verifyDeep  = cache.VerifyDeep
+	scanLibrary  = cache.Scan
+	verifyDeep   = cache.VerifyDeep
+	saveLockfile = lockfile.Save
 )
 
 // Class is one asset's outcome for this run.
@@ -285,6 +294,11 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		if n > 0 {
 			opts.Progress(fmt.Sprintf("reclaimed %d abandoned download(s), %s", n, humanize.Bytes(freed)))
 		}
+		// The lockfile's own temps, which land in the directory the user commits. Save
+		// unlinks its own on every error path, but a kill between the create and the
+		// rename cannot, and Save runs once per resolved asset. Same backdated cutoff, so
+		// a concurrent run's in-flight write survives.
+		lockfile.SweepTemps(filepath.Dir(lockPath), started.Add(-sweepGrace))
 	}
 
 	// One index for the whole run: the classification loop below and every build() the
@@ -313,7 +327,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		mu.Lock()
 		defer mu.Unlock()
 		resolutions[assetID] = r
-		return lockfile.Save(lockPath, build(owned, prior, priorByID, resolutions, nil))
+		return saveLockfile(lockPath, build(owned, prior, priorByID, resolutions, nil))
 	}
 
 	// One scan of the library serves every adopt probe below, built on first use and only
@@ -407,10 +421,21 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 				break
 			}
 			r, err := adopt(ctx, opts, a, found, derived, excludeRel)
-			if err != nil {
+			switch {
+			case err != nil && ctx.Err() != nil && errors.Is(err, context.Canceled):
+				// The run's outcome, not the asset's, and recorded the way the pool
+				// records the assets it never reached. adopt hashes the whole package —
+				// up to 23 GB, and context-aware precisely so an interrupt lands inside
+				// it — so this is where a Ctrl-C during a large adoption comes back.
+				// Counted as a failure it prints "failed: <name>: context canceled",
+				// which reads as a corrupt package rather than as the interrupt the user
+				// just typed.
+				res.NotAttempted = true
+				report.NotAttempted++
+			case err != nil:
 				res.Err = err
 				report.Retryable++
-			} else {
+			default:
 				// Same rule the download branch applies: the entry's own prior copy is
 				// superseded by what just landed at the derived path, and nothing else
 				// will ever mention it again — the summary names only assets that left
@@ -542,7 +567,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 	}
 
 	report.Lockfile = build(owned, prior, priorByID, resolutions, &report)
-	if err := lockfile.Save(lockPath, report.Lockfile); err != nil {
+	if err := saveLockfile(lockPath, report.Lockfile); err != nil {
 		return report, err
 	}
 	return report, nil

@@ -2,11 +2,13 @@ package lockfile_test
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/curbol/unity-sync/internal/lockfile"
 )
@@ -288,5 +290,128 @@ func TestTwoEntriesForOneAssetAreRefused(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("diagnostic %q does not name %q", err, want)
 		}
+	}
+}
+
+// The flush is what makes a run's per-asset progress survive a crash: Save runs once per
+// resolved asset precisely so a kill at asset 90 of 100 keeps the 89, and bytes still in
+// the page cache when the rename returns are exactly the record that loses.
+//
+// Nothing observable distinguishes a Save that skipped it on a machine that stays up, so
+// deleting the call left every other assertion in this package green. Ordering is checked
+// by reading the destination from inside the flush: before the rename it still holds the
+// previous save.
+func TestSaveFlushesBeforeItRenames(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unity-sync.lock.json")
+	first := lockfile.New()
+	first.Assets["a-1"] = lockfile.Entry{AssetID: "1", Name: "A"}
+	if err := lockfile.Save(path, first); err != nil {
+		t.Fatal(err)
+	}
+
+	second := lockfile.New()
+	second.Assets["b-2"] = lockfile.Entry{AssetID: "2", Name: "B"}
+
+	var calls int
+	var atFlush string
+	restore := lockfile.StubSync(func(f *os.File) error {
+		calls++
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Errorf("reading the destination during the flush: %v", err)
+		}
+		atFlush = string(raw)
+		return f.Sync()
+	})
+	defer restore()
+
+	if err := lockfile.Save(path, second); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Fatalf("Save flushed %d times, want 1: without it the rename can outrun the bytes", calls)
+	}
+	if !strings.Contains(atFlush, `"assetId": "1"`) || strings.Contains(atFlush, `"assetId": "2"`) {
+		t.Error("the destination already held the new content when the flush ran, so the " +
+			"rename happened first and the flush no longer protects anything")
+	}
+}
+
+// A flush that fails is a write that did not reach the disk, so it has to fail the save
+// rather than be renamed into place, and it must not leave its temp in a directory the
+// user commits.
+func TestAFailedFlushLeavesNeitherANewLockfileNorATemp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "unity-sync.lock.json")
+	first := lockfile.New()
+	first.Assets["a-1"] = lockfile.Entry{AssetID: "1", Name: "A"}
+	if err := lockfile.Save(path, first); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	restore := lockfile.StubSync(func(*os.File) error { return errors.New("disk went away") })
+	defer restore()
+	second := lockfile.New()
+	second.Assets["b-2"] = lockfile.Entry{AssetID: "2", Name: "B"}
+	if err := lockfile.Save(path, second); err == nil {
+		t.Fatal("Save reported success after the flush failed")
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Error("a failed flush still replaced the committed lockfile")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.Name() != "unity-sync.lock.json" {
+			t.Errorf("a failed flush left %q beside the lockfile", e.Name())
+		}
+	}
+}
+
+// Every error path in Save unlinks its own temp, but a SIGKILL or a power loss between
+// the create and the rename cannot — and Save runs once per resolved asset, so a large
+// sync spends a lot of windows there. Nothing else would ever remove them, and they land
+// in the directory the user commits.
+func TestSweepTempsReclaimsWhatAKilledRunLeftBehind(t *testing.T) {
+	dir := t.TempDir()
+	orphan := filepath.Join(dir, ".unity-sync-lock-123456")
+	live := filepath.Join(dir, ".unity-sync-lock-inflight")
+	keep := filepath.Join(dir, "unity-sync.lock.json")
+	for _, p := range []string{orphan, live, keep} {
+		if err := os.WriteFile(p, []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(orphan, old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	if n := lockfile.SweepTemps(dir, time.Now().Add(-time.Hour)); n != 1 {
+		t.Errorf("swept %d temps, want 1", n)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Error("the orphaned temp survived the sweep")
+	}
+	if _, err := os.Stat(live); err != nil {
+		t.Error("the sweep removed a temp newer than the cutoff, i.e. a concurrent run's write")
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Error("the sweep removed the lockfile itself")
+	}
+	// A directory that does not exist yet is the first-run case, not an error.
+	if n := lockfile.SweepTemps(filepath.Join(dir, "nope"), time.Now()); n != 0 {
+		t.Errorf("swept %d temps from a missing directory", n)
 	}
 }

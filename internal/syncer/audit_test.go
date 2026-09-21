@@ -10,7 +10,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
 	"time"
 
@@ -280,60 +280,52 @@ func TestLockfileSavesNeverOverlap(t *testing.T) {
 	root, lockPath := newRun(t)
 	owned, bodies := manyAssets(t, 60)
 
-	var overlapped atomic.Bool
-	lockDir := filepath.Dir(lockPath)
-	sample := func() {
-		entries, err := os.ReadDir(lockDir)
-		if err != nil {
-			return
+	// Observed at the call, not by watching the directory for temp files. The previous
+	// version sampled the lock directory every 50 microseconds and reported success
+	// whenever it saw fewer than two temps — including when it saw none at all, which is
+	// what actually happened: moving the save out from under mu left it green on every
+	// run. A counter around the call itself cannot miss the window, and the sleep widens
+	// any overlap that does exist rather than hoping to land inside one.
+	var mu sync.Mutex
+	var inFlight, peak int
+	restore := saveLockfile
+	t.Cleanup(func() { saveLockfile = restore })
+	saveLockfile = func(path string, lf lockfile.Lockfile) error {
+		mu.Lock()
+		inFlight++
+		if inFlight > peak {
+			peak = inFlight
 		}
-		var inFlight int
-		for _, e := range entries {
-			// lockfile.TempPrefix, not a copy of it: a literal here goes stale silently
-			// when Save's prefix changes, and this watcher then counts nothing, finds no
-			// overlap, and passes forever without observing a single write.
-			if strings.HasPrefix(e.Name(), lockfile.TempPrefix) {
-				inFlight++
-			}
-		}
-		if inFlight > 1 {
-			overlapped.Store(true)
-		}
+		mu.Unlock()
+		time.Sleep(time.Millisecond)
+		err := restore(path, lf)
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+		return err
 	}
 
-	fs := &fakeStore{owned: owned, bodies: bodies, beforeFetch: func(int) { sample() }}
+	fs := &fakeStore{owned: owned, bodies: bodies}
 	o := opts(root, allSelected(owned...))
 	o.Concurrency = 12
-
-	done, polled := make(chan struct{}), make(chan struct{})
-	go func() {
-		defer close(polled)
-		for {
-			select {
-			case <-done:
-				return
-			default:
-				sample()
-				// A save spans a write, an fsync and a rename, so sampling every few
-				// tens of microseconds still lands inside one many times over. Spinning
-				// without it burns a core and contends on the directory being watched.
-				time.Sleep(50 * time.Microsecond)
-			}
-		}
-	}()
 
 	if _, err := Run(context.Background(), fs, lockfile.New(), lockPath, o); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	close(done)
-	<-polled
 
-	if overlapped.Load() {
-		t.Error("two lockfile saves were in flight at once: the write is no longer in the " +
-			"same critical section as the map update, so a stale snapshot can land last")
+	mu.Lock()
+	gotPeak := peak
+	mu.Unlock()
+	// The positive control. Without it the assertion below passes whenever nothing was
+	// saved at all, which is the failure mode the old watcher had.
+	if gotPeak == 0 {
+		t.Fatal("no lockfile save was observed, so the overlap check proves nothing")
 	}
-	// The run still has to have left a complete record, or the check above passed only
-	// because nothing was written.
+	if gotPeak > 1 {
+		t.Errorf("%d lockfile saves were in flight at once: the write is no longer in the "+
+			"same critical section as the map update, so a stale snapshot can land last", gotPeak)
+	}
+	// The run still has to have left a complete record.
 	saved, err := lockfile.Load(lockPath)
 	if err != nil {
 		t.Fatal(err)
@@ -1566,5 +1558,134 @@ func TestBelowFloorHoldsItsBoundaries(t *testing.T) {
 				t.Errorf("belowFloor(%d, %d) = %v, want %v", tc.received, tc.adverted, got, tc.want)
 			}
 		})
+	}
+}
+
+// status and sync --dry-run relocate nothing and write nothing. The Unchanged branch is
+// the one mutating path a dry run can reach that neither existing dry-run test covers:
+// both of those start from an empty lockfile, so their asset classifies Adopted or New
+// and the relocation is never selected. Deleting the !opts.DryRun from that gate left the
+// whole suite green while making status move a package on disk and rewrite the lockfile.
+func TestDryRunDoesNotRelocateARenamedAsset(t *testing.T) {
+	root, lockPath := newRun(t)
+	// Renamed since the last run, so the derived slug no longer matches the recorded
+	// path and the Unchanged branch has a move to make.
+	renamed := asset("2", "New Name", "v1", 500)
+	oldRel := cache.RelPath(renamed.PublisherSlug(), "old-name-2")
+	p := place(t, root, renamed.PublisherSlug(), "old-name-2", pkg(t, "2", "v1", 500))
+
+	prior := lockfile.New()
+	prior.Assets["old-name-2"] = lockfile.Entry{
+		AssetID: "2", Name: "Old Name",
+		Version: lockfile.Version{ID: "v1"},
+		Resolution: lockfile.Resolution{
+			Tracked:           true,
+			ResolvedVersionID: "v1", DeliveredVersionID: "v1",
+			SizeBytes: p.Size, SHA256: p.SHA256, CachePath: oldRel,
+		},
+	}
+
+	before := treeSnapshot(t, root)
+	o := opts(root, allSelected(renamed))
+	o.DryRun = true
+	rep, err := Run(context.Background(), &fakeStore{owned: []model.Asset{renamed}}, prior, lockPath, o)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// The class the rest of this test assumes. A fixture that stopped producing it would
+	// leave every assertion below passing for the wrong reason.
+	if len(rep.Results) != 1 || rep.Results[0].Class != Unchanged {
+		t.Fatalf("asset classified %v, want Unchanged so the relocation is on the path", rep.Results)
+	}
+	if after := treeSnapshot(t, root); after != before {
+		t.Errorf("a dry run moved a package on disk:\nbefore %s\nafter  %s", before, after)
+	}
+	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
+		t.Error("a dry run wrote the lockfile")
+	}
+}
+
+// The republish discriminator is a re-read of the product, and either half of it settles
+// the question on its own: a publisher can push a build that keeps the advertised size or
+// one that keeps the version id. The single case that reached this check moved both, so
+// deleting either clause left the suite green — and dropping the size clause is the one
+// that matters, since a size-only republish is the case the design names as the reason
+// this is a re-query rather than an id comparison.
+func TestEitherHalfOfARepublishExcusesAShortBody(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		fresh model.Asset
+	}{
+		{"the version id moved", asset("1", "A", "v2", 4000)},
+		{"only the advertised size moved", asset("1", "A", "v1", 9000)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, lockPath := newRun(t)
+			a := asset("1", "A", "v1", 4000)
+			fs := &fakeStore{
+				owned: []model.Asset{a},
+				// Well under the floor, which without a republish verdict fails the asset.
+				bodies:  map[string][]byte{"1": pkg(t, "1", "v1", 100)},
+				lookups: map[string]model.Asset{"1": tc.fresh},
+			}
+			rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, opts(root, allSelected(a)))
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if rep.Failed() {
+				t.Errorf("a republish mid-download failed the run: %+v", rep.Results[0].Err)
+			}
+			if !strings.Contains(rep.Results[0].Warning, "republished") {
+				t.Errorf("warning %q does not report a republish", rep.Results[0].Warning)
+			}
+			if _, e, _ := rep.Lockfile.FindByAssetID("1"); e.Tracked {
+				t.Error("the short body was recorded as this asset's truth")
+			}
+		})
+	}
+}
+
+// An interrupt during the classification pass is the run's outcome, not the asset's. adopt
+// hashes the whole package — up to 23 GB, and context-aware precisely so a Ctrl-C lands
+// inside it — so this is where the cancellation surfaces. Counted as a per-asset failure
+// it prints "failed: <name>: context canceled", which reads as a corrupt package rather
+// than as the interrupt the user just typed, and the pool already reclassifies the
+// identical shape.
+func TestAnInterruptDuringAnAdoptionIsNotAnAssetFailure(t *testing.T) {
+	root, lockPath := newRun(t)
+	a := asset("1", "A", "v1", 500)
+	place(t, root, a.PublisherSlug(), a.Slug(), pkg(t, "1", "v1", 500))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// Cancel between the loop's own context check and adopt: the scan is reached from
+	// inside classify, which is past the top-of-loop break and before anything moves.
+	restore := scanLibrary
+	t.Cleanup(func() { scanLibrary = restore })
+	scanLibrary = func(c context.Context, r string) *cache.Index {
+		ix := restore(c, r)
+		cancel()
+		return ix
+	}
+
+	rep, err := Run(ctx, &fakeStore{owned: []model.Asset{a}}, lockfile.New(), lockPath, opts(root, allSelected(a)))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(rep.Results) != 1 || rep.Results[0].Class != Adopted {
+		t.Fatalf("asset classified %+v, want Adopted so the interrupt lands inside adopt", rep.Results)
+	}
+	if rep.Results[0].Err != nil {
+		t.Errorf("an interrupt was reported as an asset failure: %v", rep.Results[0].Err)
+	}
+	if rep.Retryable != 0 {
+		t.Errorf("Retryable = %d, want 0: an interrupt is not something a re-run fixes "+
+			"about this asset", rep.Retryable)
+	}
+	if rep.NotAttempted != 1 {
+		t.Errorf("NotAttempted = %d, want 1", rep.NotAttempted)
+	}
+	if !rep.Failed() {
+		t.Error("an interrupted run exited zero")
 	}
 }

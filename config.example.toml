@@ -4,7 +4,9 @@
 #   cp config.example.toml ~/.config/unity-sync/config.toml
 #
 # Config dir resolution: --config <dir> > $UNITY_SYNC_CONFIG_DIR >
-# $XDG_CONFIG_HOME/unity-sync > ~/.config/unity-sync.
+# $XDG_CONFIG_HOME/unity-sync > ~/.config/unity-sync. The first two must exist when set:
+# a directory that is not there reads as no config at all, which would drop every setting
+# below without a word. The fallbacks may be absent, since that is the first-run case.
 #
 # This file is user-scoped: session and machine defaults. Which assets a project mirrors
 # is project-scoped and lives in unity-sync.toml instead.

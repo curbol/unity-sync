@@ -903,3 +903,63 @@ func TestAFailedReBootstrapStillReportsACSRFMismatch(t *testing.T) {
 			"one failed re-bootstrap, and no retry after it", issued, posts)
 	}
 }
+
+// The half of the timeout rule that says what *is* bounded. A download carries no
+// whole-request deadline by design, so before the first byte arrives this is the only
+// thing standing between the run and a server that accepts the connection and never
+// answers: the request context has no deadline and the stall guard is not installed until
+// the headers are back. Two such connections at the default concurrency stop a run with
+// no error and no exit.
+//
+// Pinned because every test that exercises the header deadline passes
+// WithResponseHeaderTimeout to its own client, so all of them prove the option and none
+// of them proves the default. Deleting the line in New left the suite green.
+func TestTheSharedClientBoundsTheResponseHeaders(t *testing.T) {
+	if d := store.ResponseHeaderTimeout(store.New("LS=x", "test")); d <= 0 {
+		t.Errorf("transport.ResponseHeaderTimeout = %v, want a positive bound: without one a "+
+			"server that never sends headers blocks the download forever, before the stall "+
+			"guard exists to catch it", d)
+	}
+}
+
+// The bootstrap is the first request a run makes, and it used to be the one store call
+// with no retry: a 502 from the CDN ended the run before any work was done, while the
+// same fault one call later got a full backoff schedule. The failure model has no clause
+// for "except the first request".
+func TestATransientBootstrapFailureIsRetried(t *testing.T) {
+	var attempts int
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		// One bad gateway, then the token. A run that gives up on the first is a run
+		// that never reaches enumeration.
+		if attempts == 1 {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{Name: "_csrf", Value: "issued-token", Path: "/"})
+		w.WriteHeader(http.StatusNotFound)
+	})
+	if err := c.Bootstrap(context.Background()); err != nil {
+		t.Fatalf("Bootstrap gave up on a transient failure: %v", err)
+	}
+	if attempts != 2 {
+		t.Errorf("bootstrap made %d attempts, want 2", attempts)
+	}
+}
+
+// The other half: a route that answers but issues no token is not a transient fault, and
+// retrying it spends a full backoff schedule to arrive at the same answer. Its own 404 is
+// the normal case, which is exactly why the status cannot be what decides here.
+func TestABootstrapRouteThatIssuesNoTokenIsNotRetried(t *testing.T) {
+	var attempts int
+	c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+		attempts++
+		w.WriteHeader(http.StatusNotFound)
+	})
+	if err := c.Bootstrap(context.Background()); err == nil {
+		t.Fatal("a bootstrap that issued no token was reported as success")
+	}
+	if attempts != 1 {
+		t.Errorf("bootstrap made %d attempts against a route that is not issuing, want 1", attempts)
+	}
+}

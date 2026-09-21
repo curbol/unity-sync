@@ -106,6 +106,14 @@ func TestEveryCurlPasteSpellingYieldsTheSameHeader(t *testing.T) {
 		{"posix continuation", "curl 'https://assetstore.unity.com/' \\\n  -H 'Cookie: " + cookie + "'\n"},
 		// ANSI-C quoting is what a POSIX copy switches to when a value holds a quote.
 		{"ansi-c quoted", `curl 'https://assetstore.unity.com/' -H $'Cookie: ` + cookie + `'`},
+		// The jar can arrive as curl's own cookie flag rather than as a header, and its
+		// value is the cookie string with no "Cookie:" prefix to cut. Reading only the
+		// header spelling drops the credential from every paste written this way, and
+		// the table varied quoting exhaustively while varying the flag not at all.
+		{"cookie flag", `curl 'https://assetstore.unity.com/' -b '` + cookie + `'`},
+		{"cookie flag long", `curl 'https://assetstore.unity.com/' --cookie '` + cookie + `'`},
+		{"cookie flag double-quoted", `curl "https://assetstore.unity.com/" -b "` + cookie + `"`},
+		{"cookie flag cmd caret-wrapped", "curl.exe ^\"https://assetstore.unity.com/^\" ^\n  -b ^\"" + cookie + "^\"\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := session.ResolveFrom(write(t, "session.curl", tc.body))

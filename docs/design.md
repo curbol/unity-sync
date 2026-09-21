@@ -79,6 +79,14 @@ value as written hands the store a credential with carets in it, which comes bac
 same opaque 500 a missing `LS` does. A value is never unescaped where the shell does not
 escape, so a cookie that genuinely contains a caret survives as itself.
 
+The flag carrying the jar varies too, and reading one spelling drops the credential from
+the other exactly as reading one quote style does. A browser that writes the jar as a
+header emits `-H 'cookie: …'`; one that uses curl's own cookie flag emits `-b '…'`, whose
+value *is* the cookie string rather than a `Name: value` header. Both are read. `-b` also
+accepts the name of a jar file to read instead of a cookie string, and curl tells the two
+apart by whether the value holds an `=`, so this does too: taking a filename as the
+credential would send the store a Cookie header whose whole content is a path.
+
 The session store is read narrowly on purpose. It holds credentials for every host the
 session touched, so `internal/session` filters to the `unity.com` family before anything
 leaves the package, and no cookie value is ever logged.
@@ -87,6 +95,15 @@ The `_csrf` cookie is a double-submit token required by the GraphQL endpoint onl
 every storefront route issues it — `/` and `/publishers/{id}` answer 200 and set nothing,
 while `/packages` answers 404 and sets it. The bootstrap route is pinned to `/packages`,
 treats its own 404 as normal, and is exempt from the redirect rule below.
+
+It retries on the same terms every other call does. It is the first request a run makes,
+so a 502 from the CDN in front of the store would otherwise end the run before any work
+was done, while the identical fault one call later got a full backoff schedule — the
+failure model has no clause for "except the first request". What does not retry is the
+route answering *without* a token: that status is not one the retry rule accepts, and
+proceeding from there guarantees a CSRF mismatch. The re-bootstrap that happens mid-run,
+when a token expires between the bootstrap and the call using it, is still deliberately
+worth exactly one more attempt and no schedule.
 
 `x-requested-with: XMLHttpRequest` decides the *shape* of a failure: with it, a failed call
 answers with the JSON error that carries the diagnosis; without it, the same call answers
@@ -321,6 +338,20 @@ paths, so the asset fails once with an error naming the segment that is a link. 
 has no `CreateTemp`, so the cache does that job through it; the library root itself is
 still created outside the root, because a first run has none to open.
 
+The two whole-tree walks go through the root as well, and for a reason that has nothing to
+do with escaping it: `filepath.WalkDir` opens with an `Lstat` and stops at anything that is
+not a directory, so a `library_path` that is itself a symlink — the same move, one level
+up, and what a Windows junction reports as — made both of them visit the link and descend
+nothing. Everything else kept working, since `os.Root` resolves a symlinked root like any
+other directory, which is what made it silent: the adopt scan returned an empty index, so
+every owned asset classified `cache-missing` and re-downloaded in full on every run and a
+delisted asset already on disk read as unavailable, while the temp sweep reclaimed nothing
+and said so only by reporting a count the summary omits when it is zero. Walking the root's
+own FS stats `.` through it instead, so the case cannot arise. A symlinked directory
+*inside* the library is still not descended, which is the half the confinement rule rests
+on, and a package that is itself a link out of the tree is now refused at the open rather
+than followed.
+
 A file that just failed verification is excluded from the scan. A truncation or a mid-file
 flip leaves the descriptor intact and a small truncation clears the floor, so without that
 exclusion the damaged bytes would be re-hashed and their digest recorded as the asset's
@@ -418,6 +449,16 @@ digest that no longer describes the bytes there. The next run verifies that entr
 the file now sitting at the recorded path, finds the size and version it expects, calls it
 `Unchanged` and carries the stale digest forward. Nothing but `--verify` looks again.
 
+It is published the way every other file here is — write a temp beside the destination,
+flush it, rename — and the flush is the load-bearing half of that: a rename is durable
+ahead of the data it publishes, so bytes still in the page cache when it returns are
+exactly the per-asset progress this write exists to keep. Every error path unlinks its own
+temp, but a kill or a power loss between the create and the rename cannot, and this file is
+written once per resolved asset, so a large sync spends a lot of windows there. The
+leftovers land in the directory the user commits and nothing else would ever remove them,
+so the run sweeps them alongside the cache's, under the same backdated cutoff that spares a
+concurrent run's write in flight.
+
 Those eight fields are one type rather than a convention, embedded in the entry, so the
 branch that carries a resolution forward and the branch that writes a fresh one cannot
 drift: a ninth field added to only one of them would be silently dropped from every entry a
@@ -486,6 +527,16 @@ strips the Authorization header on a redirect to another host, which covers the 
 signed CDN, but nothing covers the first request. The archive and the binary inside it are
 both read under a ceiling, so an artifact that is not one of the published zips is an
 error naming the size rather than an update the kernel kills.
+
+Because the credential is only an optimisation, one the API rejects must not be worse than
+none: both readers retry anonymously on a 401, a 403 or a 404 and keep the authenticated
+error only if that fails too. An expired token left in `GITHUB_TOKEN` would otherwise kill
+the documented upgrade path with "Bad credentials", and a fine-grained one never granted
+public-repository read answers 404 — which reads as "no release exists" rather than as
+anything to do with the token. For the same reason both ask `gh` for `github.com`
+explicitly: `gh auth token` otherwise answers for whichever host is logged in, so a user
+authenticated only against their company's GitHub Enterprise would have that token sent to
+`api.github.com`.
 
 The release attests build provenance, because `update` replaces the binary on PATH
 unattended and TLS to GitHub was otherwise the only thing vouching for the bytes. The

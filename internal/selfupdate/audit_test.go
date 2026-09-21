@@ -513,3 +513,89 @@ func TestAnAssetWhoseCRCDoesNotMatchIsRefusedBeforeTheSwap(t *testing.T) {
 		t.Errorf("the working binary was replaced by corrupt bytes: %q", got)
 	}
 }
+
+// releaseServer serves a release and its asset, letting a test answer a request itself
+// first. The handler returns true when it has written the whole response.
+func releaseServer(t *testing.T, intercept func(http.ResponseWriter, *http.Request) bool) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if intercept != nil && intercept(w, r) {
+			return
+		}
+		if strings.HasSuffix(r.URL.Path, "/releases/latest") {
+			asset, err := selfupdate.PlatformAssetFor(runtime.GOOS, runtime.GOARCH, "9.9.9")
+			if err != nil {
+				t.Errorf("PlatformAsset: %v", err)
+			}
+			json.NewEncoder(w).Encode(map[string]any{
+				"tag_name": "v9.9.9",
+				"assets":   []any{map[string]any{"name": asset, "url": "http://" + r.Host + "/asset"}},
+			})
+			return
+		}
+		w.Write(zipWithBinary(t, nativeBinary(t, "fresh binary")))
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// runUpdate drives a whole update against srv with the given credential and returns what
+// it said. End to end rather than at the client, because the fallback being tested sits
+// under both API calls and a client-level test walks past the second one.
+func runUpdate(t *testing.T, srv *httptest.Server, token string) (target string, err error) {
+	t.Helper()
+	target = filepath.Join(t.TempDir(), "unity-sync")
+	if err := os.WriteFile(target, []byte("old binary"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	var said bytes.Buffer
+	err = selfupdate.Update(context.Background(), &said,
+		selfupdate.New(srv.URL, token), "0.1.0", "", target)
+	return target, err
+}
+
+// The token is opportunistic: everything this package reads is public, and a run with no
+// credential at all already works. A credential the API rejects therefore must not be
+// worse than none — an expired PAT left in GITHUB_TOKEN, or a fine-grained one never
+// granted public-repository read, would otherwise kill the documented upgrade path with
+// "status 401: Bad credentials", or with a 404 that reads as "no release exists".
+func TestACredentialGitHubRejectsFallsBackToAnAnonymousRequest(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			var anonymous int
+			srv := releaseServer(t, func(w http.ResponseWriter, r *http.Request) bool {
+				if r.Header.Get("Authorization") != "" {
+					w.WriteHeader(status)
+					return true
+				}
+				anonymous++
+				return false
+			})
+			target, err := runUpdate(t, srv, "stale-token")
+			if err != nil {
+				t.Fatalf("update failed with a token the API rejected: %v", err)
+			}
+			if anonymous == 0 {
+				t.Error("no anonymous request was made, so the rejected token was never retried without")
+			}
+			got, err := os.ReadFile(target)
+			if err != nil || string(got) != nativeBinary(t, "fresh binary") {
+				t.Errorf("target holds %q, %v; want the downloaded binary", got, err)
+			}
+		})
+	}
+}
+
+// A failure that is not about the credential must still be reported. Retrying anonymously
+// and reporting the second error would replace a real diagnosis with a worse one.
+func TestAFailureThatIsNotTheCredentialIsReportedAsItself(t *testing.T) {
+	srv := releaseServer(t, func(w http.ResponseWriter, r *http.Request) bool {
+		w.WriteHeader(http.StatusInternalServerError)
+		return true
+	})
+	if _, err := runUpdate(t, srv, "good-token"); err == nil {
+		t.Fatal("a 500 from the release API was treated as success")
+	} else if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error %q does not report the status the API actually returned", err)
+	}
+}

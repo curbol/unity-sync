@@ -12,6 +12,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 )
 
 // Version records one build. ID is what a diff compares.
@@ -141,11 +143,47 @@ func (lf Lockfile) checkUnique() error {
 	return nil
 }
 
-// TempPrefix marks a lockfile write in flight. It is exported because a test in another
-// package watches the directory for these to prove two saves never overlap, and a
-// literal copied over there goes stale silently: the watcher then sees nothing, finds
-// no overlap, and passes forever without observing a single write.
-const TempPrefix = ".unity-sync-lock-"
+// tempPrefix marks a lockfile write in flight. SweepTemps is what reclaims one a killed
+// run left behind, so the prefix and its reader live together rather than the prefix
+// being exported for a caller to match on.
+const tempPrefix = ".unity-sync-lock-"
+
+// syncFile is indirected so a test can watch the flush happen, and happen before the
+// rename. Nothing observable distinguishes a Save that skipped it from one that did not —
+// the file is correct either way until the machine loses power — so deleting the call left
+// every assertion in this package green while removing the thing that makes a run's
+// per-asset progress survive a crash.
+var syncFile = (*os.File).Sync
+
+// SweepTemps removes lockfile temps a killed run left beside the destination, returning
+// how many. Every error path in Save unlinks its own, but a SIGKILL or a power loss
+// between CreateTemp and Rename cannot, and Save runs once per resolved asset — so a large
+// sync spends a lot of windows there. The leftovers land in the directory the user commits
+// and nothing else would ever remove them.
+//
+// It spares anything newer than the cutoff, so a concurrent run's in-flight write
+// survives, and it fails silently for the reason the cache sweep does: housekeeping must
+// not stop a run.
+func SweepTemps(dir string, olderThan time.Time) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	var n int
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), tempPrefix) {
+			continue
+		}
+		fi, err := e.Info()
+		if err != nil || !fi.ModTime().Before(olderThan) {
+			continue
+		}
+		if os.Remove(filepath.Join(dir, e.Name())) == nil {
+			n++
+		}
+	}
+	return n
+}
 
 // Save writes the lockfile atomically. encoding/json sorts map keys, so the output is
 // stable across runs and a diff shows only what actually changed.
@@ -155,7 +193,7 @@ func Save(path string, lf Lockfile) error {
 		return err
 	}
 	raw = append(raw, '\n')
-	tmp, err := os.CreateTemp(filepath.Dir(path), TempPrefix+"*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), tempPrefix+"*")
 	if err != nil {
 		return err
 	}
@@ -168,7 +206,7 @@ func Save(path string, lf Lockfile) error {
 	// Flushed before the rename, not merely written: a run persists this file after every
 	// download so a crash at asset 90 of 100 keeps the 89 already fetched, and bytes still
 	// sitting in the page cache when the rename returns are exactly the record that loses.
-	if err := tmp.Sync(); err != nil {
+	if err := syncFile(tmp); err != nil {
 		tmp.Close()
 		os.Remove(name)
 		return err

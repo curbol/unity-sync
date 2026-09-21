@@ -575,13 +575,17 @@ func TestTheExitStatusSeparatesAnActionableFailureFromAPulledAsset(t *testing.T)
 		name     string
 		body     []byte
 		wantCode int
+		// wantPermanent is whether the summary must say the failure it just printed is
+		// one another run cannot fix. A "failed:" line beside exit 0 otherwise reads as
+		// a tool that gave up and did not admit it.
+		wantPermanent bool
 	}{
-		{"a corrupt body", []byte("this is not a gzip stream at all"), 1},
-		{"an asset the store has pulled", nil, 0},
+		{"a corrupt body", []byte("this is not a gzip stream at all"), 1, false},
+		{"an asset the store has pulled", nil, 0, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			wd := isolate(t)
-			capture(t)
+			out := capture(t)
 			a := ownedAsset("115488", "Quick Outline", "683375", 500)
 			manifestPath := filepath.Join(wd, manifest.FileName)
 			if err := manifest.Save(manifestPath, manifest.Manifest{
@@ -602,6 +606,34 @@ func TestTheExitStatusSeparatesAnActionableFailureFromAPulledAsset(t *testing.T)
 			}
 			if code != tc.wantCode {
 				t.Errorf("exit code = %d, want %d", code, tc.wantCode)
+			}
+			if !strings.Contains(out.String(), "failed: "+a.Name) {
+				t.Fatalf("the summary never named the failed asset:\n%s", out)
+			}
+			if got := strings.Contains(out.String(), "permanent"); got != tc.wantPermanent {
+				t.Errorf("summary says permanent = %v, want %v:\n%s", got, tc.wantPermanent, out)
+			}
+		})
+	}
+}
+
+// --concurrency 0 used to run at the configured default and say nothing, because a zero is
+// how the whole config chain spells "not supplied" — so the one value a user might type
+// meaning "none" was indistinguishable from not typing it at all.
+func TestAConcurrencyThatIsNotANumberOfDownloadsIsRefused(t *testing.T) {
+	for _, arg := range []string{"--concurrency=0", "--concurrency=-1"} {
+		t.Run(arg, func(t *testing.T) {
+			isolate(t)
+			capture(t)
+			code, err := run([]string{"status", arg})
+			if err == nil {
+				t.Fatalf("run(%q) was accepted", arg)
+			}
+			if code == 0 {
+				t.Error("a refused flag exited zero")
+			}
+			if !strings.Contains(err.Error(), "concurrency") {
+				t.Errorf("error %q does not name the flag", err)
 			}
 		})
 	}

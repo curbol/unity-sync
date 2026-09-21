@@ -11,6 +11,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -61,13 +62,18 @@ func newClient(apiBase, token string) *client {
 // It is opportunistic: the releases this reads are public, and an empty token means the
 // requests go out unauthenticated, which works. What a token buys is GitHub's authenticated
 // rate limit, 5000 requests an hour against 60 for an anonymous address.
+//
+// --hostname github.com because `gh auth token` otherwise answers for the default host,
+// which is $GH_HOST or whichever single host happens to be logged in. A user authenticated
+// only against their company's GitHub Enterprise would have that token sent to
+// api.github.com, where it is worth nothing and turns a working request into a 401.
 func token(ctx context.Context) string {
 	for _, k := range []string{"GITHUB_TOKEN", "GH_TOKEN"} {
 		if v := os.Getenv(k); v != "" {
 			return v
 		}
 	}
-	out, err := exec.CommandContext(ctx, "gh", "auth", "token").Output()
+	out, err := exec.CommandContext(ctx, "gh", "auth", "token", "--hostname", "github.com").Output()
 	if err != nil {
 		return ""
 	}
@@ -140,15 +146,42 @@ func (c *client) sameHost(raw string) error {
 	return nil
 }
 
+// get fetches a release resource, authenticated when a credential is available.
+//
+// A credential that the API rejects falls back to an anonymous request rather than failing
+// the update. The token is opportunistic — everything read here is public — so an expired
+// PAT left in GITHUB_TOKEN, or a fine-grained one never granted public-repository read,
+// would otherwise kill the documented upgrade path with "status 401: Bad credentials" or,
+// worse, a 404 that reads as "no release exists". The one thing that cannot be recovered
+// that way is a network failure, which is returned as itself.
 func (c *client) get(ctx context.Context, url, accept string) (*http.Response, error) {
+	resp, err := c.getWith(ctx, url, accept, c.token)
+	if err == nil || c.token == "" || !rejectedCredential(err) {
+		return resp, err
+	}
+	anon, anonErr := c.getWith(ctx, url, accept, "")
+	if anonErr != nil {
+		// The authenticated error is the more informative of the two, and the one that
+		// names what the user can change.
+		return nil, err
+	}
+	return anon, nil
+}
+
+// errUnauthorized marks the statuses that can mean "this credential", not "this request".
+var errUnauthorized = errors.New("github rejected the credential")
+
+func rejectedCredential(err error) bool { return errors.Is(err, errUnauthorized) }
+
+func (c *client) getWith(ctx context.Context, url, accept, token string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("Accept", accept)
 	req.Header.Set("User-Agent", "unity-sync")
-	if c.token != "" {
-		req.Header.Set("Authorization", "Bearer "+c.token)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -157,7 +190,15 @@ func (c *client) get(ctx context.Context, url, accept string) (*http.Response, e
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		resp.Body.Close()
-		return nil, fmt.Errorf("GET %s: status %d: %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
+		status := fmt.Errorf("GET %s: status %d: %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
+		// 404 is in the set on purpose: a fine-grained token with no public-repository
+		// read gets one for a release that plainly exists, and it is indistinguishable
+		// from the real thing until the anonymous request answers.
+		switch resp.StatusCode {
+		case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+			return nil, fmt.Errorf("%w: %w", errUnauthorized, status)
+		}
+		return nil, status
 	}
 	return resp, nil
 }

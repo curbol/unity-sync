@@ -580,6 +580,9 @@ func TestTheSweepRemovesOnlyWhatItWrote(t *testing.T) {
 // and the rename would carry that over, leaving a downloaded package owner-only while an
 // adopted one keeps the 0644 it arrived with.
 func TestCommitReplacesThisAssetsSupersededCopyAndSettlesItsMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows reports 0666 for every writable file; there are no mode bits to settle")
+	}
 	root := t.TempDir()
 	final := filepath.Join(root, "pub", "asset-1", "asset-1.unitypackage")
 
@@ -940,5 +943,115 @@ func TestEverySlugModelDerivesIsOneCacheWillAccept(t *testing.T) {
 				t.Errorf("Verify refuses the path Store just wrote: %q", p.RelPath)
 			}
 		})
+	}
+}
+
+// library_path can be a symlink: pointing a 75 GB mirror at another disk is the same move
+// docs/design.md already treats as reasonable for one publisher directory, and a Windows
+// junction reports as one too.
+//
+// Walking over the path rather than through the root made both whole-tree passes stop at
+// the link and do nothing. Nothing else broke, which is what made it invisible — os.Root
+// resolves a symlinked root like any other directory, so Store, Commit, Verify and Hash
+// all kept working. Scan returned an empty index, so every owned asset classified
+// cache-missing and re-downloaded in full on every run, and a delisted asset sitting in
+// the library was reported unavailable; SweepTemps reclaimed nothing, and reports a count
+// the caller only announces when it is non-zero.
+func TestASymlinkedLibraryRootIsStillWalked(t *testing.T) {
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	root := filepath.Join(base, "library")
+	storeCommitted(t, real, "pub", "asset-111", pkg(t, "111", "9", 400))
+	stale := filepath.Join(real, "pub", "asset-111", ".unity-sync-dl-abandoned")
+	if err := os.WriteFile(stale, []byte("partial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, root); err != nil {
+		t.Skipf("this filesystem does not support symlinks: %v", err)
+	}
+
+	// The sweep runs before the scan in a real run, and has to find the temp through the
+	// same link.
+	n, freed := cache.SweepTemps(context.Background(), root, time.Now().Add(time.Hour))
+	if n != 1 || freed != int64(len("partial")) {
+		t.Errorf("sweep through a symlinked root reclaimed %d file(s), %d bytes; want 1, %d",
+			n, freed, len("partial"))
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Error("the abandoned temp survived a sweep through a symlinked root")
+	}
+
+	got, ok := cache.Scan(context.Background(), root).Find("111", "")
+	if !ok {
+		t.Fatal("Scan through a symlinked root found no candidate, so adoption would " +
+			"re-download the whole library and a delisted asset would read as unavailable")
+	}
+	if want := cache.RelPath("pub", "asset-111"); got.RelPath != want {
+		t.Errorf("candidate RelPath = %q, want %q relative to the root", got.RelPath, want)
+	}
+}
+
+// A symlinked directory inside the library is still not descended, which is what the
+// confinement rule rests on: Store refuses to write through one, so a package found under
+// one would be a file no later read could resolve.
+func TestTheWalkStillDoesNotDescendALinkInsideTheLibrary(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "library")
+	outside := filepath.Join(base, "elsewhere", "pub", "asset-222")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "asset-222.unitypackage"),
+		pkg(t, "222", "9", 400), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	storeCommitted(t, root, "pub", "asset-111", pkg(t, "111", "9", 400))
+	if err := os.Symlink(filepath.Join("..", "elsewhere"), filepath.Join(root, "link")); err != nil {
+		t.Skipf("this filesystem does not support symlinks: %v", err)
+	}
+
+	ix := cache.Scan(context.Background(), root)
+	if _, ok := ix.Find("222", ""); ok {
+		t.Error("the scan descended a symlink and offered a package from outside the library")
+	}
+	if _, ok := ix.Find("111", ""); !ok {
+		t.Error("the scan stopped at the link instead of skipping it")
+	}
+}
+
+// The exclusion has to be matched by identity as well as by spelling. On Windows and
+// macOS "Pub/a.unitypackage" and "pub/a.unitypackage" are one file that no canonical form
+// collapses, and a symlinked alias reproduces that on a case-sensitive filesystem.
+//
+// Every other exclusion test spells the exclusion so that it canonicalises to the
+// candidate's own RelPath, which the string skip already catches — so the identity half
+// was dead under test on all three platforms CI runs, and deleting it left the suite
+// green. What it stops: the recorded copy failed verification, so the syncer excludes it;
+// matched on spelling alone the scan re-offers that same damaged file as its own adopt
+// candidate, and adopt hashes it and records the damaged digest as the asset's truth,
+// through the one door that skips the download guards.
+func TestAnExcludedFileIsSkippedUnderItsOtherSpelling(t *testing.T) {
+	root := t.TempDir()
+	storeCommitted(t, root, "Pub", "asset-111", pkg(t, "111", "9", 400))
+	if err := os.Symlink("Pub", filepath.Join(root, "pub")); err != nil {
+		t.Skipf("this filesystem does not support symlinks: %v", err)
+	}
+	scanned := "Pub/asset-111/asset-111.unitypackage"
+	recorded := "pub/asset-111/asset-111.unitypackage"
+	if cache.SamePath(scanned, recorded) {
+		t.Fatal("precondition: SamePath already collapses these, so the string skip would catch it")
+	}
+	if !cache.SameFile(root, scanned, recorded) {
+		t.Fatal("precondition: the two spellings do not name one file")
+	}
+
+	ix := cache.Scan(t.Context(), root)
+	if _, ok := ix.Find("111", ""); !ok {
+		t.Fatal("precondition: the scan did not index the package at all")
+	}
+	if got, ok := ix.Find("111", "", recorded); ok {
+		t.Errorf("Find offered %q, which is the excluded file under its other spelling: a "+
+			"copy that just failed verification would be re-adopted and its digest recorded",
+			got.RelPath)
 	}
 }

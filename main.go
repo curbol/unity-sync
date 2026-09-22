@@ -108,6 +108,9 @@ func run(args []string) (int, error) {
 		// and main prints it, so letting the flag package print too says it twice.
 		return 1, err
 	}
+	if err := checkFlagsApply(cmd, fs); err != nil {
+		return 1, err
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -204,6 +207,49 @@ func run(args []string) (int, error) {
 		return 0, nil
 	}
 	return syncOrStatus(ctx, client, cfg, manifestPath, lockPath, *only, *verify, cmd == "status" || *dryRun)
+}
+
+// flagsByCommand is the set of flags each subcommand actually reads. One FlagSet serves
+// all of them so `--help` can print the flags from one place, which also means every
+// subcommand parses every flag and would otherwise accept the ones it cannot use.
+//
+// Silently, and not harmlessly. `select --only 'terrain*'` renders every owned asset while
+// the command line reads as filtered, and the save then rewrites the enabled set for all
+// of them — the same harm the --only suggestion in the positional error below is worded to
+// avoid, arriving through the flag itself. `select --dry-run` is worse: the tool's own
+// no-op flag, reached for before touching a committed file, and it writes the manifest
+// normally. --concurrency was already validated for every subcommand including the ones
+// that never read it, so the asymmetry was in the code before it was in the behaviour.
+var flagsByCommand = map[string]map[string]bool{
+	"select": {"config": true, "manifest": true, "session": true, "addr": true},
+	"status": {"config": true, "manifest": true, "session": true, "library": true,
+		"only": true, "concurrency": true, "verify": true},
+	"sync": {"config": true, "manifest": true, "session": true, "library": true,
+		"only": true, "concurrency": true, "verify": true, "dry-run": true},
+	// list reads the lockfile beside the manifest and nothing else; --library names a
+	// directory it never looks in.
+	"list": {"config": true, "manifest": true},
+	// update takes a version as its positional and talks to GitHub, not the store.
+	"update": {},
+}
+
+// checkFlagsApply refuses a flag the subcommand does not read, naming it and the command.
+func checkFlagsApply(cmd string, fs *flag.FlagSet) error {
+	allowed, known := flagsByCommand[cmd]
+	if !known {
+		return nil
+	}
+	var rejected []string
+	fs.Visit(func(f *flag.Flag) {
+		if !allowed[f.Name] {
+			rejected = append(rejected, "--"+f.Name)
+		}
+	})
+	if len(rejected) == 0 {
+		return nil
+	}
+	// Visit walks in lexical order, so the message is stable over one command line.
+	return fmt.Errorf("%s does not use %s", cmd, strings.Join(rejected, ", "))
 }
 
 // flagSet reports whether a flag was given on the command line, as opposed to holding its
@@ -488,7 +534,37 @@ func printReport(w io.Writer, rep syncer.Report, dry bool, libraryPath string) {
 			fmt.Fprintf(w, "no longer owned: %s\n", e.Name)
 		}
 	}
-	for _, e := range rep.Unknown {
+	printUnknown(w, rep)
+}
+
+// unknownShown is how many unowned manifest entries are named before the rest are
+// summarised. Enough to be useful for the ordinary cause, a typo or two in a hand-edited
+// manifest, without the wall of text the other cause produces.
+const unknownShown = 10
+
+// printUnknown reports the manifest entries this account does not own.
+//
+// Capped for the same reason the not-attempted line is one line rather than one per asset.
+// A session signed in to the wrong Unity organisation owns a legitimately different set, so
+// every entry in a curated manifest comes back unknown: several hundred consecutive lines,
+// none of which says the thing the user can act on. select refuses that state loudly
+// through the reconcile guards, which leaves status and sync as the only commands where it
+// reaches the summary at all.
+func printUnknown(w io.Writer, rep syncer.Report) {
+	if len(rep.Unknown) == 0 {
+		return
+	}
+	// Nothing selected survived enumeration, so the manifest and the session disagree
+	// about the whole account rather than about a few entries.
+	if rep.Selected == 0 {
+		fmt.Fprintf(w, "this account owns none of the %d asset(s) this manifest lists; "+
+			"check which Unity organisation the session is signed in to\n", len(rep.Unknown))
+	}
+	for i, e := range rep.Unknown {
+		if i == unknownShown {
+			fmt.Fprintf(w, "…and %d more the account does not own\n", len(rep.Unknown)-unknownShown)
+			break
+		}
 		fmt.Fprintf(w, "manifest lists asset %s (%s), which this account does not own\n", e.ID, e.Name)
 	}
 }

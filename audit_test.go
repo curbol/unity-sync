@@ -51,6 +51,60 @@ func TestStrayPositionalIsRejected(t *testing.T) {
 	}
 }
 
+// One FlagSet serves every subcommand so --help prints the flags from one place, which
+// also means every subcommand parses every flag. Accepting the ones it cannot use is
+// silent and not harmless.
+//
+// `select --dry-run` is the sharpest: the tool's own no-op flag, reached for precisely
+// because the command writes a committed, hand-curated file, and it wrote the manifest
+// normally. `select --only` renders every owned asset while the command line reads as
+// filtered, and the save then rewrites the enabled set for all of them — the same harm the
+// positional error above is worded to avoid, arriving through the flag itself.
+func TestAFlagTheSubcommandCannotUseIsRefused(t *testing.T) {
+	isolate(t)
+	for _, tc := range []struct{ cmd, flag string }{
+		{"select", "--dry-run"},
+		{"select", "--only=terrain*"},
+		{"select", "--library=/tmp/x"},
+		{"select", "--verify"},
+		{"select", "--concurrency=4"},
+		{"list", "--library=/tmp/x"},
+		{"list", "--session=/tmp/x"},
+		{"list", "--dry-run"},
+		{"sync", "--addr=127.0.0.1:1"},
+		{"status", "--dry-run"},
+		{"update", "--library=/tmp/x"},
+	} {
+		t.Run(tc.cmd+" "+tc.flag, func(t *testing.T) {
+			code, err := run([]string{tc.cmd, tc.flag})
+			if code == 0 || err == nil {
+				t.Fatalf("%s %s = %d, %v; want a failure", tc.cmd, tc.flag, code, err)
+			}
+			name := strings.SplitN(tc.flag, "=", 2)[0]
+			if !strings.Contains(err.Error(), name) {
+				t.Errorf("error %q does not name the flag %q", err, name)
+			}
+			if !strings.Contains(err.Error(), tc.cmd) {
+				t.Errorf("error %q does not name the subcommand", err)
+			}
+		})
+	}
+
+	// The complement, or the rule could be "refuse everything" and still pass above.
+	// These have to get past the flag check; they fail later, on a missing session or
+	// manifest, which is not what is being asserted here.
+	for _, args := range [][]string{
+		{"sync", "--dry-run", "--only=x", "--verify", "--concurrency=2"},
+		{"status", "--only=x", "--verify"},
+		{"select", "--addr=127.0.0.1:0"},
+		{"list", "--manifest=/tmp/nope/unity-sync.toml"},
+	} {
+		if _, err := run(args); err != nil && strings.Contains(err.Error(), "does not use") {
+			t.Errorf("%v was refused a flag it does use: %v", args, err)
+		}
+	}
+}
+
 // manifest.Load reads an absent file as an empty allowlist rather than an error, so a
 // --manifest that names nothing selects nothing, mirrors nothing, and exits 0 — while
 // still writing a lockfile beside the path it was given. `unity-sync sync && deploy` then
@@ -70,7 +124,15 @@ func TestAManifestPathThatNamesNothingIsRefused(t *testing.T) {
 			}
 			typo := filepath.Join(sub, manifest.FileName)
 
-			code, err := run([]string{cmd, "--manifest", typo, "--session", sessionFile(t), "--library", t.TempDir()})
+			// Only the flags this subcommand reads: list resolves a lockfile beside the
+			// manifest and never reaches a session or a library, and passing them now
+			// fails on the flag rather than on the manifest this test is about.
+			args := []string{cmd, "--manifest", typo}
+			if cmd != "list" {
+				args = append(args, "--session", sessionFile(t), "--library", t.TempDir())
+			}
+
+			code, err := run(args)
 			if code == 0 || err == nil {
 				t.Fatalf("%s with a manifest that does not exist = %d, %v; want a failure", cmd, code, err)
 			}
@@ -194,6 +256,143 @@ func TestTheSummaryNamesEachDelistedAsset(t *testing.T) {
 	if strings.Contains(out, "Still Fine") {
 		t.Errorf("the summary named an asset that is not delisted:\n%s", out)
 	}
+}
+
+// A session signed in to the wrong Unity organisation owns a legitimately different set,
+// so every entry in a curated manifest comes back unknown. Naming each one is several
+// hundred consecutive lines, none of which says the thing the user can act on — the same
+// failure shape the not-attempted line exists to avoid, which this half never got. select
+// refuses the state loudly through the reconcile guards, so status and sync are the only
+// commands where it reaches the summary at all.
+func TestAWrongOrgSessionIsDiagnosedRatherThanListed(t *testing.T) {
+	var unknown []manifest.Entry
+	for i := range 300 {
+		unknown = append(unknown, manifest.Entry{
+			ID:   fmt.Sprintf("%d", 1000+i),
+			Name: fmt.Sprintf("Asset %d", i),
+		})
+	}
+	buf := &bytes.Buffer{}
+	printReport(buf, syncer.Report{Owned: 300, Selected: 0, Unknown: unknown}, false, "/lib")
+	out := buf.String()
+
+	if !strings.Contains(out, "organisation") {
+		t.Errorf("the summary does not point at the org, which is the only actionable cause:\n%s", out)
+	}
+	if n := strings.Count(out, "does not own"); n > 20 {
+		t.Errorf("the summary printed %d unowned lines; the one actionable line is buried", n)
+	}
+	if !strings.Contains(out, "and 290 more") {
+		t.Errorf("the summary does not account for the entries it did not name:\n%s", out)
+	}
+
+	// A handful of unowned entries is the ordinary case — a typo or two in a hand-edited
+	// manifest — and each of those still gets named, with no org claim attached, because
+	// the account plainly does own the rest.
+	buf.Reset()
+	printReport(buf, syncer.Report{
+		Owned: 10, Selected: 9,
+		Unknown: []manifest.Entry{{ID: "4242", Name: "Typo Asset"}},
+	}, false, "/lib")
+	out = buf.String()
+	if !strings.Contains(out, "Typo Asset") || !strings.Contains(out, "4242") {
+		t.Errorf("a single unowned entry was not named:\n%s", out)
+	}
+	if strings.Contains(out, "organisation") {
+		t.Errorf("one unowned entry was blamed on the organisation:\n%s", out)
+	}
+}
+
+// The whole command-layer half of the config chain had no test. config_test.go covers
+// Load and ResolveDir in isolation; the handoff in run — ResolveDir's answer reaching
+// Load, and the flags reaching it as config.Flags — did not, and two mutations of it left
+// all 500 tests green.
+//
+// Dropping *library from the Flags literal mirrors 75 GB into the default directory
+// instead of the drive the user named, announced only by the library: line printed after
+// the download pass. Passing *cfgDir where configDir belongs ignores the user's real
+// config.toml and reads a stray ./config.toml from the working directory instead, since
+// Load("") joins to a bare "config.toml" — and every test runs in a temp directory with no
+// such file, so all of them still saw defaults.
+//
+// The library: line is the observable: syncer.Options.LibraryRoot and the summary are both
+// cfg.LibraryPath, so asserting what is printed pins the chain that produced it. status is
+// enough, since it runs classification without needing a package server.
+func TestTheConfigChainReachesTheLibraryARunActuallyUses(t *testing.T) {
+	// setup runs after isolate, so it sees the environment the run will actually use, and
+	// returns the arguments for it. That ordering is the point of the second arm: the XDG
+	// directory a run resolves is derived from a variable isolate owns.
+	libraryFrom := func(t *testing.T, setup func(t *testing.T) []string) string {
+		t.Helper()
+		wd := isolate(t)
+		out := capture(t)
+		project(t, wd)
+		serveFixtures(t)
+		args := append(setup(t), "--session", sessionFile(t))
+		if code, err := run(args); code != 0 || err != nil {
+			t.Fatalf("status = %d, %v", code, err)
+		}
+		for line := range strings.SplitSeq(out.String(), "\n") {
+			if rest, ok := strings.CutPrefix(line, "library: "); ok {
+				return rest
+			}
+		}
+		t.Fatalf("the summary printed no library line:\n%s", out.String())
+		return ""
+	}
+
+	writeConfig := func(t *testing.T, dir, libraryPath string) {
+		t.Helper()
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		body := fmt.Sprintf("library_path = %q\n", libraryPath)
+		if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Run("a named config dir is read", func(t *testing.T) {
+		want := filepath.Join(t.TempDir(), "from-the-named-config")
+		got := libraryFrom(t, func(t *testing.T) []string {
+			named := filepath.Join(t.TempDir(), "cfg")
+			writeConfig(t, named, want)
+			return []string{"status", "--config", named}
+		})
+		if got != want {
+			t.Errorf("library = %q, want %q from the config file --config named", got, want)
+		}
+	})
+
+	// The arm that catches ResolveDir being bypassed. With no --config, Load has to be
+	// handed the directory ResolveDir worked out; handed the empty string it was given,
+	// it joins to a bare "config.toml" and reads the working directory instead.
+	t.Run("the resolved config dir is read when no flag names one", func(t *testing.T) {
+		want := filepath.Join(t.TempDir(), "from-the-resolved-config")
+		got := libraryFrom(t, func(t *testing.T) []string {
+			writeConfig(t, filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "unity-sync"), want)
+			return []string{"status"}
+		})
+		if got != want {
+			t.Errorf("library = %q, want %q: the resolved config dir was not the one read", got, want)
+		}
+	})
+
+	t.Run("the library flag beats the config file", func(t *testing.T) {
+		want := filepath.Join(t.TempDir(), "from-the-flag")
+		fromFile := filepath.Join(t.TempDir(), "from-the-config")
+		got := libraryFrom(t, func(t *testing.T) []string {
+			named := filepath.Join(t.TempDir(), "cfg")
+			writeConfig(t, named, fromFile)
+			return []string{"status", "--config", named, "--library", want}
+		})
+		if got == fromFile {
+			t.Fatal("--library was parsed and then ignored")
+		}
+		if got != want {
+			t.Errorf("library = %q, want %q: --library must beat the config file", got, want)
+		}
+	})
 }
 
 // captureStderr redirects os.Stderr for the duration of a test and returns a function

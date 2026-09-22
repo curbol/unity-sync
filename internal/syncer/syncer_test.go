@@ -57,7 +57,11 @@ func (f *fakeStore) Lookup(_ context.Context, id string) (model.Asset, bool, err
 	return a, ok, nil
 }
 
-func (f *fakeStore) Fetch(_ context.Context, id string) (*store.Download, error) {
+// Fetch honours the context, which is what makes the pool's in-flight cancellation
+// reachable. Taking it as _ meant no fetch could ever return a context error, so the branch
+// that reclassifies an already-started goroutine's context.Canceled as "not attempted"
+// could not be exercised at any concurrency — and deleting it left the whole suite green.
+func (f *fakeStore) Fetch(ctx context.Context, id string) (*store.Download, error) {
 	n := f.inFlight.Add(1)
 	for {
 		max := f.maxSeen.Load()
@@ -67,7 +71,14 @@ func (f *fakeStore) Fetch(_ context.Context, id string) (*store.Download, error)
 	}
 	defer f.inFlight.Add(-1)
 	if f.hold > 0 {
-		time.Sleep(f.hold)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(f.hold):
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	f.mu.Lock()
 	f.fetched = append(f.fetched, id)

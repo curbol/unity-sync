@@ -102,8 +102,13 @@ func TestRunRemovesAFixtureTheCapturesNoLongerHave(t *testing.T) {
 
 // The sweep runs after every write, so a capture that will not scrub stops the command
 // before anything is removed. Ordered the other way, a malformed page 2 would leave the
-// directory holding page 1's new fixture and nothing else — a fixture set that is neither
-// the old one nor the new one, with no way back short of capturing again.
+// directory holding page 1's new fixture and nothing else, with no way back short of
+// capturing again.
+//
+// What this ordering buys is that nothing is *destroyed*, not that the set stays coherent:
+// the writes are page by page, so a failure on page 2 still leaves a new page 1 beside the
+// old page 9. That set is recoverable with git checkout, which is the whole difference —
+// the sweep-first order is not.
 func TestAFailedScrubLeavesTheExistingFixturesAlone(t *testing.T) {
 	from, to := t.TempDir(), t.TempDir()
 	write(t, from, "page0.json", capture)

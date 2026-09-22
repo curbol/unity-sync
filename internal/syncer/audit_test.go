@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -244,6 +245,170 @@ func TestAnExpiredSessionStopsThePool(t *testing.T) {
 	}
 	if named != 1 {
 		t.Errorf("%d assets carry an error, want only the one the session died on", named)
+	}
+	// Deterministic at one worker: the failing goroutine holds the only semaphore slot
+	// when it cancels, so exactly one fetch happened and every other asset was turned away
+	// at the entry check. Asserted exactly rather than as "fewer than all" and "more than
+	// none", which both pass on a single skip — and which left moving cancelPool out of
+	// the goroutine, into the collection loop where it does nothing, still green.
+	if len(fs.fetched) != 1 {
+		t.Errorf("fetched %d assets, want exactly 1 before the pool was cancelled", len(fs.fetched))
+	}
+	if rep.NotAttempted != len(owned)-1 {
+		t.Errorf("NotAttempted = %d, want %d", rep.NotAttempted, len(owned)-1)
+	}
+}
+
+// The other half of the same rule, and the one nothing reached. At Concurrency 1 only one
+// goroutine is ever past the semaphore, so every other asset meets the cancel at the entry
+// check and is recorded there; the branch that reclassifies a goroutine *already inside*
+// retry.Do is never taken. Deleting it left the whole suite green while a real run at the
+// default concurrency printed "failed: <name>: context canceled" for every asset in flight
+// — the pile the one actionable line is supposed to stand out from.
+func TestAssetsInFlightWhenTheSessionDiesAreNotReportedAsFailures(t *testing.T) {
+	root, lockPath := newRun(t)
+	owned, _ := manyAssets(t, 24)
+
+	// waitFor is one less than the concurrency, so every other worker slot is occupied by
+	// a parked fetch at the moment the session dies.
+	fs := &cancelWatchingStore{owned: owned, waitFor: 5, parked: make(chan struct{}, 8)}
+	o := opts(root, allSelected(owned...))
+	o.Concurrency = 6
+	rep, err := Run(context.Background(), fs, lockfile.New(), lockPath, o)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !rep.Failed() {
+		t.Fatal("an expired session left the run reporting success")
+	}
+	// The precondition, asserted rather than assumed: without a goroutine actually inside
+	// Fetch when the pool is cancelled, this test exercises the entry check and says
+	// nothing about the branch it exists for.
+	if got := fs.cancelledMidFetch.Load(); got == 0 {
+		t.Fatal("no fetch was interrupted in flight; this test is not reaching the branch it pins")
+	}
+	for _, r := range rep.Results {
+		if errors.Is(r.Err, context.Canceled) {
+			t.Errorf("%s reports the run's own cancellation as its failure", r.Asset.Name)
+		}
+	}
+	if rep.Retryable != 1 {
+		t.Errorf("Retryable = %d, want only the asset whose fetch actually failed", rep.Retryable)
+	}
+	if rep.NotAttempted != len(owned)-1 {
+		t.Errorf("NotAttempted = %d, want the other %d assets", rep.NotAttempted, len(owned)-1)
+	}
+}
+
+// cancelWatchingStore fails its first fetch with an expired session and parks every other
+// one until the context ends, so the assets behind it are interrupted *inside* Fetch
+// rather than turned away at the pool's entry check.
+//
+// The first fetch waits for waitFor others to be parked before it fails, which is what
+// makes that deterministic: left to the scheduler the cancellation can land before any
+// other goroutine reaches Fetch, and the test then exercises the entry check and passes
+// while saying nothing about the branch it is for.
+type cancelWatchingStore struct {
+	owned             []model.Asset
+	waitFor           int
+	first             sync.Once
+	parked            chan struct{}
+	cancelledMidFetch atomic.Int32
+}
+
+func (f *cancelWatchingStore) Enumerate(context.Context) ([]model.Asset, error) { return f.owned, nil }
+
+func (f *cancelWatchingStore) Lookup(context.Context, string) (model.Asset, bool, error) {
+	return model.Asset{}, false, nil
+}
+
+func (f *cancelWatchingStore) Fetch(ctx context.Context, id string) (*store.Download, error) {
+	var isFirst bool
+	f.first.Do(func() { isFirst = true })
+	if isFirst {
+		for range f.waitFor {
+			select {
+			case <-f.parked:
+			case <-time.After(10 * time.Second):
+				return nil, fmt.Errorf("no goroutine reached Fetch; the pool is not running concurrently")
+			}
+		}
+		return nil, store.ErrExpiredSession
+	}
+	f.parked <- struct{}{}
+	<-ctx.Done()
+	f.cancelledMidFetch.Add(1)
+	return nil, ctx.Err()
+}
+
+// The guard table above starts every case from an empty library, so the strongest thing it
+// can assert about a rejection is that nothing arrived. The property that matters more is
+// preservation: an asset with a verified copy on disk, whose new build comes back as a
+// sign-in page, the wrong product or a truncated body, has to end the run with the old
+// file byte-identical, its entry carried forward verbatim, and a non-zero exit.
+//
+// That holds by construction — Store writes a temp beside the destination, only Commit
+// renames, and no persist runs on a failed download, so build carries the prior
+// resolution. Nothing checked it. A change that removed the destination before storing,
+// moved Commit ahead of the guards, or called removeSuperseded before the outcome was
+// known would fail only this.
+func TestARejectedRedownloadLeavesTheCopyAlreadyInTheLibrary(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body []byte
+	}{
+		{"a sign-in page", bytes.Repeat([]byte("<html>sign in</html>"), 100)},
+		{"another product's package", pkg(t, "999", "v2", 2000)},
+		{"a truncated body", pkg(t, "1", "v2", 200)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, lockPath := newRun(t)
+			// The copy already mirrored, at v1, exactly where the layout puts it.
+			a := asset("1", "Asset", "v2", 2000)
+			old := pkg(t, "1", "v1", 2000)
+			p := place(t, root, a.PublisherSlug(), a.Slug(), old).RelPath
+			sha, size, err := cache.Hash(context.Background(), root, p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			prior := lockfile.New()
+			prior.Assets[a.Slug()] = lockfile.Entry{
+				AssetID: "1",
+				Resolution: lockfile.Resolution{
+					Tracked:            true,
+					ResolvedVersionID:  "v1",
+					DeliveredVersionID: "v1",
+					SizeBytes:          size,
+					SHA256:             sha,
+					CachePath:          p,
+				},
+			}
+
+			fs := &fakeStore{owned: []model.Asset{a}, bodies: map[string][]byte{"1": tc.body}}
+			rep, err := Run(context.Background(), fs, prior, lockPath, opts(root, allSelected(a)))
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+			if rep.Results[0].Err == nil {
+				t.Fatal("the guards accepted a body they should have rejected")
+			}
+			if !rep.Failed() {
+				t.Error("a rejected download left the run exiting zero")
+			}
+			// The bytes, not just the path: a truncated body renamed into place would
+			// still satisfy an existence check.
+			if !cache.VerifyDeep(context.Background(), root, p, sha) {
+				t.Error("the copy already in the library was replaced or damaged by a rejected download")
+			}
+			_, e, ok := rep.Lockfile.FindByAssetID("1")
+			if !ok {
+				t.Fatal("the entry was dropped from the lockfile")
+			}
+			if e.SHA256 != sha || e.ResolvedVersionID != "v1" || e.CachePath != p {
+				t.Errorf("the entry was rewritten to %+v; a failed download must carry the "+
+					"prior resolution forward verbatim", e.Resolution)
+			}
+		})
 	}
 }
 

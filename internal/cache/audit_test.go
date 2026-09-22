@@ -1110,6 +1110,57 @@ func TestTheWalkStillDoesNotDescendALinkInsideTheLibrary(t *testing.T) {
 	}
 }
 
+// The directory case above is not the whole of it: a *package* that is itself a link out
+// of the tree is a file, so the walk yields it like any other entry rather than declining
+// to descend it — verified, not assumed; the entry arrives with type L and a working
+// d.Info().
+//
+// Two things refuse it, and this asserts the outcome rather than either one: the scan
+// reads each descriptor through the root, and Find re-stats every candidate through the
+// root before handing it back. Removing either alone leaves this green, and removing both
+// fails it — which is the honest shape of the guarantee. Every other symlink test here
+// links a directory, so the file case was unpinned at both points, and the obvious
+// simplification of either — resolving at filepath.Join(root, rel) — is one edit away from
+// the second. What they stop: adoption offering a file from outside the library, with
+// Relocate moving the user's own file into the derived path before the hash of it failed.
+func TestAPackageThatIsItselfALinkOutOfTheLibraryIsNotIndexed(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "library")
+	outside := filepath.Join(base, "elsewhere")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(outside, "somebody-elses.unitypackage")
+	if err := os.WriteFile(target, pkg(t, "222", "9", 400), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A real package too, so "found nothing" cannot pass because the walk saw nothing.
+	storeCommitted(t, root, "pub", "asset-111", pkg(t, "111", "9", 400))
+
+	linkDir := filepath.Join(root, "pub", "asset-222")
+	if err := os.MkdirAll(linkDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Relative, so what this refuses is the escape rather than the simpler fact of an
+	// absolute link. The name is the one the layout would derive, so nothing but the
+	// confinement stands between the scan and it.
+	link := filepath.Join(linkDir, "asset-222.unitypackage")
+	if err := os.Symlink(filepath.Join("..", "..", "..", "elsewhere", "somebody-elses.unitypackage"), link); err != nil {
+		t.Skipf("this filesystem does not support symlinks: %v", err)
+	}
+	if _, err := os.Stat(link); err != nil {
+		t.Fatalf("the link does not resolve, so this test would pass for the wrong reason: %v", err)
+	}
+
+	ix := cache.Scan(context.Background(), root)
+	if _, ok := ix.Find("222", "", nil); ok {
+		t.Error("the scan indexed a package that is a link out of the library")
+	}
+	if _, ok := ix.Find("111", "", nil); !ok {
+		t.Error("the scan found nothing at all, so the refusal above proves nothing")
+	}
+}
+
 // The exclusion has to be matched by identity as well as by spelling. On Windows and
 // macOS "Pub/a.unitypackage" and "pub/a.unitypackage" are one file that no canonical form
 // collapses, and a symlinked alias reproduces that on a case-sensitive filesystem.

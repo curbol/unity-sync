@@ -629,6 +629,18 @@ more than one package, `go vet` and `gofmt` enumerate `.go` files, and the fixtu
 opens only paths under a `testdata/` directory. A 6.8 MB artifact left at the root by
 `go build ./cmd/scrubfixtures` was committed and stayed in history.
 
+That check did not work for its whole life. Given more than one file, `file` pads the
+names out to the longest one, so a `': application/…'` pattern matched only whichever
+tracked path happened to be longest and nothing else — the guard passed over every binary
+it was written to catch, including the one above. It matches any run of whitespace now,
+and it ends by asking `file` about two probe binaries whose names differ in length and
+requiring *both* to match: the longest name is the single line that still has exactly one
+space after its colon, so a one-space pattern matches it and passes, which is precisely
+how this sat green while seeing nothing. The pin check alongside it grew the same kind of
+self-check, since both ended in `|| true` and an is-it-empty test, making "found nothing
+wrong" and "found nothing at all" the same result — the one standard every other guard in
+this repo already meets.
+
 ## Distribution
 
 An update that is going to refuse itself reads no credential at all: the dev-build refusal

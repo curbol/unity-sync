@@ -49,9 +49,34 @@ jobs:
       # half of `owner/repo@sha # vX.Y.Z` that is enforced. Nothing else reads these
       # lines: a pin swapped for a tag passes every other check here and is invisible
       # until someone re-reads the YAML.
+      #
+      # The strict pattern is compared against a loose count rather than trusted on its
+      # own. Every other guard in this repo refuses to pass on an empty set — the fixture
+      # walk, the platform-triple parsers — and this one did not: `|| true` followed by an
+      # is-it-empty test makes "found nothing wrong" and "found nothing at all" the same
+      # green. The anchor requires `uses:` to be the first key on its line, so
+      # `- {uses: actions/checkout@v4}` is legal YAML that GitHub runs and this cannot see,
+      # and a directory rename or a .yaml spelling would silently stop it matching at all.
       - name: third-party actions are pinned by commit SHA
         run: |
-          unpinned=$(grep -rnE '^[[:space:]]*-?[[:space:]]*uses:[[:space:]]' .github/ \
+          set -o pipefail
+          # A real uses: value is a local path or owner/repo@ref. Anchoring on that shape
+          # rather than on the bare word keeps the check from matching the prose and the
+          # grep patterns in its own step, which sit in the directory it walks.
+          ACTION='uses:[[:space:]]*(\./[A-Za-z0-9._/-]*|[A-Za-z0-9._-]+/[A-Za-z0-9._/-]+@[^[:space:]]+)'
+          stripped=$(grep -rh '' .github/ --include='*.yml' --include='*.yaml' | sed 's/#.*//')
+          loose=$(printf '%s\n' "$stripped" | grep -cE "$ACTION" || true)
+          strict=$(printf '%s\n' "$stripped" | grep -cE "^[[:space:]]*-?[[:space:]]*$ACTION" || true)
+          if [ "$strict" -eq 0 ]; then
+            echo "the pin check matched no uses: lines at all; it is no longer reading the workflows"
+            exit 1
+          fi
+          if [ "$loose" -ne "$strict" ]; then
+            echo "a uses: is spelled where the pin check cannot see it ($loose found, $strict examined);"
+            echo "put each one at the start of its own line so it can be checked"
+            exit 1
+          fi
+          unpinned=$(grep -rnE "^[[:space:]]*-?[[:space:]]*$ACTION" .github/ \
             | grep -v 'uses: \./' | grep -vE '@[0-9a-f]{40}([[:space:]]|$)' || true)
           if [ -n "$unpinned" ]; then
             echo "these actions name a tag or branch; pin each to a 40-character commit SHA:"
@@ -65,13 +90,53 @@ jobs:
       # the root by `go build ./cmd/<tool>` is invisible to every other check here and
       # stays in history for good once it is committed. The fixture that is deliberately
       # binary, testdata/store/package_header_sample.bin, reports as application/gzip.
+      #
+      # x-pie-executable is in the list because it is what a modern `file` reports for an
+      # ordinary Go binary built with -buildmode=pie: upstream's ELF magic picks the mime
+      # with `application/x-${x?pie-executable:sharedlib}`, so an ET_DYN carrying a PIE
+      # marker never reports as x-sharedlib. A contributor with GOFLAGS=-buildmode=pie —
+      # a common hardening default, and the packaging default on some distros — running
+      # `go build ./cmd/scrubfixtures` produces exactly the 6.8 MB artifact this exists to
+      # catch, and the list without it matched nothing.
+      #
+      # pipefail, and `file` checked for up front, because `|| true` over a pipe makes a
+      # missing tool indistinguishable from a clean tree: xargs exits 127, grep reads
+      # empty stdin, and the step is green with the whole tracked set unexamined.
       - name: no compiled binaries are tracked
         run: |
+          set -o pipefail
+          command -v file >/dev/null || { echo "file(1) is missing; this guard cannot run"; exit 1; }
+          # ':[[:space:]]+', not ': '. Given more than one file, file(1) pads the names
+          # into aligned columns, so a single-space pattern matched nothing at all — this
+          # guard never once fired, including for the 6.8 MB artifact that is the reason
+          # it exists. The self-check below is what would have caught that.
           tracked=$(git ls-files -z | xargs -0 -r file --mime-type -- \
-            | grep -E ': application/(x-executable|x-sharedlib|x-mach-binary|x-dosexec|vnd\.microsoft\.portable-executable)$' || true)
+            | grep -E ':[[:space:]]+application/(x-executable|x-pie-executable|x-sharedlib|x-mach-binary|x-dosexec|x-object|x-archive|vnd\.microsoft\.portable-executable)$' || true)
           if [ -n "$tracked" ]; then
             echo "these compiled binaries are tracked; add them to .gitignore and git rm --cached:"
             echo "$tracked"
+            exit 1
+          fi
+          # Prove the pattern still matches a real binary, or "nothing is tracked" and
+          # "the pattern matches nothing" stay the same green — which is the state this
+          # guard was in. Two names of different lengths on purpose: file(1) pads its
+          # output into columns only when given more than one argument, and only up to the
+          # longest name, so this is what reproduces the alignment the real invocation
+          # above produces and a single-space pattern cannot match.
+          # Both lines have to match, not just one. file(1) pads every name out to the
+          # longest, so the longest is the single line that still has exactly one space
+          # after its colon — a single-space pattern matches that one and nothing else,
+          # which is how the original passed while seeing none of the shorter paths. Two
+          # probes of different lengths, and a count, is what makes that observable.
+          probedir="$(mktemp -d)"
+          go build -o "$probedir/p" ./cmd/scrubfixtures
+          cp "$probedir/p" "$probedir/a-much-longer-probe-name"
+          matched=$(file --mime-type -- "$probedir/p" "$probedir/a-much-longer-probe-name" \
+            | grep -cE ':[[:space:]]+application/(x-executable|x-pie-executable|x-sharedlib|x-mach-binary|x-dosexec|x-object|x-archive|vnd\.microsoft\.portable-executable)$' || true)
+          if [ "$matched" -ne 2 ]; then
+            echo "the compiled-binary pattern matched $matched of 2 probe binaries;"
+            echo "it would pass over a tracked one:"
+            file --mime-type -- "$probedir/p" "$probedir/a-much-longer-probe-name"
             exit 1
           fi
 

@@ -94,14 +94,14 @@ func TestScanFindsAPackageByItsOwnId(t *testing.T) {
 	storeCommitted(t, root, "pub-a", "asset-1", pkg(t, "111", "9", 400))
 	storeCommitted(t, root, "pub-b", "asset-2", pkg(t, "222", "9", 400))
 
-	got, ok := cache.Scan(t.Context(), root).Find("222", "", nil)
+	got, ok := cache.Scan(t.Context(), root).Find("222", cache.FindOptions{})
 	if !ok {
 		t.Fatal("Find(222) found nothing")
 	}
 	if want := cache.RelPath("pub-b", "asset-2"); got.RelPath != want {
 		t.Errorf("Find(222) = %q, want %q", got.RelPath, want)
 	}
-	if _, ok := cache.Scan(t.Context(), root).Find("333", "", nil); ok {
+	if _, ok := cache.Scan(t.Context(), root).Find("333", cache.FindOptions{}); ok {
 		t.Error("Find invented a candidate for a product the library does not hold")
 	}
 }

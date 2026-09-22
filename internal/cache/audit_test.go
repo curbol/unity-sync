@@ -235,11 +235,11 @@ func TestLocateSkipsAnExcludedFileWrittenNonCanonically(t *testing.T) {
 	rel := cache.RelPath("pub", "asset-1")
 	storeCommitted(t, root, "pub", "asset-1", pkg(t, "111", "9", 400))
 
-	if _, ok := cache.Scan(t.Context(), root).Find("111", "", nil, rel); ok {
+	if _, ok := cache.Scan(t.Context(), root).Find("111", cache.FindOptions{Exclude: rel}); ok {
 		t.Fatal("the canonical exclude did not skip the file")
 	}
 	for _, spelling := range []string{"./" + rel, "pub/./asset-1/asset-1.unitypackage"} {
-		if _, ok := cache.Scan(t.Context(), root).Find("111", "", nil, spelling); ok {
+		if _, ok := cache.Scan(t.Context(), root).Find("111", cache.FindOptions{Exclude: spelling}); ok {
 			t.Errorf("exclude %q did not skip the same file", spelling)
 		}
 	}
@@ -304,11 +304,11 @@ func TestAnUnresolvableExclusionRefusesEveryCandidate(t *testing.T) {
 	root := t.TempDir()
 	storeCommitted(t, root, "pub", "asset-1", pkg(t, "111", "9", 400))
 
-	if _, ok := cache.Scan(t.Context(), root).Find("111", "", nil); !ok {
+	if _, ok := cache.Scan(t.Context(), root).Find("111", cache.FindOptions{}); !ok {
 		t.Fatal("the candidate is not findable at all")
 	}
 	for _, bad := range []string{"/etc/passwd", "../outside/x.unitypackage"} {
-		if _, ok := cache.Scan(t.Context(), root).Find("111", "", nil, bad); ok {
+		if _, ok := cache.Scan(t.Context(), root).Find("111", cache.FindOptions{Exclude: bad}); ok {
 			t.Errorf("exclusion %q was dropped and a candidate offered anyway", bad)
 		}
 	}
@@ -365,7 +365,7 @@ func TestATempStoreCreatedIsATempTheSweepAndScanRecognise(t *testing.T) {
 	}
 	// The adopt scan must not offer an uncommitted partial as something to adopt: a
 	// truncated body can clear the size floor with its descriptor intact.
-	if _, ok := cache.Scan(t.Context(), root).Find("115488", "", nil); ok {
+	if _, ok := cache.Scan(t.Context(), root).Find("115488", cache.FindOptions{}); ok {
 		t.Error("the adopt scan offered an uncommitted download temp as a candidate")
 	}
 	old := time.Unix(1600000000, 0)
@@ -498,7 +498,7 @@ func TestFindPrefersTheCopyAlreadyInPlaceWhateverItIsCalled(t *testing.T) {
 	}
 	ix := cache.Scan(t.Context(), root)
 	for _, spelling := range []string{inPlace, "./" + inPlace, "pub-one//asset-1/asset-1.unitypackage"} {
-		got, ok := ix.Find("1", spelling, nil)
+		got, ok := ix.Find("1", cache.FindOptions{Prefer: spelling})
 		if !ok {
 			t.Fatalf("Find(%q) found nothing", spelling)
 		}
@@ -756,6 +756,34 @@ func TestVerifyFailsWhenARecordedDeliveredIdHasNoDescriptor(t *testing.T) {
 	}
 }
 
+// Verify compares the descriptor's *version* and deliberately not its product id, and that
+// was unpinned in both directions — so whichever way the seam was settled, nothing held it.
+//
+// It stays that way on purpose. Verify answers "is the file this entry recorded still the
+// one it recorded", and the entry's own cachePath is what names it; adding a product-id
+// gate would re-download every package whose descriptor carries no id, on every run,
+// forever. The case that made this look load-bearing — one entry's cachePath pointing at
+// another entry's package — is handled where it does damage instead: RemoveStale refuses
+// to delete a file whose descriptor names a different product, and a lockfile recording one
+// path twice is refused before a run mutates anything.
+func TestVerifyChecksTheVersionAndNotTheProduct(t *testing.T) {
+	root := t.TempDir()
+	body := pkg(t, "222", "v9", 400)
+	p := storeCommitted(t, root, "pub", "asset-1", body)
+
+	// A package belonging to another product still verifies, because the path is what
+	// identifies it here and the recorded version is what has to match.
+	if !cache.Verify(root, p.RelPath, int64(len(body)), "v9") {
+		t.Error("Verify gated on the product id; a descriptor-less package would then " +
+			"re-download on every run forever")
+	}
+	// The version half is still live, or the test above would pass for a package that
+	// matched nothing at all.
+	if cache.Verify(root, p.RelPath, int64(len(body)), "v8") {
+		t.Error("Verify accepted a package whose descriptor names another version")
+	}
+}
+
 // SameFile answers the question SamePath cannot on a case-insensitive filesystem, where
 // two spellings differing only in case name one file. That difference is observable only
 // on Windows and macOS, which CI runs; what every platform can check is that it answers
@@ -871,7 +899,7 @@ func TestBothWalksStopWhenTheContextEnds(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, ok := cache.Scan(ctx, root).Find("111", "", nil); ok {
+	if _, ok := cache.Scan(ctx, root).Find("111", cache.FindOptions{}); ok {
 		t.Error("Scan went on parsing headers after the run was told to stop")
 	}
 	if n, _ := cache.SweepTemps(ctx, root, time.Now().Add(time.Hour)); n != 0 {
@@ -882,7 +910,7 @@ func TestBothWalksStopWhenTheContextEnds(t *testing.T) {
 	}
 	// The positive control: with a live context the same calls do their work, so the
 	// assertions above cannot pass by the fixtures simply being wrong.
-	if _, ok := cache.Scan(t.Context(), root).Find("111", "", nil); !ok {
+	if _, ok := cache.Scan(t.Context(), root).Find("111", cache.FindOptions{}); !ok {
 		t.Error("Scan found nothing even with a live context")
 	}
 	if n, _ := cache.SweepTemps(t.Context(), root, time.Now().Add(time.Hour)); n != 1 {
@@ -934,7 +962,7 @@ func TestStoreRefusesToWriteThroughASymlinkTheReadsWouldRefuse(t *testing.T) {
 					t.Fatal("Store wrote a package Verify refuses, which re-downloads it on every run")
 				}
 				ix := cache.Scan(t.Context(), root)
-				if _, ok := ix.Find("111", p.RelPath, nil); !ok {
+				if _, ok := ix.Find("111", cache.FindOptions{Prefer: p.RelPath}); !ok {
 					t.Fatal("Store wrote a package the adopt scan cannot see, which re-downloads it on every run")
 				}
 				return
@@ -1072,7 +1100,7 @@ func TestASymlinkedLibraryRootIsStillWalked(t *testing.T) {
 		t.Error("the abandoned temp survived a sweep through a symlinked root")
 	}
 
-	got, ok := cache.Scan(context.Background(), root).Find("111", "", nil)
+	got, ok := cache.Scan(context.Background(), root).Find("111", cache.FindOptions{})
 	if !ok {
 		t.Fatal("Scan through a symlinked root found no candidate, so adoption would " +
 			"re-download the whole library and a delisted asset would read as unavailable")
@@ -1102,10 +1130,10 @@ func TestTheWalkStillDoesNotDescendALinkInsideTheLibrary(t *testing.T) {
 	}
 
 	ix := cache.Scan(context.Background(), root)
-	if _, ok := ix.Find("222", "", nil); ok {
+	if _, ok := ix.Find("222", cache.FindOptions{}); ok {
 		t.Error("the scan descended a symlink and offered a package from outside the library")
 	}
-	if _, ok := ix.Find("111", "", nil); !ok {
+	if _, ok := ix.Find("111", cache.FindOptions{}); !ok {
 		t.Error("the scan stopped at the link instead of skipping it")
 	}
 }
@@ -1153,10 +1181,10 @@ func TestAPackageThatIsItselfALinkOutOfTheLibraryIsNotIndexed(t *testing.T) {
 	}
 
 	ix := cache.Scan(context.Background(), root)
-	if _, ok := ix.Find("222", "", nil); ok {
+	if _, ok := ix.Find("222", cache.FindOptions{}); ok {
 		t.Error("the scan indexed a package that is a link out of the library")
 	}
-	if _, ok := ix.Find("111", "", nil); !ok {
+	if _, ok := ix.Find("111", cache.FindOptions{}); !ok {
 		t.Error("the scan found nothing at all, so the refusal above proves nothing")
 	}
 }
@@ -1188,10 +1216,10 @@ func TestAnExcludedFileIsSkippedUnderItsOtherSpelling(t *testing.T) {
 	}
 
 	ix := cache.Scan(t.Context(), root)
-	if _, ok := ix.Find("111", "", nil); !ok {
+	if _, ok := ix.Find("111", cache.FindOptions{}); !ok {
 		t.Fatal("precondition: the scan did not index the package at all")
 	}
-	if got, ok := ix.Find("111", "", nil, recorded); ok {
+	if got, ok := ix.Find("111", cache.FindOptions{Exclude: recorded}); ok {
 		t.Errorf("Find offered %q, which is the excluded file under its other spelling: a "+
 			"copy that just failed verification would be re-adopted and its digest recorded",
 			got.RelPath)
@@ -1267,7 +1295,7 @@ func TestFindFallsBackToWalkOrderWithNoCopyInPlace(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	got, ok := cache.Scan(t.Context(), root).Find("1", "pub/asset-1/asset-1.unitypackage", nil)
+	got, ok := cache.Scan(t.Context(), root).Find("1", cache.FindOptions{Prefer: "pub/asset-1/asset-1.unitypackage"})
 	if !ok {
 		t.Fatal("Find found nothing with no copy at the derived path")
 	}
@@ -1297,8 +1325,9 @@ func TestFindDoesNotLetARejectedCandidateMaskAnAcceptableOne(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, ok := cache.Scan(t.Context(), root).Find("1", derived, func(c cache.Candidate) bool {
-		return c.Metadata.VersionID == "current-version"
+	got, ok := cache.Scan(t.Context(), root).Find("1", cache.FindOptions{
+		Prefer: derived,
+		Accept: func(c cache.Candidate) bool { return c.Metadata.VersionID == "current-version" },
 	})
 	if !ok {
 		t.Fatal("the preferred copy failed the gate and masked the acceptable one")

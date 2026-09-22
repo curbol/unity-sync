@@ -500,9 +500,13 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 			// The size floor is the same one a download must clear: without it, a
 			// truncated package left in the library enters through the one door that
 			// skips the download path and is then hashed and recorded as truth.
-			c, ok := scan().Find(a.ID, derived, func(c cache.Candidate) bool {
-				return !belowFloor(c.Size, a.AdvertisedSize) && c.Metadata.VersionID == a.Version.ID
-			}, excludeRel)
+			c, ok := scan().Find(a.ID, cache.FindOptions{
+				Prefer:  derived,
+				Exclude: excludeRel,
+				Accept: func(c cache.Candidate) bool {
+					return !belowFloor(c.Size, a.AdvertisedSize) && c.Metadata.VersionID == a.Version.ID
+				},
+			})
 			if !ok {
 				return false
 			}
@@ -537,8 +541,11 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		// rejected candidate masked an acceptable one: only the location is checked
 		// outside, and Find already prefers the copy at derived.
 		adoptableInPlace := func() bool {
-			c, ok := scan().Find(a.ID, derived, func(c cache.Candidate) bool {
-				return !belowFloor(c.Size, a.AdvertisedSize) && c.Metadata.VersionID == a.Version.ID
+			c, ok := scan().Find(a.ID, cache.FindOptions{
+				Prefer: derived,
+				Accept: func(c cache.Candidate) bool {
+					return !belowFloor(c.Size, a.AdvertisedSize) && c.Metadata.VersionID == a.Version.ID
+				},
 			})
 			if !ok {
 				return false

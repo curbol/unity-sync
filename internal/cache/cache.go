@@ -575,22 +575,43 @@ func descriptorAt(rt *os.Root, rel string) (unitypackage.Metadata, error) {
 	return unitypackage.Read(f)
 }
 
+// FindOptions narrows what Find will hand back.
+type FindOptions struct {
+	// Prefer is the path a copy wins from when several files claim the product, so an
+	// adopt that is really a no-op does not turn into a relocation conflict.
+	Prefer string
+
+	// Exclude is a path that is never a candidate: a file that just failed verification
+	// is not one to adopt, however intact its descriptor still looks. It comes from the
+	// lockfile, so it is resolved rather than compared as a string, and one that cannot be
+	// resolved refuses every candidate rather than being ignored.
+	Exclude string
+
+	// Accept gates each candidate inside the selection rather than being applied to what
+	// comes back; nil takes anything. The gates that can reject one are the caller's — the
+	// size floor and the advertised version id — and applied afterwards they rejected the
+	// copy this had already chosen while another that would have passed sat unexamined two
+	// files along: a stale or truncated build at the derived path masked an intact copy and
+	// the asset re-downloaded in full.
+	Accept func(Candidate) bool
+}
+
 // Find returns a package whose own metadata claims the given product id. It answers from
 // the scan rather than probing the derived path, because the whole point of adoption is a
 // file that is not where the current layout would put it — after a rename, say.
 //
-// When several files claim the same product, the one already at preferRel wins, so an
-// adopt that is really a no-op does not turn into a relocation conflict. Paths in
-// excludeRel are skipped entirely: a file that just failed verification is not a candidate
-// for adoption, however intact its descriptor still looks.
-//
-// accept is applied inside the selection rather than to what comes back, and a nil accept
-// takes anything. The gates that can reject a candidate are the caller's — the size floor
-// and the advertised version id — and applied afterwards they rejected the one copy this
-// had already chosen while another copy that would have passed sat unexamined two files
-// along: a stale build at the derived path, or a truncated one, masked an intact copy and
-// the asset re-downloaded in full.
-func (ix *Index) Find(productID, preferRel string, accept func(Candidate) bool, excludeRel ...string) (Candidate, bool) {
+// The options are a struct rather than positional parameters because Prefer and Exclude
+// are both root-relative paths with opposite meanings: as two adjacent strings they
+// compiled either way round, and the wrong way round skips the copy already in place and
+// adopts the one the caller named as damaged — a wrong file entering through the one door
+// that skips the download guards. The exclusion was also variadic while exactly one was
+// ever passed, advertising a plural nothing exercised.
+func (ix *Index) Find(productID string, opts FindOptions) (Candidate, bool) {
+	preferRel, accept := opts.Prefer, opts.Accept
+	var excludeRel []string
+	if opts.Exclude != "" {
+		excludeRel = []string{opts.Exclude}
+	}
 	// Resolved, not compared as strings: excludeRel comes from the lockfile, which is
 	// hand-editable and travels between machines, so "./pub/a/a.unitypackage" has to skip
 	// the same file "pub/a/a.unitypackage" names. Missing the match would re-offer a file

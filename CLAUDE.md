@@ -183,7 +183,10 @@ each with a package doc comment stating its contract:
   through a symlink — so the write gate cannot be weaker than the read gate in either of
   the two ways a path escapes.
 - **The adoption gates run inside the scan's own selection**, not on the candidate it
-  hands back. `cache.Index.Find` returns one file, preferring the copy already at the
+  hands back. `cache.Index.Find` takes a `FindOptions` rather than positional strings,
+  because `Prefer` and `Exclude` are both root-relative paths with opposite meanings: as
+  two adjacent parameters they compiled either way round, and the wrong way round adopts
+  the file the caller named as damaged. `cache.Index.Find` returns one file, preferring the copy already at the
   derived path, so gates applied afterwards rejected that copy while another that would
   have passed sat unexamined: a stale or truncated build where the layout puts it masks an
   intact one elsewhere and the asset re-downloads in full. A cloud sync client's conflicted

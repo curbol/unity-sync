@@ -551,7 +551,15 @@ func (c *Client) Fetch(ctx context.Context, id string) (*Download, error) {
 		}
 		return reject(err)
 	}
-	if enc := resp.Header.Get("Content-Encoding"); enc != "" {
+	// "identity" is the one token that asserts the body was *not* transformed, and it is
+	// what an intermediary that states the negotiated coding explicitly sends back: a
+	// corporate proxy, a TLS-inspecting appliance, a CDN configured to name it. Rejecting
+	// on non-emptiness alone failed every asset in the library behind one of those, and
+	// unmarked, so each spent its full retry budget first and the message blamed the store
+	// for something the network in front of it did. Any other coding is still refused:
+	// the endpoint honours gzip by gzipping the already-gzipped package, and Go will not
+	// decode an encoding the caller asked for itself.
+	if enc := strings.TrimSpace(resp.Header.Get("Content-Encoding")); enc != "" && !strings.EqualFold(enc, "identity") {
 		return reject(fmt.Errorf("download %s: server re-encoded the body as %q despite identity", id, enc))
 	}
 	if err := checkOctetStream(resp.Header.Get("Content-Type")); err != nil {

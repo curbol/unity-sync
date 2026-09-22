@@ -90,6 +90,14 @@ func Do(ctx context.Context, p Policy, fn func(attempt int) error) error {
 		}
 		var perm permanent
 		if errors.As(last, &perm) {
+			// Unwrapped on the way out, so a caller sees the cause rather than this
+			// package's marker type. That also means permanence does not survive a
+			// nested Do: an error marked inside an inner schedule comes back bare, and an
+			// outer Do around it retries what the inner one had already settled. Live
+			// today only through store.Lookup, which runs its own Do and is called from
+			// inside the download schedule by the syncer's republish check — which
+			// discards the error, so nothing currently depends on the marker crossing.
+			// A caller that starts propagating one has to re-mark it.
 			return perm.err
 		}
 		if attempt == p.Attempts {

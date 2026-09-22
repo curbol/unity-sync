@@ -165,7 +165,13 @@ Two behaviours matter more than they look:
 - The endpoint honours `Accept-Encoding: gzip` by **gzipping the already-gzipped package**.
   Go does not transparently decode an encoding the caller asked for, so a client that sets
   the header itself caches a double-gzipped blob with no readable metadata. The tool sends
-  `Accept-Encoding: identity` and treats any `Content-Encoding` on the response as an error.
+  `Accept-Encoding: identity` and treats a `Content-Encoding` on the response as an error —
+  except `identity` itself, which asserts the body was *not* transformed. An intermediary
+  that states the negotiated coding explicitly, a corporate proxy or a TLS-inspecting
+  appliance, echoes it on a body that is the untouched package; refusing on non-emptiness
+  alone failed every asset in the library behind one of those, and failed it unmarked, so
+  each spent its full retry budget first and the diagnostic blamed the store for what the
+  network in front of it did.
 
 `downloadSize` is approximate: it runs 0-16 bytes above the bytes delivered, an artifact of
 rounding up to a 16-byte boundary. It bounds a transfer; it never checksums one.

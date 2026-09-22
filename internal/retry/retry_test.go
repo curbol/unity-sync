@@ -181,6 +181,38 @@ func TestAPolicyWithNoBaseStillBacksOff(t *testing.T) {
 	}
 }
 
+// The mirror image of the case above, and the one floor that had no test. A caller
+// setting only Base — retry.Policy{Base: time.Second}, as complete-looking a policy as
+// the other spelling — gets a loop that never runs fn at all, and a return of
+// "gave up after 0 attempts: %w" wrapping nil: an error that is non-nil, names no cause,
+// and satisfies no errors.Is, so every caller's classification falls through to "retryable
+// failure with no message" while nothing was ever attempted.
+func TestAPolicyWithNoAttemptsStillRunsOnce(t *testing.T) {
+	var calls int
+	sentinel := errors.New("boom")
+	err := retry.Do(context.Background(), retry.Policy{Base: time.Millisecond},
+		func(int) error { calls++; return sentinel })
+	if calls != 1 {
+		t.Errorf("fn was called %d times, want exactly 1", calls)
+	}
+	if err == nil {
+		t.Fatal("Do returned nil without ever succeeding")
+	}
+	if !errors.Is(err, sentinel) {
+		t.Errorf("Do = %v, want the cause to still reach errors.Is", err)
+	}
+
+	// A zero Policy is the same trap with neither field set.
+	calls = 0
+	if err := retry.Do(context.Background(), retry.Policy{},
+		func(int) error { calls++; return sentinel }); !errors.Is(err, sentinel) {
+		t.Errorf("zero Policy: Do = %v, want the cause", err)
+	}
+	if calls != 1 {
+		t.Errorf("zero Policy: fn was called %d times, want exactly 1", calls)
+	}
+}
+
 // Do's exhaustion return carries two properties nothing pinned: it wraps with %w, so the
 // sentinel still reaches errors.Is, and it reports the *last* failure rather than the
 // first. The existing limit test returns one error value on every attempt, so it cannot

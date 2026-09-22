@@ -218,6 +218,56 @@ func TestFetchGuardsTheResponseBeforeAnyBytesAreKept(t *testing.T) {
 	}
 }
 
+// "identity" asserts the body was not transformed, so it is the one Content-Encoding that
+// must be accepted rather than refused. An intermediary that states the negotiated coding
+// explicitly — a corporate proxy, a TLS-inspecting appliance, a CDN configured to name it
+// — sends it back on a body that is the untouched package. Refusing on non-emptiness alone
+// failed every asset in the library behind one of those, unmarked and so retryable, so
+// each spent its full budget first and the message blamed the store for what the network
+// in front of it did. The offline suite cannot reach the case on its own, since the store
+// itself sends no Content-Encoding at all.
+func TestAnIdentityContentEncodingIsNotAReEncode(t *testing.T) {
+	const pkg = "\x1f\x8b\x08\x00rest-of-a-package"
+	for _, enc := range []string{"identity", "Identity", " identity "} {
+		t.Run(enc, func(t *testing.T) {
+			c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/octet-stream")
+				w.Header().Set("Content-Encoding", enc)
+				io.WriteString(w, pkg)
+			})
+			dl, err := c.Fetch(context.Background(), "115488")
+			if err != nil {
+				t.Fatalf("Fetch refused an untransformed body: %v", err)
+			}
+			defer dl.Body.Close()
+			// Read through, because accepting the response and then handing back
+			// something other than the bytes would be the same outcome by another route.
+			got, err := io.ReadAll(dl.Body)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			if string(got) != pkg {
+				t.Errorf("body = %q, want the package bytes", got)
+			}
+		})
+	}
+
+	// Every other coding is still refused, which is the half that must not weaken: the
+	// endpoint honours gzip by gzipping the already-gzipped package.
+	for _, enc := range []string{"gzip", "br", "deflate", "identity, gzip"} {
+		t.Run("refused/"+enc, func(t *testing.T) {
+			c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/octet-stream")
+				w.Header().Set("Content-Encoding", enc)
+				io.WriteString(w, pkg)
+			})
+			if _, err := c.Fetch(context.Background(), "115488"); err == nil {
+				t.Fatalf("Fetch accepted Content-Encoding %q", enc)
+			}
+		})
+	}
+}
+
 // The whole point of a response-header timeout is that a slow *body* is legitimate — a
 // 23 GB package takes a while — while a server that never answers is not. Against
 // kilobyte fixtures the two policies are indistinguishable, so this pins them apart.
@@ -758,14 +808,21 @@ func TestASlowButLiveBodyIsNotCutOff(t *testing.T) {
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.WriteHeader(http.StatusOK)
 		w.(http.Flusher).Flush()
-		// Eight gaps, each most of the stall window: far longer in total than the window,
-		// but never silent for the whole of it.
+		// Eight gaps, each a fifth of the stall window: far longer in total than the
+		// window, but never silent for the whole of it.
+		//
+		// The window is a second rather than the 100ms this used to run at, and the gaps
+		// scale with it. The property needs gap < window < total, so the ratio is
+		// inherent, but at 30ms against 100ms one sleep overshooting — which -race and
+		// parallel package runs both make ordinary — failed the test with "a slow but
+		// live body was cut off". That reads as the guard being broken rather than as the
+		// scheduling noise it is, which is the worst way for a timing test to fail.
 		for range 8 {
-			time.Sleep(30 * time.Millisecond)
+			time.Sleep(200 * time.Millisecond)
 			io.WriteString(w, "chunk")
 			w.(http.Flusher).Flush()
 		}
-	}, store.WithStallTimeout(100*time.Millisecond))
+	}, store.WithStallTimeout(time.Second))
 
 	dl, err := c.Fetch(context.Background(), "1")
 	if err != nil {

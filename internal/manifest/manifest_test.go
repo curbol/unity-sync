@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/curbol/unity-sync/internal/fixtures"
 	"github.com/curbol/unity-sync/internal/manifest"
@@ -354,5 +355,51 @@ func TestSaveIsByteStableAcrossRuns(t *testing.T) {
 	if !bytes.Equal(first, second) {
 		t.Errorf("saving unchanged state twice produced different bytes, so every run "+
 			"dirties the file:\nfirst:\n%s\nsecond:\n%s", first, second)
+	}
+}
+
+// Save leaves a temp beside the destination and unlinks it on every error path, but a
+// SIGKILL or a power loss between CreateTemp and Rename cannot — and the destination here
+// is a directory the user commits. The lockfile beside it has been swept since it was
+// written; this half was missed, so an orphan from a killed select survived every future
+// run as an untracked dotfile that nothing would ever remove.
+func TestSweepTempsReclaimsWhatAKilledSelectLeftBehind(t *testing.T) {
+	dir := t.TempDir()
+	orphan := filepath.Join(dir, ".unity-sync-manifest-123456")
+	live := filepath.Join(dir, ".unity-sync-manifest-inflight")
+	keep := filepath.Join(dir, manifest.FileName)
+	// The lockfile's own temp, which this must not touch: each sweeps its own prefix, and
+	// the two run over the same directory.
+	otherPrefix := filepath.Join(dir, ".unity-sync-lock-123456")
+	for _, p := range []string{orphan, live, keep, otherPrefix} {
+		if err := os.WriteFile(p, []byte(""), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	old := time.Now().Add(-2 * time.Hour)
+	for _, p := range []string{orphan, otherPrefix} {
+		if err := os.Chtimes(p, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if n := manifest.SweepTemps(dir, time.Now().Add(-time.Hour)); n != 1 {
+		t.Errorf("swept %d temps, want 1", n)
+	}
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Error("the orphaned temp survived the sweep")
+	}
+	if _, err := os.Stat(live); err != nil {
+		t.Error("the sweep removed a temp newer than the cutoff, i.e. a concurrent run's write")
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Error("the sweep removed the manifest itself")
+	}
+	if _, err := os.Stat(otherPrefix); err != nil {
+		t.Error("the sweep removed the lockfile's temp, which is not its to reclaim")
+	}
+	// A directory that does not exist yet is the first-run case, not an error.
+	if n := manifest.SweepTemps(filepath.Join(dir, "nope"), time.Now()); n != 0 {
+		t.Errorf("swept %d temps from a missing directory", n)
 	}
 }

@@ -433,7 +433,7 @@ func (f *failingEnumerate) Enumerate(context.Context) ([]model.Asset, error) {
 	return nil, errors.New("session expired")
 }
 
-// ---- download guards ----------------------------------------------------------
+// ---- helpers for the download-guard tests, which live in audit_test.go ---------
 
 func tempsUnder(t *testing.T, root string) int {
 	t.Helper()
@@ -478,7 +478,7 @@ func TestProgressSurvivesAMidRunFailure(t *testing.T) {
 	}
 }
 
-// ---- dry run -------------------------------------------------------------------
+// ---- helpers for the dry-run tests, which live in audit_test.go ----------------
 
 func treeSnapshot(t *testing.T, root string) string {
 	t.Helper()

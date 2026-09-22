@@ -58,7 +58,12 @@ func (e *ErrNoCredential) Error() string {
 type Resolved struct {
 	// Header is the Cookie header for the store. It is the user's live session: it goes
 	// into a request and nowhere else — no log line, no error string, no committed file.
-	Header string
+	//
+	// json:"-" because String closes %v, %s and %+v but not an encoder: the field is
+	// exported, so json.Marshal or any struct-walking dumper reaches straight past String
+	// and writes the credential out. Nothing marshals a Resolved today, which is why this
+	// costs nothing now and is the wrong thing to discover later.
+	Header string `json:"-"`
 
 	// Path is the file the credential came from, and is safe to print. Which profile a
 	// search settled on is not obvious, and a run against the wrong signed-in account is

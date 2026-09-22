@@ -8,6 +8,7 @@
 package lockfile
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -128,7 +129,15 @@ func (lf Lockfile) checkUnique() error {
 	seen := map[string]string{}
 	for key, e := range lf.Assets {
 		if e.AssetID == "" {
-			continue
+			// Refused rather than skipped. Classification indexes by product id, so an
+			// entry with none is filed under "" and reached by no lookup — the store
+			// never yields an empty id — which drops it from the next build and reports
+			// it as "no longer owned: <name>, left in place" for an asset the account may
+			// still hold. It arrives the way a duplicate does, from a hand-edit or a merge
+			// of this committed file, and it is as silent as one is loud.
+			return fmt.Errorf("entry %q records no assetId; the key is derived from the id "+
+				"and is not the identity, so an entry without one cannot be matched to an "+
+				"owned asset", key)
 		}
 		if first, dup := seen[e.AssetID]; dup {
 			a, b := key, first
@@ -188,12 +197,22 @@ func SweepTemps(dir string, olderThan time.Time) int {
 
 // Save writes the lockfile atomically. encoding/json sorts map keys, so the output is
 // stable across runs and a diff shows only what actually changed.
+//
+// HTML escaping is off. json.Marshal escapes &, < and > by default, which is for embedding
+// in a script tag and does nothing for a file on disk — it turned every ampersand in an
+// asset name into &, and six of the names in the committed fixtures carry one. The
+// file's stated purpose is that a month's diff reads like a changelog, so that cost is
+// paid on exactly the thing it is for. Encode appends its own newline, and neither key
+// order nor byte stability changes.
 func Save(path string, lf Lockfile) error {
-	raw, err := json.MarshalIndent(lf, "", "  ")
-	if err != nil {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(lf); err != nil {
 		return err
 	}
-	raw = append(raw, '\n')
+	raw := buf.Bytes()
 	tmp, err := os.CreateTemp(filepath.Dir(path), tempPrefix+"*")
 	if err != nil {
 		return err

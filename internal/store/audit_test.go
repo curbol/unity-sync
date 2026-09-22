@@ -3,6 +3,7 @@ package store_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -1056,5 +1057,27 @@ func TestABootstrapRouteThatIssuesNoTokenIsNotRetried(t *testing.T) {
 	}
 	if attempts != 1 {
 		t.Errorf("bootstrap made %d attempts against a route that is not issuing, want 1", attempts)
+	}
+}
+
+// Credential holds the user's live session. session.Resolved deliberately renders its path
+// rather than its header so a stray %v cannot leak one, and that protection was dropped at
+// the conversion in main: past it the value was a bare string again. Nothing prints one
+// today, which is the point — the route is closed before there is something to find.
+func TestPrintingACredentialDoesNotPrintTheSession(t *testing.T) {
+	c := store.Credential("LS=the-credential; _csrf=zzz")
+	for _, got := range []string{
+		fmt.Sprintf("%v", c),
+		fmt.Sprintf("%s", c),
+		fmt.Sprint(c),
+		fmt.Sprintf("%v", fmt.Errorf("building a client: %v", c)),
+	} {
+		if strings.Contains(got, "the-credential") {
+			t.Errorf("printing a Credential rendered the live session: %q", got)
+		}
+	}
+	// Still usable as the header it is, or the redaction would have broken every request.
+	if string(c) != "LS=the-credential; _csrf=zzz" {
+		t.Error("the underlying header changed")
 	}
 }

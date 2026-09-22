@@ -75,6 +75,11 @@ func Do(ctx context.Context, p Policy, fn func(attempt int) error) error {
 	if p.Base <= 0 {
 		p.Base = DefaultPolicy().Base
 	}
+	// Sleep is a test seam on an exported field, and it is not context-aware: an injected
+	// sleeper cannot be cut short, so a caller that sets one in production silently loses
+	// the property backoff exists to provide — a Ctrl-C during a 30-second wait is waited
+	// out instead of honoured. Nothing in the tree sets it outside a test, and nothing
+	// should.
 	sleep := backoff
 	if p.Sleep != nil {
 		sleep = func(_ context.Context, d time.Duration) error { p.Sleep(d); return nil }

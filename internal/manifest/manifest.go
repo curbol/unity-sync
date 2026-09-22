@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/BurntSushi/toml"
 	"github.com/curbol/unity-sync/internal/model"
@@ -97,6 +98,45 @@ func Load(path string) (Manifest, error) {
 	return m, nil
 }
 
+// tempPrefix marks a manifest write in flight. SweepTemps is what reclaims one a killed
+// run left behind, so the prefix and its reader live together rather than the prefix being
+// a literal two functions apart.
+const tempPrefix = ".unity-sync-manifest-"
+
+// SweepTemps removes manifest temps a killed run left beside the destination, returning
+// how many.
+//
+// The same window Save's own error paths cannot cover: a SIGKILL or a power loss between
+// CreateTemp and Rename leaves the file behind, in the directory the user commits, and
+// nothing else would ever remove it. The lockfile beside it has had this since it was
+// written; this half was missed, so a manifest orphan survived every future run as an
+// untracked dotfile. Narrower than the lockfile's window — one per select run rather than
+// one per resolved asset — which is why it went unnoticed rather than why it is fine.
+//
+// It spares anything newer than the cutoff, so a concurrent run's in-flight write
+// survives, and it fails silently for the reason the cache sweep does: housekeeping must
+// not stop a run.
+func SweepTemps(dir string, olderThan time.Time) int {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0
+	}
+	var n int
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasPrefix(e.Name(), tempPrefix) {
+			continue
+		}
+		fi, err := e.Info()
+		if err != nil || !fi.ModTime().Before(olderThan) {
+			continue
+		}
+		if os.Remove(filepath.Join(dir, e.Name())) == nil {
+			n++
+		}
+	}
+	return n
+}
+
 // Save writes the manifest atomically, entries sorted by id for a stable diff.
 func Save(path string, m Manifest) error {
 	// Sort a copy: the value receiver shares the caller's backing array, so sorting in
@@ -104,7 +144,7 @@ func Save(path string, m Manifest) error {
 	m.Assets = append([]Entry(nil), m.Assets...)
 	sort.Slice(m.Assets, func(i, j int) bool { return m.Assets[i].ID < m.Assets[j].ID })
 
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".unity-sync-manifest-*")
+	tmp, err := os.CreateTemp(filepath.Dir(path), tempPrefix+"*")
 	if err != nil {
 		return err
 	}

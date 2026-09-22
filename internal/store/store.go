@@ -140,6 +140,15 @@ func WithBaseURL(u string) Option { return func(c *Client) { c.base = strings.Tr
 // User-Agent — the one header every intermediary on the path writes to a log.
 type Credential string
 
+// String redacts, so the default way to print a Credential is the safe one.
+//
+// session.Resolved carries the same value behind a String that renders the path instead,
+// and that protection was dropped at the conversion in main: past it the live session was
+// a bare string again, and a %v in any future log line or wrapped error would have carried
+// it. Nothing prints one today. Every use is string(c) into a header, so this costs
+// nothing and closes the route before there is something to find.
+func (c Credential) String() string { return "[redacted]" }
+
 // New builds a client for the given session Cookie header.
 //
 // The transport sets a response-header timeout rather than a whole-request timeout: a

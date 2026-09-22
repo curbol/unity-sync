@@ -386,6 +386,10 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		// rename cannot, and Save runs once per resolved asset. Same backdated cutoff, so
 		// a concurrent run's in-flight write survives.
 		lockfile.SweepTemps(filepath.Dir(lockPath), started.Add(-sweepGrace))
+		// The manifest's own temps land in that same directory and had nothing that
+		// reclaimed them, so one left by a killed select survived as an untracked dotfile
+		// in the directory the user commits, for good.
+		manifest.SweepTemps(filepath.Dir(lockPath), started.Add(-sweepGrace))
 	}
 
 	// One index for the whole run: the classification loop below and every build() the

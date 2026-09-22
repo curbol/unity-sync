@@ -1,6 +1,7 @@
 package session_test
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -209,5 +210,26 @@ func TestPrintingAResolvedSessionDoesNotPrintTheCredential(t *testing.T) {
 	// Wrapped in an error is the shape the bug actually took.
 	if err := fmt.Errorf("session: %v", r); strings.Contains(err.Error(), "the-credential") {
 		t.Errorf("a wrapped error carried the live session: %v", err)
+	}
+}
+
+// String closes %v, %s and %+v, but the field is exported and an encoder walks straight
+// past String. Nothing marshals a Resolved today; the tag is what keeps a future debug
+// dump, structured log field or golden file from carrying the live session out with it.
+func TestEncodingAResolvedSessionDoesNotCarryTheCredential(t *testing.T) {
+	got, err := session.ResolveFrom(write(t, "session.curl",
+		`curl 'https://assetstore.unity.com/' -H 'Cookie: LS=the-credential'`))
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.Header == "" {
+		t.Fatal("the fixture no longer carries a header, so this would pass vacuously")
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "the-credential") {
+		t.Errorf("marshalling a Resolved wrote the live session: %s", raw)
 	}
 }

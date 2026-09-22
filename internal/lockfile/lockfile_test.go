@@ -380,6 +380,66 @@ func TestTwoEntriesForOneAssetAreRefused(t *testing.T) {
 	}
 }
 
+// An entry with no assetId is refused for the reason a duplicate is, and it arrives the
+// same way: a hand-edit or a merge of this committed file. Classification indexes by
+// product id, so such an entry is filed under "" and reached by no lookup — the store
+// never yields an empty id. It is then dropped from the next build and printed as "no
+// longer owned: <name>, left in place" for an asset the account may still hold. A
+// duplicate is loud; this was silent.
+func TestAnEntryWithNoAssetIdIsRefused(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unity-sync.lock.json")
+	body := `{"assets":{
+	  "quick-outline-115488":{"assetId":"115488","name":"Quick Outline","tracked":true},
+	  "orphaned-entry":{"name":"Lost Its Id","tracked":true,
+	    "cachePath":"acme/orphaned-entry/orphaned-entry.unitypackage"}
+	}}`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := lockfile.Load(path)
+	if err == nil {
+		t.Fatal("Load accepted an entry carrying no assetId")
+	}
+	if !strings.Contains(err.Error(), "orphaned-entry") {
+		t.Errorf("diagnostic %q does not name the entry at fault", err)
+	}
+}
+
+// json.Marshal escapes &, < and > by default, which is for embedding in a script tag and
+// does nothing for a file on disk. Six of the names in the committed fixtures carry an
+// ampersand, so "STYLIZED Fantasy Forge & Armory" was written with its ampersand escaped
+// — in the one file whose stated purpose is that a month's diff reads like a changelog.
+func TestAssetNamesAreNotHtmlEscaped(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "unity-sync.lock.json")
+	lf := lockfile.New()
+	lf.Assets["forge-1"] = lockfile.Entry{
+		AssetID: "1",
+		Name:    `STYLIZED Fantasy Forge & Armory <Low Poly> 3D`,
+	}
+	if err := lockfile.Save(path, lf); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "\\u0026") {
+		t.Errorf("the ampersand was escaped for HTML:\n%s", raw)
+	}
+	if !strings.Contains(string(raw), `Forge & Armory <Low Poly>`) {
+		t.Errorf("the name is not written as it reads:\n%s", raw)
+	}
+	// Still parseable, and still the same value: the escaping is a rendering choice, not
+	// a difference in what the file records.
+	back, err := lockfile.Load(path)
+	if err != nil {
+		t.Fatalf("the unescaped file no longer loads: %v", err)
+	}
+	if got := back.Assets["forge-1"].Name; got != lf.Assets["forge-1"].Name {
+		t.Errorf("round trip changed the name to %q", got)
+	}
+}
+
 // The flush is what makes a run's per-asset progress survive a crash: Save runs once per
 // resolved asset precisely so a kill at asset 90 of 100 keeps the 89, and bytes still in
 // the page cache when the rename returns are exactly the record that loses.

@@ -36,7 +36,34 @@ func geckoRoots() []string {
 	if err != nil {
 		return nil
 	}
-	return geckoRootsFor(runtime.GOOS, home, os.Getenv("APPDATA"))
+	return expandRoots(geckoRootsFor(runtime.GOOS, home, os.Getenv("APPDATA"), os.Getenv("LOCALAPPDATA")))
+}
+
+// expandRoots turns any root that is a pattern into the directories it matches, leaving
+// the rest alone.
+//
+// A packaged install lives under a directory named for its publisher hash, which Mozilla
+// documents nowhere, so that one root is matched rather than spelled out. Kept out of
+// geckoRootsFor, which stays pure so the per-platform matrix test can run every branch on
+// every OS, and separate from geckoRoots so this is reachable from a test that is not on
+// the platform the pattern belongs to.
+//
+// Order survives: Glob returns its matches sorted, and a pattern matching nothing
+// contributes nothing, which is what a missing directory already does.
+func expandRoots(roots []string) []string {
+	var out []string
+	for _, r := range roots {
+		if !strings.ContainsRune(r, '*') {
+			out = append(out, r)
+			continue
+		}
+		matches, err := filepath.Glob(r)
+		if err != nil {
+			continue
+		}
+		out = append(out, matches...)
+	}
+	return out
 }
 
 // geckoRootsFor takes the platform and the redirectable base explicitly so a test can
@@ -50,9 +77,12 @@ func geckoRoots() []string {
 // store found" to a user with a signed-in browser while listing five directories that do
 // not exist. The Linux paths stay home-relative because the browsers themselves hardcode
 // them: Gecko reads $HOME/.mozilla and does not consult $XDG_CONFIG_HOME.
-func geckoRootsFor(goos, home, appData string) []string {
+func geckoRootsFor(goos, home, appData, localAppData string) []string {
 	if appData == "" {
 		appData = filepath.Join(home, "AppData", "Roaming")
+	}
+	if localAppData == "" {
+		localAppData = filepath.Join(home, "AppData", "Local")
 	}
 	var roots []string
 	add := func(base string, rel ...string) {
@@ -71,6 +101,20 @@ func geckoRootsFor(goos, home, appData string) []string {
 		)
 	case "windows":
 		add(appData, "zen", "Mozilla/Firefox", "LibreWolf", "Waterfox", "Floorp")
+		// The Store build is sandboxed the way the snap and Flatpak ones are below, and
+		// omitting it has the same consequence: a packaged app's %APPDATA% writes are
+		// redirected into its package container, so this install has nothing under
+		// %APPDATA%\Mozilla\Firefox and the keyword answers "no session store found" to a
+		// user with a signed-in Firefox, for a browser the README promises by name.
+		//
+		// The publisher hash in the directory name is matched rather than spelled out: it
+		// is not documented anywhere Mozilla publishes, and a guessed constant that turns
+		// out wrong fails exactly as silently as leaving the root out. The package name in
+		// front of it is the app's own identity and is stable.
+		//
+		// After the unpackaged entry, so a machine carrying both reads the unpackaged one
+		// first, which is the ordering the Linux branch already gives the sandboxed paths.
+		add(localAppData, "Packages/Mozilla.Firefox_*/LocalCache/Roaming/Mozilla/Firefox")
 	default:
 		// Order is the contract, so these stay interleaved exactly as they were when
 		// every entry hung off the home directory: the first root carrying the credential

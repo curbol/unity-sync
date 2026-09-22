@@ -134,8 +134,57 @@ func TestACookieJarFilenameIsNotReadAsTheCredential(t *testing.T) {
 	if err == nil {
 		t.Fatal("a -b naming a jar file resolved as though it were a cookie string")
 	}
-	if strings.Contains(err.Error(), "cookies.txt") && !strings.Contains(err.Error(), "Cookie") {
-		t.Errorf("the filename was carried into the diagnostic as a credential: %v", err)
+	// The discriminator, not a leak check. The filename never reaches a diagnostic on
+	// either path, so the condition this replaced ("names cookies.txt but not Cookie")
+	// could not fire in either implementation: with the guard deleted the error is
+	// "…Cookie header is empty", which contains Cookie and not the filename, and the test
+	// passed while guarding nothing. Which of the two messages comes back is the only
+	// observable there is — a jar filename holds no "=" by definition, so it can never
+	// produce a successful resolve to assert against.
+	if !strings.Contains(err.Error(), "no Cookie header") {
+		t.Errorf("a -b naming a jar file was read as the cookie string: %v", err)
+	}
+}
+
+// Firefox switches an argument to $'…' whenever it holds a byte outside printable ASCII,
+// a "!" or a "'", and then writes "!" as \041, a byte under 256 as \xNN and anything
+// above as \uNNNN. A reader that only drops the backslash and keeps the next byte — which
+// is right inside double quotes and wrong here — turns \041 into the three characters
+// 041. The cookie is still present under its own name, so the LS assertion passes, and
+// the store answers a malformed credential with the same opaque 500 a missing one gets:
+// the user is told their session expired and sent to re-copy one that was fine.
+//
+// Only \' and \\ came out right under the old rule, which is why the form looked like it
+// worked and why the spelling table's ansi-c row — which carries no escape at all in its
+// payload — did not notice.
+func TestEveryAnsiCEscapeFirefoxEmitsIsDecoded(t *testing.T) {
+	for _, tc := range []struct{ name, escaped, want string }{
+		// The one that actually bites: "!" is %x21, the first octet RFC 6265 admits in a
+		// cookie value, and Firefox never writes it literally.
+		{"octal exclamation", `LS=a\041b`, "LS=a!b"},
+		// Chrome spells the same byte in hex, so both arms earn their keep.
+		{"hex exclamation", `LS=a\x21b`, "LS=a!b"},
+		{"single quote", `LS=a\'b`, "LS=a'b"},
+		{"backslash", `LS=a\\b`, `LS=a\b`},
+		{"short octal", `LS=a\41b`, "LS=a!b"},
+		// Bash takes one hex digit when the next byte is not one, so the run length has
+		// to be driven by what is there rather than fixed at two.
+		{"hex one digit", `LS=a\x9zb`, "LS=a\x09zb"},
+		{"unicode escape", `LS=aéb`, "LS=aéb"},
+		// An escape bash does not recognise keeps the byte and drops the backslash, which
+		// is what this did for every byte before. Nothing that read correctly may change.
+		{"unrecognised escape", `LS=a\qb`, "LS=aqb"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := `curl 'https://assetstore.unity.com/' -H $'Cookie: ` + tc.escaped + `'`
+			got, err := session.ResolveFrom(write(t, "session.curl", body))
+			if err != nil {
+				t.Fatalf("Resolve: %v", err)
+			}
+			if got.Header != tc.want {
+				t.Errorf("header = %q, want %q", got.Header, tc.want)
+			}
+		})
 	}
 }
 

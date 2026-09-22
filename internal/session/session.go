@@ -10,11 +10,14 @@
 package session
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 // credentialCookie is the one cookie the store actually checks.
@@ -85,6 +88,16 @@ func ResolveFrom(source string) (Resolved, error) {
 	}
 	fi, statErr := os.Stat(source)
 	if statErr != nil {
+		// A source that names no path separator and does not exist is far more likely to
+		// be a misremembered keyword than a file: "firefox", or "Browser" for the keyword
+		// this compares case-sensitively. ExpandHome only touches a leading ~, so the
+		// value arrives here verbatim and the raw stat error is all the user would see,
+		// from the one package whose job is naming the real problem rather than leaving
+		// it to an opaque failure further on.
+		if errors.Is(statErr, fs.ErrNotExist) && !strings.ContainsRune(source, filepath.Separator) {
+			return Resolved{}, fmt.Errorf("%q is neither a file nor a directory; to read a "+
+				"signed-in Firefox-family browser use %q exactly", source, BrowserKeyword)
+		}
 		return Resolved{}, statErr
 	}
 	if fi.IsDir() {
@@ -184,13 +197,22 @@ func curlArguments(content string) []string {
 				continue
 			}
 			literal(c)
-		case ansiCQuoted, doubleQuoted:
-			closer := byte('\'')
-			if state == doubleQuoted {
-				closer = '"'
-			}
+		case ansiCQuoted:
 			switch {
-			case c == closer:
+			case c == '\'':
+				state = bare
+			case c == '\\' && next != 0:
+				decoded, n := ansiCEscape(content, i+1)
+				i += n
+				for _, b := range decoded {
+					literal(b)
+				}
+			default:
+				literal(c)
+			}
+		case doubleQuoted:
+			switch {
+			case c == '"':
 				state, caret = bare, false
 			case c == '\\' && next != 0:
 				i++
@@ -240,6 +262,91 @@ func curlArguments(content string) []string {
 	}
 	flush()
 	return args
+}
+
+// ansiCSingle is the one-letter half of bash's $'…' table, plus the three punctuation
+// escapes. \e is bash's own spelling of ESC and has no C equivalent.
+var ansiCSingle = map[byte]byte{
+	'a': 0x07, 'b': 0x08, 'e': 0x1b, 'E': 0x1b, 'f': 0x0c,
+	'n': '\n', 'r': '\r', 't': '\t', 'v': 0x0b,
+	'\\': '\\', '\'': '\'', '"': '"', '?': '?',
+}
+
+// ansiCEscape decodes the escape sequence starting at i, which is the byte after a
+// backslash inside $'…'. It returns the bytes the sequence stands for and how many bytes
+// past the backslash it consumed.
+//
+// Splitting this out from the double-quoted arm is the whole point: there, dropping the
+// backslash and keeping the next byte is correct, and here it is not. Firefox's own
+// escaper switches an argument to $'…' whenever it holds a byte outside printable ASCII,
+// a "!" or a "'", then writes "!" as \041, a byte under 256 as \xNN and anything above as
+// \uNNNN. "!" is %x21, the first octet RFC 6265 admits in a cookie value, so the
+// backslash-drop rule turned a legal credential into the three characters 041 — and the
+// store answers a malformed LS with the same opaque 500 a missing one gets, which this
+// package's early assertion cannot tell apart because the cookie is present under its own
+// name. Only \' and \\ came out right, which is why the form looked like it worked.
+func ansiCEscape(src string, i int) ([]byte, int) {
+	c := src[i]
+	if b, ok := ansiCSingle[c]; ok {
+		return []byte{b}, 1
+	}
+	switch c {
+	case 'x':
+		if v, n := digitRun(src, i+1, 16, 2); n > 0 {
+			return []byte{byte(v)}, 1 + n
+		}
+	case 'u':
+		if v, n := digitRun(src, i+1, 16, 4); n > 0 {
+			return utf8.AppendRune(nil, rune(v)), 1 + n
+		}
+	case 'U':
+		if v, n := digitRun(src, i+1, 16, 8); n > 0 {
+			return utf8.AppendRune(nil, rune(v)), 1 + n
+		}
+	case '0', '1', '2', '3', '4', '5', '6', '7':
+		// Octal starts at the digit itself rather than after a marker, so this counts
+		// from i and consumes what it reads.
+		if v, n := digitRun(src, i, 8, 3); n > 0 {
+			return []byte{byte(v)}, n
+		}
+	}
+	// An escape bash does not recognise keeps the byte and drops the backslash, which is
+	// what the double-quoted arm does for every byte and what this used to do for all of
+	// them. Preserved so nothing that reads correctly today starts reading differently.
+	return []byte{c}, 1
+}
+
+// digitRun reads up to max digits in the given base starting at i, returning the value
+// and how many digits it took. A run of zero digits means the sequence was not one.
+func digitRun(src string, i, base, max int) (int, int) {
+	v, n := 0, 0
+	for n < max && i+n < len(src) {
+		d := digitValue(src[i+n], base)
+		if d < 0 {
+			break
+		}
+		v = v*base + d
+		n++
+	}
+	return v, n
+}
+
+func digitValue(c byte, base int) int {
+	var v int
+	switch {
+	case c >= '0' && c <= '9':
+		v = int(c - '0')
+	case c >= 'a' && c <= 'f':
+		v = int(c-'a') + 10
+	case c >= 'A' && c <= 'F':
+		v = int(c-'A') + 10
+	default:
+		return -1
+	}
+	if v >= base {
+		return -1
+	}
+	return v
 }
 
 // cookieArgument returns the cookie string from a pasted curl command.

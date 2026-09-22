@@ -86,16 +86,17 @@ func storeJSON(t *testing.T, cookies []storeCookie) []byte {
 
 // redirectHome points every input geckoRoots reads at a sandbox directory.
 //
-// Three variables, not one: os.UserHomeDir reads HOME on Unix and USERPROFILE on Windows,
-// and geckoRootsFor takes %APPDATA% separately because it is a known folder that Folder
-// Redirection can move off the profile entirely. Setting only the first two leaves the
-// Windows roots pointing at the real %APPDATA%, where a test that plants a profile
-// overwrites the profiles.ini of whichever browser is installed there.
+// Four variables, not one: os.UserHomeDir reads HOME on Unix and USERPROFILE on Windows,
+// and geckoRootsFor takes %APPDATA% and %LOCALAPPDATA% separately because both are known
+// folders that Folder Redirection can move off the profile entirely. Setting only the
+// first two leaves the Windows roots pointing at the real ones, where a test that plants a
+// profile overwrites the profiles.ini of whichever browser is installed there.
 func redirectHome(t *testing.T, home string) {
 	t.Helper()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	t.Setenv("LOCALAPPDATA", filepath.Join(home, "AppData", "Local"))
 }
 
 // Two tests below plant a profile under a root geckoRoots hands back, so every root has
@@ -124,9 +125,9 @@ func TestRedirectingTheHomeDirectoryMovesEveryRootIntoTheSandbox(t *testing.T) {
 	// Windows', which no Linux or macOS run can reach through geckoRoots — so the value
 	// redirectHome sets is fed to each branch directly, and a redirection that covers the
 	// running platform and not the others fails here rather than on one CI leg.
-	appData := os.Getenv("APPDATA")
+	appData, localAppData := os.Getenv("APPDATA"), os.Getenv("LOCALAPPDATA")
 	for _, goos := range []string{"windows", "darwin", "linux"} {
-		for _, r := range geckoRootsFor(goos, home, appData) {
+		for _, r := range geckoRootsFor(goos, home, appData, localAppData) {
 			if !strings.HasPrefix(r, home) {
 				t.Errorf("%s root %q escapes the redirected home %q", goos, r, home)
 			}
@@ -355,6 +356,65 @@ func TestAProfileWithoutTheCredentialIsSkipped(t *testing.T) {
 	}
 	if !strings.Contains(got.Header, "LS=credential") {
 		t.Errorf("header = %q, want the signed-in profile's credential", got.Header)
+	}
+}
+
+// A candidate that cannot be read or cannot be decoded is skipped the way one carrying no
+// credential is. Only the third of the three skip arms had a good candidate behind it, so
+// turning either of the other two continues into a return left the whole suite green while
+// one stray file killed the scan for every profile ranked after it — a zero-length
+// recovery.jsonlz4 (the sweep only stats it), a leftover from another Gecko version, or a
+// store the user cannot read. The credential is then reported missing on a machine that
+// plainly has one.
+func TestACandidateThatCannotBeDecodedIsSkippedRatherThanFatal(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		plant func(t *testing.T, path string)
+	}{
+		{"empty file", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"not a session store", func(t *testing.T, path string) {
+			if err := os.WriteFile(path, []byte("plainly not compressed"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"unreadable", func(t *testing.T, path string) {
+			if os.Geteuid() == 0 {
+				t.Skip("root reads a 0000 file regardless")
+			}
+			// Chmod after the write, not a mode argument to it: WriteFile applies the
+			// mode only when it creates the file, and writeProfile has already made this
+			// one — so passing 0o000 there leaves it readable and exercises the parse arm
+			// a second time instead of the read arm this case exists for.
+			if err := os.Chmod(path, 0o000); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chmod(path, 0o600) })
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			// Ranked first by the Default flag, so it is reached before the good one.
+			broken := writeProfile(t, root, "aaaa.broken", nil)
+			tc.plant(t, broken)
+			writeProfile(t, root, "bbbb.signed-in", []storeCookie{
+				{Host: "assetstore.unity.com", Name: "LS", Value: "credential"},
+			})
+			os.WriteFile(filepath.Join(root, "profiles.ini"), []byte(
+				"[Profile0]\nIsRelative=1\nPath=aaaa.broken\nDefault=1\n\n"+
+					"[Profile1]\nIsRelative=1\nPath=bbbb.signed-in\n"), 0o644)
+
+			got, err := ResolveFrom(root)
+			if err != nil {
+				t.Fatalf("ResolveFrom: %v", err)
+			}
+			if !strings.Contains(got.Header, "LS=credential") {
+				t.Errorf("header = %q, want the profile behind the broken one", got.Header)
+			}
+		})
 	}
 }
 
@@ -611,7 +671,7 @@ func TestANamedSourceNeverFallsThroughToAnotherBrowser(t *testing.T) {
 func TestEveryPlatformKnowsTheSameBrowsers(t *testing.T) {
 	browsers := []string{"zen", "firefox", "librewolf", "waterfox", "floorp"}
 	for _, goos := range []string{"linux", "darwin", "windows"} {
-		roots := geckoRootsFor(goos, filepath.Join("home", "someone"), "")
+		roots := geckoRootsFor(goos, filepath.Join("home", "someone"), "", "")
 		if len(roots) == 0 {
 			t.Errorf("%s has no gecko roots, so the browser keyword can never work there", goos)
 			continue
@@ -634,7 +694,7 @@ func TestEveryPlatformKnowsTheSameBrowsers(t *testing.T) {
 	// On Ubuntu 22.04+ `apt install firefox` installs the snap, whose profiles live
 	// nowhere near ~/.mozilla. A list that names only the unsandboxed path answers "no
 	// session store found" on the most common Linux desktop there is.
-	linux := strings.Join(geckoRootsFor("linux", filepath.Join("home", "someone"), ""), "\n")
+	linux := strings.Join(geckoRootsFor("linux", filepath.Join("home", "someone"), "", ""), "\n")
 	for _, sandboxed := range []string{
 		filepath.FromSlash("snap/firefox/common/.mozilla/firefox"),
 		filepath.FromSlash(".var/app/org.mozilla.firefox/.mozilla/firefox"),
@@ -1062,29 +1122,45 @@ func TestARealGeckoDocumentShapeStillYieldsTheCredential(t *testing.T) {
 	}
 }
 
-// %APPDATA% is a Windows known folder, not a fixed place under the profile: Folder
-// Redirection, which is ordinary on a domain-joined machine, moves it off the profile
-// entirely. Reconstructing it as <home>/AppData/Roaming is why os.UserConfigDir reads the
-// variable instead, and getting it wrong reports "no Firefox-family session store found"
-// to a user with a signed-in browser, listing five directories that do not exist.
+// %APPDATA% and %LOCALAPPDATA% are Windows known folders, not fixed places under the
+// profile: Folder Redirection, which is ordinary on a domain-joined machine, moves them
+// off the profile entirely. Reconstructing either as <home>/AppData/... is why
+// os.UserConfigDir reads the variable instead, and getting it wrong reports "no
+// Firefox-family session store found" to a user with a signed-in browser, listing
+// directories that do not exist.
 func TestARedirectedAppDataIsHonoured(t *testing.T) {
 	home := filepath.Join("home", "someone")
 	redirected := filepath.Join("srv", "profiles", "someone", "AppData", "Roaming")
+	redirectedLocal := filepath.Join("srv", "profiles", "someone", "AppData", "Local")
 
-	roots := geckoRootsFor("windows", home, redirected)
+	roots := geckoRootsFor("windows", home, redirected, redirectedLocal)
 	if len(roots) == 0 {
 		t.Fatal("no windows roots")
 	}
+	// Each root hangs off one of the two known folders. Asserting against both rather
+	// than against their shared parent, so a root built from the wrong one of the pair
+	// still fails here.
 	for _, r := range roots {
-		if !strings.HasPrefix(r, redirected) {
-			t.Errorf("windows root %q ignores %%APPDATA%%", r)
+		if !strings.HasPrefix(r, redirected) && !strings.HasPrefix(r, redirectedLocal) {
+			t.Errorf("windows root %q ignores both redirected known folders", r)
 		}
 	}
-	// The fallback still applies when the variable is unset, which is every non-Windows
+	// The packaged install is the one under %LOCALAPPDATA%, and it is the reason that
+	// variable is read at all: without it the Store build of Firefox has no root.
+	var sawLocal bool
+	for _, r := range roots {
+		if strings.HasPrefix(r, redirectedLocal) {
+			sawLocal = true
+		}
+	}
+	if !sawLocal {
+		t.Error("no windows root uses %LOCALAPPDATA%, so the Store build has none")
+	}
+	// The fallback still applies when the variables are unset, which is every non-Windows
 	// run of this test and a Windows one with a stripped environment.
-	plain := geckoRootsFor("windows", home, "")
+	plain := geckoRootsFor("windows", home, "", "")
 	for _, r := range plain {
-		if !strings.HasPrefix(r, filepath.Join(home, "AppData", "Roaming")) {
+		if !strings.HasPrefix(r, filepath.Join(home, "AppData")) {
 			t.Errorf("windows root %q does not fall back under the home directory", r)
 		}
 	}
@@ -1097,6 +1173,42 @@ func TestARedirectedAppDataIsHonoured(t *testing.T) {
 		if filepath.Base(plain[i]) != filepath.Base(roots[i]) {
 			t.Errorf("root %d moved: %q became %q", i, plain[i], roots[i])
 		}
+	}
+}
+
+// The Store build of Firefox keeps its profile under a directory named for a publisher
+// hash that Mozilla documents nowhere, so that root is a pattern and has to be expanded
+// against the disk before anything can be found under it. A pattern left unexpanded is a
+// directory that cannot exist, which is indistinguishable from the browser not being
+// installed: the packaged user is told they have no session.
+//
+// Driven directly rather than through geckoRoots, which switches on the running platform
+// and so can never reach the Windows branch anywhere this suite usually runs.
+func TestARootThatIsAPatternIsExpandedAgainstTheDisk(t *testing.T) {
+	base := t.TempDir()
+	packaged := filepath.Join(base, "Packages", "Mozilla.Firefox_8wekyb3d8bbwe",
+		"LocalCache", "Roaming", "Mozilla", "Firefox")
+	if err := os.MkdirAll(packaged, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	plain := filepath.Join(base, "Roaming", "Mozilla", "Firefox")
+	if err := os.MkdirAll(plain, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	pattern := filepath.Join(base, "Packages", "Mozilla.Firefox_*",
+		"LocalCache", "Roaming", "Mozilla", "Firefox")
+	got := expandRoots([]string{plain, pattern})
+
+	if len(got) != 2 || got[0] != plain || got[1] != packaged {
+		t.Fatalf("expandRoots = %q, want the plain root then the packaged one", got)
+	}
+
+	// A pattern matching nothing drops out rather than surviving as a literal, which is
+	// what a machine with no packaged install looks like.
+	missing := filepath.Join(base, "Packages", "Nothing.Here_*", "Mozilla", "Firefox")
+	if got := expandRoots([]string{plain, missing}); len(got) != 1 || got[0] != plain {
+		t.Errorf("expandRoots kept an unmatched pattern: %q", got)
 	}
 }
 

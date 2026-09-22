@@ -14,8 +14,10 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/curbol/unity-sync/internal/selfupdate"
 )
@@ -222,6 +224,22 @@ func TestReplaceAsideRecoversTheBinaryWhenTheSwapFails(t *testing.T) {
 		got, err := os.ReadFile(target)
 		if err != nil || string(got) != "new binary" {
 			t.Fatalf("target holds %q, %v; want the new binary", got, err)
+		}
+		// The directory, not just the target. The aside copy is removed once the swap has
+		// succeeded, and nothing asserted it: dropping that removal leaves a full copy of
+		// every superseded binary beside the install, on every POSIX-reachable run of this
+		// path, and stayed green. The failing subtest below checks it only after a restore.
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		if len(names) != 1 || names[0] != "unity-sync" {
+			t.Errorf("the directory holds %v, want just the installed binary; a leftover "+
+				".old is a full copy of the previous release left behind on every update", names)
 		}
 	})
 
@@ -711,6 +729,140 @@ func TestAnOversizedArchiveIsRefusedRatherThanBuffered(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "larger than") {
 		t.Errorf("err = %v, want an error naming the size limit", err)
+	}
+}
+
+// checkExecutable resolves against runtime.GOOS, so on any one run only that platform's
+// signatures are exercised: the darwin 32-bit and fat-binary arms and the Windows MZ are
+// dead code everywhere but the leg that runs them, and the cross matrix covers a single
+// Mach-O flavour. A signature dropped from a platform the release builds turns the last
+// guard before the rename into a no-op there, and every other leg stays green.
+func TestEverySignatureInTheTableIsAcceptedAndOthersAreNot(t *testing.T) {
+	for _, goos := range []string{"linux", "darwin", "windows"} {
+		magics, ok := selfupdate.ExecutableMagicFor(goos)
+		if !ok {
+			t.Errorf("%s has no signature, though the release builds for it", goos)
+			continue
+		}
+		if len(magics) == 0 {
+			t.Errorf("%s has an empty signature list, which accepts nothing", goos)
+		}
+		for _, m := range magics {
+			body := append(append([]byte{}, m...), []byte("rest of the binary")...)
+			if err := selfupdate.CheckExecutableFor(goos, body); err != nil {
+				t.Errorf("%s rejected its own signature %x: %v", goos, m, err)
+			}
+		}
+		// The complement, or a table that accepted everything would pass above. An HTML
+		// error page under the right asset name is the failure this exists to catch.
+		for _, body := range [][]byte{
+			[]byte("<!DOCTYPE html><html>signed out</html>"),
+			[]byte("#!/bin/sh\necho nope\n"),
+			{},
+		} {
+			if err := selfupdate.CheckExecutableFor(goos, body); err == nil {
+				t.Errorf("%s accepted %q as a native binary", goos, body)
+			}
+		}
+	}
+
+	// An unknown GOOS is let through by design, so an unlisted platform stays updatable.
+	if err := selfupdate.CheckExecutableFor("plan9", []byte("whatever this is")); err != nil {
+		t.Errorf("an unknown GOOS was refused, which makes that platform un-updatable: %v", err)
+	}
+	// Empty is refused everywhere, including there: a zero-byte asset is never an update.
+	if err := selfupdate.CheckExecutableFor("plan9", nil); err == nil {
+		t.Error("an empty asset was accepted on an unknown GOOS")
+	}
+}
+
+// The response-header timeout bounds a server that never answers, and there is no
+// whole-request deadline by design. Neither covers the case in between: headers arrive,
+// the body stops without the connection closing, and the read parks forever — a
+// `unity-sync update` that prints nothing, diagnoses nothing, and only ends when the user
+// interrupts it. The store carries a guard for exactly this; the updater had none.
+//
+// Failing this test looks like the whole package timing out rather than a red assertion,
+// because the regression is a read that never returns.
+func TestAReleaseBodyThatGoesSilentFailsRatherThanHanging(t *testing.T) {
+	selfupdate.ShortenAssetStall(t, 100*time.Millisecond)
+
+	release := make(chan struct{})
+	srv := releaseServer(t, nil, func(w http.ResponseWriter, r *http.Request) bool {
+		if !strings.HasSuffix(r.URL.Path, "/asset") {
+			return false
+		}
+		// Headers and a first chunk, then silence: the connection stays open and the
+		// body simply stops, which is what a captive portal or a wedged proxy produces.
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		io.WriteString(w, "PK\x03\x04")
+		w.(http.Flusher).Flush()
+		<-release
+		return true
+	})
+	// Registered after releaseServer, so it runs before that helper's srv.Close: cleanups
+	// are LIFO, and Close waits for the handler this unblocks. The other order deadlocks
+	// the whole package rather than failing this test.
+	t.Cleanup(func() { close(release) })
+
+	c := selfupdate.New(srv.URL, "")
+	rel, err := selfupdate.Resolve(c, context.Background(), "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, dlErr := selfupdate.DownloadBinary(c, context.Background(), rel)
+		done <- dlErr
+	}()
+	select {
+	case dlErr := <-done:
+		if dlErr == nil {
+			t.Fatal("a body that stopped mid-transfer was accepted")
+		}
+		if !errors.Is(dlErr, selfupdate.ErrStalled) {
+			t.Errorf("err = %v, want it to name the stall rather than the cancellation under it", dlErr)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("the download never returned; the stall guard is not bounding the body")
+	}
+}
+
+// The other half, which is what keeps the guard honest: a transfer that is slow but never
+// silent has to survive. A guard that bounded slowness rather than silence would make the
+// update impossible on exactly the connections that most need it.
+func TestASlowButLiveReleaseBodyIsNotCutOff(t *testing.T) {
+	selfupdate.ShortenAssetStall(t, time.Second)
+
+	archive := zipWithBinary(t, nativeBinary(t, "fresh binary"))
+	srv := releaseServer(t, nil, func(w http.ResponseWriter, r *http.Request) bool {
+		if !strings.HasSuffix(r.URL.Path, "/asset") {
+			return false
+		}
+		w.WriteHeader(http.StatusOK)
+		w.(http.Flusher).Flush()
+		// Four gaps at a fifth of the window each: far longer in total than the window,
+		// never silent for the whole of it.
+		for chunk := range slices.Chunk(archive, len(archive)/4+1) {
+			time.Sleep(200 * time.Millisecond)
+			w.Write(chunk)
+			w.(http.Flusher).Flush()
+		}
+		return true
+	})
+
+	c := selfupdate.New(srv.URL, "")
+	rel, err := selfupdate.Resolve(c, context.Background(), "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	got, err := selfupdate.DownloadBinary(c, context.Background(), rel)
+	if err != nil {
+		t.Fatalf("a slow but live body was cut off: %v", err)
+	}
+	if len(got) == 0 {
+		t.Error("the slow transfer yielded no binary")
 	}
 }
 

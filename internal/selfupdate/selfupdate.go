@@ -21,6 +21,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -275,16 +276,26 @@ func (c *client) downloadBinary(ctx context.Context, rel release) ([]byte, error
 	if err := c.sameHost(assetURL); err != nil {
 		return nil, err
 	}
-	// The asset API answers with a 302 to a signed CDN URL; this client follows it.
-	resp, err := c.get(ctx, assetURL, "application/octet-stream")
+	// The response-header timeout bounds a server that never answers, and there is
+	// deliberately no whole-request deadline. Neither covers the case in between: headers
+	// arrive, the body stops without the connection closing, and the read parks forever —
+	// `unity-sync update` sitting with no output and no diagnostic. The store treats that
+	// as worth its own guard for the same reason, and the argument against a deadline
+	// (a slow link is legitimate) is an argument against bounding *slowness*, not silence.
+	// Cancelling the request is what breaks the read out of it, so the body gets its own
+	// cancellable context rather than the caller's.
+	bodyCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	resp, err := c.get(bodyCtx, assetURL, "application/octet-stream")
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	body := newStallGuard(resp.Body, assetStallTimeout, cancel)
 	// Bounded: a release that shipped the wrong artifact under the right name would
 	// otherwise be buffered whole, and an update that is OOM-killed is a worse way to
 	// find that out than an error naming the size.
-	archive, err := io.ReadAll(io.LimitReader(resp.Body, maxArchiveBytes+1))
+	archive, err := io.ReadAll(io.LimitReader(body, maxArchiveBytes+1))
 	if err != nil {
 		return nil, err
 	}
@@ -292,6 +303,61 @@ func (c *client) downloadBinary(ctx context.Context, rel release) ([]byte, error
 		return nil, fmt.Errorf("release asset %s is larger than %d bytes", want, maxArchiveBytes)
 	}
 	return binaryFromZip(archive)
+}
+
+// assetStallTimeout is how long a release body may deliver nothing before the transfer is
+// given up on.
+//
+// Its own number rather than the store's, and deliberately shorter: that window is sized
+// for a 23 GB package over a domestic link, and the published zips are single-digit
+// megabytes. Nothing couples the two — unlike the temp sweep's grace, which has to be
+// derived from the store's window because it decides whether another run's transfer is
+// still alive.
+// A var rather than a const only so a test can shorten it: the failure it guards is a
+// read that never returns, so a test that could not move the window would hang instead of
+// failing.
+var assetStallTimeout = 60 * time.Second
+
+// errStalled is a body that stopped delivering after its headers arrived. Named rather
+// than left as the context cancellation underneath it, which reads as an interrupt the
+// user caused. Unexported: nothing outside this package branches on it, and the update
+// path reports it as text.
+var errStalled = errors.New("the release body stalled")
+
+// stallGuard fails a read whose body has gone silent for the window, instead of letting it
+// park forever. Cancelling the request is what breaks the read out; the flag is what keeps
+// the resulting error from being reported as an interrupt.
+type stallGuard struct {
+	body    io.ReadCloser
+	window  time.Duration
+	timer   *time.Timer
+	cancel  context.CancelFunc
+	stalled atomic.Bool
+}
+
+func newStallGuard(body io.ReadCloser, window time.Duration, cancel context.CancelFunc) *stallGuard {
+	g := &stallGuard{body: body, window: window, cancel: cancel}
+	g.timer = time.AfterFunc(window, func() {
+		g.stalled.Store(true)
+		cancel()
+	})
+	return g
+}
+
+func (g *stallGuard) Read(p []byte) (int, error) {
+	n, err := g.body.Read(p)
+	if n > 0 {
+		g.timer.Reset(g.window)
+	}
+	if err != nil && err != io.EOF && g.stalled.Load() {
+		return n, fmt.Errorf("%w: no bytes for %s", errStalled, g.window)
+	}
+	return n, err
+}
+
+func (g *stallGuard) Close() error {
+	g.timer.Stop()
+	return g.body.Close()
 }
 
 func binaryFromZip(archive []byte) ([]byte, error) {
@@ -335,14 +401,23 @@ var executableMagic = map[string][][]byte{
 	"windows": {[]byte("MZ")},
 }
 
-// checkExecutable refuses bytes that are not a native binary for this platform. An
-// unknown GOOS has no signature to check and is let through rather than made
-// un-updatable.
+// checkExecutable refuses bytes that are not a native binary for the running platform.
 func checkExecutable(binary []byte) error {
+	return checkExecutableFor(runtime.GOOS, binary)
+}
+
+// checkExecutableFor is checkExecutable with the platform supplied, for the same reason
+// platformAsset takes one: resolved against runtime.GOOS, every arm but the running leg's
+// is dead code, and a signature dropped from a platform the release builds leaves the last
+// guard before the rename a no-op there while every other leg stays green.
+//
+// An unknown GOOS has no signature to check and is let through rather than made
+// un-updatable. An empty asset is refused whatever the platform: that is never an update.
+func checkExecutableFor(goos string, binary []byte) error {
 	if len(binary) == 0 {
 		return fmt.Errorf("the release asset is empty")
 	}
-	magics, known := executableMagic[runtime.GOOS]
+	magics, known := executableMagic[goos]
 	if !known {
 		return nil
 	}
@@ -351,7 +426,7 @@ func checkExecutable(binary []byte) error {
 			return nil
 		}
 	}
-	return fmt.Errorf("the release asset is not a %s executable", runtime.GOOS)
+	return fmt.Errorf("the release asset is not a %s executable", goos)
 }
 
 // replace swaps the running executable for the given bytes, writing beside the target so

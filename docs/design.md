@@ -699,6 +699,15 @@ Both publish the same way the lockfile is written — flush, then rename — bec
 is durable ahead of the data it publishes, and a crash inside the writeback window would
 otherwise leave a truncated binary on PATH.
 
+The asset body carries a stall guard, for the reason the download path does. The
+response-header timeout bounds a server that never answers and there is deliberately no
+whole-request deadline, and neither covers the case in between: headers arrive, the body
+stops without the connection closing, and the read parks forever — `unity-sync update`
+sitting with no output and nothing to do but interrupt it. The window is its own number
+rather than the store's and deliberately shorter, since that one is sized for a 23 GB
+package and the published zips are single-digit megabytes; nothing couples the two, unlike
+the temp sweep's grace.
+
 Neither the installer nor the updater installs bytes it has not recognised as a native
 binary. The zip reader already verifies each entry's CRC, so what the magic-byte check
 catches is the other way this goes wrong: a release that shipped an error page, a script,

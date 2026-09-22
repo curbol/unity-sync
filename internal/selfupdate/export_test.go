@@ -3,6 +3,7 @@ package selfupdate
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // Test hooks. Nothing here ships: export_test.go is compiled only into the test binary.
@@ -47,6 +48,20 @@ func LowerArchiveCeiling(t *testing.T, n int64) {
 	t.Cleanup(func() { maxArchiveBytes = prev })
 }
 
+// ShortenAssetStall shrinks the release-body stall window for the duration of a test. The
+// production window is a minute, which no test should wait out to prove a silent body is
+// given up on — and the failure it guards is a read that never returns, so a test without
+// this seam hangs rather than fails.
+func ShortenAssetStall(t *testing.T, d time.Duration) {
+	prev := assetStallTimeout
+	assetStallTimeout = d
+	t.Cleanup(func() { assetStallTimeout = prev })
+}
+
+// ErrStalled is the release-body stall sentinel, so a test can assert the cause is named
+// rather than left as the context cancellation underneath it.
+var ErrStalled = errStalled
+
 // ExecutableMagicFor reports whether this platform has a signature update checks for, so
 // a test can skip rather than assert nothing on a platform where the check is a no-op.
 func ExecutableMagicFor(goos string) ([][]byte, bool) {
@@ -72,3 +87,7 @@ var (
 	Resolve        = (*client).resolve
 	DownloadBinary = (*client).downloadBinary
 )
+
+// CheckExecutableFor is checkExecutableFor, so a test can drive every platform the release
+// builds rather than only the one it runs on.
+var CheckExecutableFor = checkExecutableFor

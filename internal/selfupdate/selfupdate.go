@@ -27,6 +27,15 @@ import (
 
 const repo = "curbol/unity-sync"
 
+// Requested is the release a user asked for, empty meaning the latest.
+//
+// Its own type because it sits next to the running build's version in Run and update, and
+// two adjacent strings compile either way round. The wrong way round makes the dev-build
+// refusal key on the argument the user typed instead of on what this binary is: a dev
+// build would go on to fetch and install over itself, and a real build asked for "dev"
+// would refuse.
+type Requested string
+
 // maxArchiveBytes bounds a release asset. The published zips are single-digit megabytes,
 // so this leaves room to grow by an order of magnitude and still refuses an artifact that
 // is plainly not one of them.
@@ -232,10 +241,10 @@ func (c *client) getWith(ctx context.Context, url, accept, token string) (*http.
 }
 
 // resolve finds a release: the latest, or a specific version when one is named.
-func (c *client) resolve(ctx context.Context, version string) (release, error) {
+func (c *client) resolve(ctx context.Context, want Requested) (release, error) {
 	url := c.apiBase + "/repos/" + repo + "/releases/latest"
-	if version != "" {
-		url = c.apiBase + "/repos/" + repo + "/releases/tags/v" + strings.TrimPrefix(version, "v")
+	if want != "" {
+		url = c.apiBase + "/repos/" + repo + "/releases/tags/v" + strings.TrimPrefix(string(want), "v")
 	}
 	resp, err := c.get(ctx, url, "application/vnd.github+json")
 	if err != nil {
@@ -533,7 +542,7 @@ var lookupToken = token
 // user's real credential to build a client it then threw away — and since main_test drives
 // this path, so did every `go test ./...` on a machine with no token in the environment,
 // against a suite whose whole contract is that it needs no session.
-func Run(ctx context.Context, w io.Writer, current, version string) error {
+func Run(ctx context.Context, w io.Writer, current string, want Requested) error {
 	if current == "dev" {
 		return fmt.Errorf("this is a dev build; install a release first")
 	}
@@ -544,14 +553,14 @@ func Run(ctx context.Context, w io.Writer, current, version string) error {
 	if self, err = filepath.EvalSymlinks(self); err != nil {
 		return err
 	}
-	return update(ctx, w, newClient("", lookupToken(ctx)), current, version, self)
+	return update(ctx, w, newClient("", lookupToken(ctx)), current, want, self)
 }
 
 // update is Run with the client and the binary it replaces supplied, which is the only
 // seam a test can drive: Run replaces whatever is running, and under `go test` that is the
 // test binary.
-func update(ctx context.Context, w io.Writer, c *client, current, version, target string) error {
-	rel, err := c.resolve(ctx, version)
+func update(ctx context.Context, w io.Writer, c *client, current string, want Requested, target string) error {
+	rel, err := c.resolve(ctx, want)
 	if err != nil {
 		return err
 	}

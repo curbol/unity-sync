@@ -121,7 +121,7 @@ func run(args []string) (int, error) {
 		if fs.NArg() > 1 {
 			return 1, fmt.Errorf("update takes at most one version, got %d arguments", fs.NArg())
 		}
-		if err := selfupdate.Run(ctx, stdout, version, fs.Arg(0)); err != nil {
+		if err := selfupdate.Run(ctx, stdout, version, selfupdate.Requested(fs.Arg(0))); err != nil {
 			return 1, err
 		}
 		return 0, nil

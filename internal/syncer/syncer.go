@@ -116,7 +116,7 @@ func (c Class) needsFetch() bool {
 // classify is pure. The probes are injected so it stays that way: cacheOK is the cheap
 // on-disk check for the prior resolution, and adoptable reports a matching file found by
 // scanning.
-func classify(a model.Asset, prior lockfile.Entry, hasPrior bool, cacheOK, adoptable func() bool) Class {
+func classify(a model.Asset, prior lockfile.Entry, hasPrior bool, cacheOK, adoptable, adoptableInPlace func() bool) Class {
 	resolved := hasPrior && prior.Tracked
 
 	if !a.State.Downloadable() {
@@ -144,6 +144,14 @@ func classify(a model.Asset, prior lockfile.Entry, hasPrior bool, cacheOK, adopt
 		return New
 	}
 	if prior.ResolvedVersionID != a.Version.ID {
+		// A copy of the new build may already be in the library: one user-scoped library
+		// serves several project-scoped lockfiles, so another project can have fetched it
+		// already, and a branch switch can revert this project's record while the bytes
+		// stay put. Restricted to a candidate already at the derived path, so this cannot
+		// turn into a relocation the download path does not need.
+		if adoptableInPlace() {
+			return Adopted
+		}
 		return Changed
 	}
 	if !cacheOK() {
@@ -178,6 +186,48 @@ func indexByAssetID(lf lockfile.Lockfile) map[string]priorEntry {
 		index[e.AssetID] = priorEntry{key: k, entry: e}
 	}
 	return index
+}
+
+// checkDistinctPaths refuses a prior lockfile in which two entries record the same
+// cachePath.
+//
+// lockfile.Load already refuses two entries for one asset id; this is the same accident
+// from the other side, and the committed file admits it by the same route — a merge that
+// kept both sides of a rename, or a hand-edit after moving a file. With asset A's
+// cachePath naming asset B's package, B verifies against its own entry and carries
+// forward Unchanged, A's verify fails on size and downloads, and the superseded-copy
+// cleanup then deletes B's bytes: a run that exits 0, a lockfile claiming B is mirrored
+// with a digest at a path holding nothing, and B re-downloaded in full on every later run.
+// RemoveStale now refuses that delete on the descriptor, but this catches the state before
+// the run mutates anything at all, and names both entries rather than surfacing as a
+// warning about a file the user never asked about.
+//
+// Compared with SamePath, never as strings: the whole reason the state is reachable is
+// that the file is hand-edited, so the two spellings need not match.
+func checkDistinctPaths(lf lockfile.Lockfile) error {
+	type seen struct{ key, path string }
+	var recorded []seen
+	keys := make([]string, 0, len(lf.Assets))
+	for k := range lf.Assets {
+		keys = append(keys, k)
+	}
+	// Sorted, or which of the two entries gets named changes between runs over one file.
+	sort.Strings(keys)
+	for _, k := range keys {
+		p := lf.Assets[k].CachePath
+		if p == "" {
+			continue
+		}
+		for _, prior := range recorded {
+			if cache.SamePath(prior.path, p) {
+				return fmt.Errorf("entries %q and %q both record the cache path %s; "+
+					"delete whichever is stale, most likely the one whose key no longer "+
+					"matches its name", prior.key, k, p)
+			}
+		}
+		recorded = append(recorded, seen{key: k, path: p})
+	}
+	return nil
 }
 
 // Store is the part of the Asset Store client a run needs.
@@ -300,6 +350,12 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		if _, err := path.Match(opts.OnlyGlob, ""); err != nil {
 			return Report{}, fmt.Errorf("bad --only pattern %q: %w", opts.OnlyGlob, err)
 		}
+	}
+	// Before the enumeration, and so before the sweep and everything after it: this is a
+	// state the run cannot act safely on, and the point of catching it is to refuse while
+	// nothing has been moved or deleted yet.
+	if err := checkDistinctPaths(prior); err != nil {
+		return Report{}, err
 	}
 	started := opts.Now()
 
@@ -452,10 +508,49 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 			return true
 		}
 
+		// adoptableInPlace is the probe the out-of-date branch gets, and it differs from
+		// the one above in exactly one way: the candidate has to be sitting at the derived
+		// path already.
+		//
+		// library_path is user-scoped while the manifest and lockfile are project-scoped,
+		// so two projects share one library and keep separate lockfiles. Project A syncs
+		// an asset to v2; project B, whose lockfile still records v1, classified Changed
+		// and re-transferred the whole package over a byte-identical file already in place
+		// carrying a v2 descriptor. A branch switch or a merge that reverts a lockfile
+		// does the same thing. New, DownloadNow and CacheMissing all ask before fetching;
+		// this was the one class that never did.
+		//
+		// Two things it deliberately does not do. It does not call adoptable, which sets
+		// excludeRel behind !cacheOK() — under --verify that is a full re-hash of a file
+		// about to be replaced, and it would exclude the very copy worth adopting. And it
+		// does not permit a relocation: a Changed asset whose derived path holds a stale
+		// copy downloads cleanly today because Commit overwrites, whereas an adopt that
+		// had to move would meet Relocate's occupied-destination refusal and fail the
+		// asset instead. Restricting to a candidate already in place keeps adopt's
+		// Relocate a no-op and its RemoveStale unreached.
+		//
+		// The three gates still run inside Find, so this does not re-open the hole where a
+		// rejected candidate masked an acceptable one: only the location is checked
+		// outside, and Find already prefers the copy at derived.
+		adoptableInPlace := func() bool {
+			c, ok := scan().Find(a.ID, derived, func(c cache.Candidate) bool {
+				return !belowFloor(c.Size, a.AdvertisedSize) && c.Metadata.VersionID == a.Version.ID
+			})
+			if !ok {
+				return false
+			}
+			if !cache.SamePath(c.RelPath, derived) &&
+				!cache.SameFile(opts.LibraryRoot, c.RelPath, derived) {
+				return false
+			}
+			found = c
+			return true
+		}
+
 		if hasPrev && prev.Tracked {
 			priorPaths[a.ID] = prev.CachePath
 		}
-		class := classify(a, prev, hasPrev, cacheOK, adoptable)
+		class := classify(a, prev, hasPrev, cacheOK, adoptable, adoptableInPlace)
 		res := Result{Asset: a, Class: class}
 
 		switch class {
@@ -484,7 +579,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 				// will ever mention it again — the summary names only assets that left
 				// the account, so an orphan here is one the tool made and never reports.
 				res.Warning = joinWarning(res.Warning,
-					removeSuperseded(opts.LibraryRoot, prev.CachePath, r.CachePath))
+					removeSuperseded(opts.LibraryRoot, prev.CachePath, r.CachePath, a.ID))
 				if err := persist(a.ID, r); err != nil {
 					res.Warning = joinWarning(res.Warning,
 						fmt.Sprintf("the adoption is on disk but could not be recorded: %v", err))
@@ -578,7 +673,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 				// path, so the prior directory would otherwise be left holding a
 				// superseded copy of the same asset.
 				res.Warning = joinWarning(res.Warning,
-					removeSuperseded(opts.LibraryRoot, priorPaths[res.Asset.ID], r.CachePath))
+					removeSuperseded(opts.LibraryRoot, priorPaths[res.Asset.ID], r.CachePath, res.Asset.ID))
 				if err := persist(res.Asset.ID, r); err != nil {
 					res.Warning = joinWarning(res.Warning,
 						fmt.Sprintf("the package is in the cache but could not be recorded: %v", err))
@@ -637,7 +732,7 @@ func adopt(ctx context.Context, opts Options, a model.Asset, found cache.Candida
 	// can never move in, nothing is resolved, and every later run repeats the refusal.
 	if damagedRel != "" &&
 		(cache.SamePath(damagedRel, derived) || cache.SameFile(opts.LibraryRoot, damagedRel, derived)) {
-		if err := cache.RemoveStale(opts.LibraryRoot, damagedRel); err != nil {
+		if err := cache.RemoveStale(opts.LibraryRoot, damagedRel, a.ID); err != nil {
 			return lockfile.Resolution{}, err
 		}
 	}
@@ -761,14 +856,18 @@ func download(ctx context.Context, s Store, opts Options, a model.Asset) (lockfi
 // which is committed and hand-editable, so "./pub/a/a.unitypackage" and
 // "pub/a/a.unitypackage" name one file. Comparing them raw makes the run delete the copy
 // it just wrote and then record a digest for a path with nothing on it.
-func removeSuperseded(root, old, current string) string {
+//
+// productID goes to RemoveStale, which refuses a file whose own descriptor names a
+// different asset. Nothing stops a hand-merged lockfile from pointing one entry's
+// cachePath at another entry's package, and this is the path that would then delete it.
+func removeSuperseded(root, old, current, productID string) string {
 	// SameFile as well as SamePath: on a case-insensitive filesystem two spellings that
 	// differ only in case are one file, which no canonical form collapses, and this is
 	// about to delete.
 	if old == "" || cache.SamePath(old, current) || cache.SameFile(root, old, current) {
 		return ""
 	}
-	if err := cache.RemoveStale(root, old); err != nil {
+	if err := cache.RemoveStale(root, old, productID); err != nil {
 		return fmt.Sprintf("could not remove the superseded copy at %s: %v", old, err)
 	}
 	return ""

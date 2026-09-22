@@ -15,6 +15,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -806,10 +807,23 @@ func SweepTemps(ctx context.Context, root string, olderThan time.Time) (int, int
 }
 
 // RemoveStale deletes a package this tool mirrored and is now replacing with another copy
-// of the same asset, and prunes the directories the removal empties. It is only ever
-// called with a path the lockfile itself recorded, never with a file the tool did not
-// write.
-func RemoveStale(root, rel string) error {
+// of the same asset, and prunes the directories the removal empties.
+//
+// productID is the asset whose copy this is meant to be, and the file's own descriptor has
+// to agree before anything is unlinked. The path always came out of the lockfile, which
+// used to be the whole of the argument — but that file is committed, hand-editable and
+// merged across machines, and nothing refuses two entries naming one path. With asset A's
+// cachePath pointing at asset B's package, B verified against its own entry and classified
+// Unchanged, A's verify failed on size and downloaded, and the superseded-copy cleanup
+// then unlinked B: a run that exits 0, a lockfile claiming B is mirrored with a digest at
+// a path holding nothing, and B re-downloaded in full on the next run. Asking the bytes
+// what they are costs one header parse on a file about to be deleted, and it makes the
+// rule this function is named for something it enforces rather than something its callers
+// promise.
+//
+// A package carrying no descriptor is removed: some genuinely have none, and refusing
+// those would make them undeletable forever.
+func RemoveStale(root, rel, productID string) error {
 	r, name, err := rooted(root, rel)
 	if err != nil {
 		// A library that is not there yet has nothing to remove; anything else is real.
@@ -819,6 +833,19 @@ func RemoveStale(root, rel string) error {
 		return err
 	}
 	defer r.Close()
+
+	switch m, err := descriptorAt(r, filepath.ToSlash(name)); {
+	case err == nil && m.ID != "" && productID != "" && m.ID != productID:
+		return fmt.Errorf("refusing to remove %s: it is product %s, not %s", rel, m.ID, productID)
+	case err != nil && !errors.Is(err, unitypackage.ErrNoMetadata):
+		// Unreadable, or not a package at all. Either way it is not this asset's
+		// superseded copy, and the run has no business deleting it.
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("refusing to remove %s: %w", rel, err)
+	}
+
 	if err := r.Remove(name); err != nil {
 		if os.IsNotExist(err) {
 			return nil

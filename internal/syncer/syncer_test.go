@@ -174,34 +174,45 @@ func TestClassifyCoversEveryClass(t *testing.T) {
 	}
 
 	cases := []struct {
-		name      string
-		a         model.Asset
-		prior     lockfile.Entry
-		hasPrior  bool
-		cacheOK   func() bool
-		adoptable func() bool
-		want      Class
+		name     string
+		a        model.Asset
+		prior    lockfile.Entry
+		hasPrior bool
+		cacheOK  func() bool
+		// adoptable is the general probe; adoptInPlace is the restricted one the
+		// out-of-date branch gets, which only accepts a copy already at the derived path.
+		adoptable    func() bool
+		adoptInPlace func() bool
+		want         Class
 	}{
-		{"unchanged", live, tracked, true, yes, no, Unchanged},
-		{"new", live, lockfile.Entry{}, false, no, no, New},
+		{"unchanged", live, tracked, true, yes, no, no, Unchanged},
+		{"new", live, lockfile.Entry{}, false, no, no, no, New},
 		{"changed", live, lockfile.Entry{
 			Resolution: lockfile.Resolution{
 				Tracked: true, ResolvedVersionID: "v1", CachePath: "p",
 			},
-		}, true, yes, no, Changed},
+		}, true, yes, no, no, Changed},
+		// One user-scoped library serves several project-scoped lockfiles, so the new
+		// build can already be sitting at the derived path when this project's record
+		// still names the old one. Re-transferring it is up to 23 GB of nothing.
+		{"changed but the new build is already in place", live, lockfile.Entry{
+			Resolution: lockfile.Resolution{
+				Tracked: true, ResolvedVersionID: "v1", CachePath: "p",
+			},
+		}, true, yes, no, yes, Adopted},
 		{"download-now", live, lockfile.Entry{
 			Resolution: lockfile.Resolution{
 				Tracked: false,
 			},
-		}, true, no, no, DownloadNow},
-		{"cache-missing", live, tracked, true, no, no, CacheMissing},
-		{"adopted with no record", live, lockfile.Entry{}, false, no, yes, Adopted},
+		}, true, no, no, no, DownloadNow},
+		{"cache-missing", live, tracked, true, no, no, no, CacheMissing},
+		{"adopted with no record", live, lockfile.Entry{}, false, no, yes, no, Adopted},
 		{"adopted when a record exists but nothing was mirrored", live,
-			lockfile.Entry{Resolution: lockfile.Resolution{Tracked: false}}, true, no, yes, Adopted},
-		{"undownloadable", model.Asset{ID: "1", State: model.StateDisabled}, lockfile.Entry{}, false, no, no, Undownloadable},
+			lockfile.Entry{Resolution: lockfile.Resolution{Tracked: false}}, true, no, yes, no, Adopted},
+		{"undownloadable", model.Asset{ID: "1", State: model.StateDisabled}, lockfile.Entry{}, false, no, no, no, Undownloadable},
 		{"disabled but already mirrored stays usable",
 			model.Asset{ID: "1", State: model.StateDisabled, Version: model.Version{ID: "v2"}},
-			tracked, true, yes, no, Unchanged},
+			tracked, true, yes, no, no, Unchanged},
 
 		// The delisted branch had two of its seven reachable cells covered, and it is the
 		// one class where a download can never make up the difference: the store answers
@@ -211,23 +222,23 @@ func TestClassifyCoversEveryClass(t *testing.T) {
 		// package that is already in their library.
 		{"disabled, mirrored copy damaged, a good one elsewhere",
 			model.Asset{ID: "1", State: model.StateDisabled, Version: model.Version{ID: "v2"}},
-			tracked, true, no, yes, Adopted},
+			tracked, true, no, yes, no, Adopted},
 		{"disabled, mirrored copy damaged and nothing to adopt",
 			model.Asset{ID: "1", State: model.StateDisabled, Version: model.Version{ID: "v2"}},
-			tracked, true, no, no, Undownloadable},
+			tracked, true, no, no, no, Undownloadable},
 		{"disabled, recorded but never mirrored, a copy on disk",
 			model.Asset{ID: "1", State: model.StateDisabled, Version: model.Version{ID: "v2"}},
-			lockfile.Entry{Resolution: lockfile.Resolution{Tracked: false}}, true, no, yes, Adopted},
+			lockfile.Entry{Resolution: lockfile.Resolution{Tracked: false}}, true, no, yes, no, Adopted},
 		{"disabled, recorded but never mirrored, nothing on disk",
 			model.Asset{ID: "1", State: model.StateDisabled, Version: model.Version{ID: "v2"}},
-			lockfile.Entry{Resolution: lockfile.Resolution{Tracked: false}}, true, no, no, Undownloadable},
+			lockfile.Entry{Resolution: lockfile.Resolution{Tracked: false}}, true, no, no, no, Undownloadable},
 		{"disabled with no record at all but a copy on disk",
 			model.Asset{ID: "1", State: model.StateDisabled, Version: model.Version{ID: "v2"}},
-			lockfile.Entry{}, false, no, yes, Adopted},
+			lockfile.Entry{}, false, no, yes, no, Adopted},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classify(tc.a, tc.prior, tc.hasPrior, tc.cacheOK, tc.adoptable); got != tc.want {
+			if got := classify(tc.a, tc.prior, tc.hasPrior, tc.cacheOK, tc.adoptable, tc.adoptInPlace); got != tc.want {
 				t.Errorf("classify = %v, want %v", got, tc.want)
 			}
 		})
@@ -300,7 +311,8 @@ func TestOnlyGlobPreservesOutOfScopeRecordsAndKeepsTheDiffKey(t *testing.T) {
 			"stale file as current forever", out.ResolvedVersionID)
 	}
 	// And it must still read as out of date next run.
-	if classify(outScope, out, true, func() bool { return true }, func() bool { return false }) != Changed {
+	if classify(outScope, out, true, func() bool { return true },
+		func() bool { return false }, func() bool { return false }) != Changed {
 		t.Error("the carried-forward entry no longer classifies Changed")
 	}
 }
@@ -360,7 +372,8 @@ func TestRenamedAssetIsRecognisedByIdAndRekeyedOnce(t *testing.T) {
 	if !e.Tracked {
 		t.Error("the relocated entry lost its tracked flag")
 	}
-	if classify(renamed, e, true, func() bool { return true }, func() bool { return false }) != Unchanged {
+	if classify(renamed, e, true, func() bool { return true },
+		func() bool { return false }, func() bool { return false }) != Unchanged {
 		t.Error("the relocated entry no longer classifies Unchanged, so the next run re-downloads it")
 	}
 	moved := filepath.Join(root, "pub-one", "brand-new-name-1", "brand-new-name-1.unitypackage")

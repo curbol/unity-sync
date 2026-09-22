@@ -334,6 +334,19 @@ another machine, leaves them on disk with nothing pointing at them. Reporting su
 as unavailable sends the user looking for a package already in their library and records
 the entry untracked, so `list` stops counting it as mirrored.
 
+An out-of-date asset asks too, with one restriction. `library_path` is user-scoped while
+the manifest and lockfile are project-scoped, so several projects share one library and
+keep separate lockfiles: project A syncs an asset to v2, and project B, whose lockfile
+still records v1, has the new build already at the derived path. `Changed` was the one
+class that never asked before fetching, so B re-transferred a byte-identical file — up to
+23 GB, on a trigger as ordinary as a branch switch that reverts a lockfile. The probe it
+gets accepts only a candidate already in place, because a copy elsewhere would have to
+relocate and `Relocate` refuses an occupied destination: an asset whose derived path holds
+a stale copy would start failing where today it downloads cleanly over it. It is also a
+separate probe from the general one, which sets the damaged-file exclusion behind
+`!cacheOK()` — under `--verify` that is a full re-hash of a file about to be replaced, and
+it would exclude the very copy worth adopting.
+
 Three gates keep adoption from laundering a bad file into the cache. The descriptor's
 product id must match. Its version id must match what the store currently advertises, so a
 stale build cannot be recorded as current. And the file must clear the same size floor a
@@ -424,6 +437,19 @@ check and is sitting on the destination. None of these is the de-owned case, whi
 reported and left in place. The cache holds only current versions, so a superseded copy of
 the same asset is not something to keep, but a copy the tool did not write is never
 touched: every path removed here came out of the lockfile.
+
+That the path came out of the lockfile used to be the whole of the argument, and it is not
+enough. The file is committed, hand-editable and merged across machines, and nothing
+refused two entries naming one path — so with asset A's `cachePath` pointing at asset B's
+package, B verified against its own entry and carried forward `Unchanged`, A's verify
+failed on size and downloaded, and the superseded-copy cleanup unlinked B. The run exits 0,
+the lockfile claims B is mirrored with a digest at a path holding nothing, and B
+re-downloads in full on every later run. Tightening `Verify` does not reach it, since a
+false `Verify` is exactly what routes A into the delete. So the removal asks the bytes what
+they are: the file's own descriptor has to name the asset being replaced. A package
+carrying no descriptor is still removed, because some genuinely have none and refusing
+those would make them undeletable. The duplicate is also refused at the start of a run,
+before anything has been swept, moved or deleted.
 
 ## Failure model
 

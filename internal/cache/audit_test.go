@@ -124,7 +124,7 @@ func TestUnsafePathsAreRefused(t *testing.T) {
 		}
 		// RemoveStale deletes. A path that escapes the root would delete a file the tool
 		// never wrote, and the lockfile it takes these from is hand-editable.
-		if err := cache.RemoveStale(root, rel); err == nil {
+		if err := cache.RemoveStale(root, rel, "111"); err == nil {
 			t.Errorf("RemoveStale accepted path %q", rel)
 		}
 		if _, err := cache.Canonical(rel); err == nil {
@@ -161,7 +161,7 @@ func TestRemoveStaleDeletesTheFileAndPrunesItsParents(t *testing.T) {
 	root := t.TempDir()
 	p := storeCommitted(t, root, "pub", "asset", pkg(t, "111", "v1", 1024))
 
-	if err := cache.RemoveStale(root, p.RelPath); err != nil {
+	if err := cache.RemoveStale(root, p.RelPath, "111"); err != nil {
 		t.Fatalf("RemoveStale: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(p.RelPath))); !os.IsNotExist(err) {
@@ -174,8 +174,46 @@ func TestRemoveStaleDeletesTheFileAndPrunesItsParents(t *testing.T) {
 		t.Errorf("pruning climbed past the library root: %v", err)
 	}
 	// A run re-records a removal it already made; a missing file is done, not an error.
-	if err := cache.RemoveStale(root, p.RelPath); err != nil {
+	if err := cache.RemoveStale(root, p.RelPath, "111"); err != nil {
 		t.Errorf("removing an already-gone file = %v, want nil", err)
+	}
+}
+
+// The path always came out of the lockfile, which used to be the whole of the argument
+// that this only ever deletes the tool's own work. That file is committed, hand-editable
+// and merged across machines, and nothing refuses two entries naming one path: with asset
+// A's cachePath pointing at asset B's package, B verifies against its own entry and
+// classifies Unchanged, A's verify fails on size and downloads, and the superseded-copy
+// cleanup then unlinks B. The run exits 0, the lockfile claims B is mirrored with a digest
+// at a path holding nothing, and B re-downloads in full on every later run.
+//
+// So the bytes are asked what they are. A package carrying no descriptor is still removed,
+// because some genuinely have none and refusing those makes them undeletable forever.
+func TestRemoveStaleRefusesAPackageThatIsAnotherProduct(t *testing.T) {
+	root := t.TempDir()
+	victim := storeCommitted(t, root, "pub", "other-asset", pkg(t, "222", "v1", 1024))
+
+	err := cache.RemoveStale(root, victim.RelPath, "111")
+	if err == nil {
+		t.Fatal("RemoveStale deleted a package belonging to another product")
+	}
+	if !strings.Contains(err.Error(), "222") || !strings.Contains(err.Error(), "111") {
+		t.Errorf("error %v should name both the product found and the one expected", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(victim.RelPath))); statErr != nil {
+		t.Errorf("the other product's package was removed anyway: %v", statErr)
+	}
+
+	// Its own copy still goes, or the guard would make every legitimate removal fail.
+	if err := cache.RemoveStale(root, victim.RelPath, "222"); err != nil {
+		t.Errorf("RemoveStale refused the product's own copy: %v", err)
+	}
+
+	// A package with no descriptor at all cannot be matched, and must not become
+	// undeletable because of it.
+	plain := storeCommitted(t, root, "pub", "no-descriptor", []byte("\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\xff"))
+	if err := cache.RemoveStale(root, plain.RelPath, "111"); err != nil {
+		t.Errorf("RemoveStale refused a package carrying no descriptor: %v", err)
 	}
 }
 
@@ -800,7 +838,7 @@ func TestARecordedPathCannotReachOutsideTheLibraryThroughASymlink(t *testing.T) 
 	}
 	escaping := "link/victim.unitypackage"
 
-	if err := cache.RemoveStale(root, escaping); err == nil {
+	if err := cache.RemoveStale(root, escaping, "111"); err == nil {
 		t.Error("RemoveStale followed a link out of the library")
 	}
 	if _, err := os.Stat(victim); err != nil {

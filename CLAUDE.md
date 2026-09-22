@@ -201,6 +201,21 @@ each with a package doc comment stating its contract:
 - **A delisted asset already in the library is adopted, not reported missing.** A disabled
   product answers 404, so it is the one class where a download cannot make up the
   difference and the lockfile is not the only thing that knows the bytes are here.
+- **`Changed` asks the adopt probe too, restricted to a copy already at the derived path.**
+  `library_path` is user-scoped and the lockfile is project-scoped, so two projects share
+  one library: the build this project calls new can already be in place because another
+  fetched it. The restriction is what keeps it safe — a candidate elsewhere would have to
+  relocate, and `Relocate` refuses an occupied destination, so an asset whose derived path
+  holds a stale copy would fail where it now downloads cleanly over it. It is a separate
+  probe from the general one, which sets `excludeRel` behind `!cacheOK()` and under
+  `--verify` would re-hash the file about to be replaced.
+- **A removal asks the bytes what they are.** That a path came out of the lockfile is not
+  enough: the file is hand-editable and nothing refused two entries naming one path, so one
+  entry's `cachePath` pointing at another's package made the run delete a mirrored asset,
+  exit 0, and re-download it forever. `cache.RemoveStale` takes the product id and refuses
+  a descriptor that names a different one; a package with no descriptor is still removed,
+  or those become undeletable. The duplicate is refused at the start of a run as well,
+  before anything is swept, moved or deleted.
 - **An asset whose bytes landed and whose entry did not keeps the exit status non-zero.**
   All three persisting paths — download, adoption, the relocation a rename forces — report
   it as a warning naming the asset rather than as a failure of it, since the work was done

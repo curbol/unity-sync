@@ -427,6 +427,51 @@ func TestEmptyEnumerationAgainstANonEmptyLockfileIsRefused(t *testing.T) {
 	}
 }
 
+// lockfile.Load refuses two entries for one asset id. This is the same accident from the
+// other side and the committed file admits it by the same route: a merge that kept both
+// sides of a rename, or a hand-edit after moving a file. With asset A's cachePath naming
+// asset B's package, B verifies against its own entry and carries forward Unchanged, A's
+// verify fails on size and downloads, and the superseded-copy cleanup then deletes B's
+// bytes — a run that exits 0, a lockfile claiming B is mirrored with a digest at a path
+// holding nothing, and B re-downloaded in full on every later run.
+//
+// Refused before the enumeration, so nothing has been swept, moved or deleted by the time
+// the run gives up, and the message names both entries rather than surfacing as a warning
+// about a file the user never asked about.
+func TestTwoEntriesRecordingOnePathAreRefusedBeforeAnythingMoves(t *testing.T) {
+	root, lockPath := newRun(t)
+	prior := lockfile.New()
+	prior.Assets["a-1"] = lockfile.Entry{
+		AssetID:    "1",
+		Resolution: lockfile.Resolution{Tracked: true, CachePath: "pub/a/a.unitypackage"},
+	}
+	// The same file under a spelling no string comparison collapses, which is the whole
+	// reason this compares with cache.SamePath.
+	prior.Assets["b-2"] = lockfile.Entry{
+		AssetID:    "2",
+		Resolution: lockfile.Resolution{Tracked: true, CachePath: "./pub/a/a.unitypackage"},
+	}
+	if err := lockfile.Save(lockPath, prior); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(lockPath)
+
+	fs := &fakeStore{}
+	_, err := Run(context.Background(), fs, prior, lockPath, opts(root, nil))
+	if err == nil {
+		t.Fatal("Run accepted a lockfile whose entries both record one cache path")
+	}
+	for _, want := range []string{"a-1", "b-2", "pub/a/a.unitypackage"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %v should name %q", err, want)
+		}
+	}
+	after, _ := os.ReadFile(lockPath)
+	if string(before) != string(after) {
+		t.Error("the refused run rewrote the lockfile anyway")
+	}
+}
+
 func TestPreDownloadFailureWritesNoLockfileAtAll(t *testing.T) {
 	root, lockPath := newRun(t)
 	fs := &failingEnumerate{}
@@ -498,6 +543,77 @@ func TestAdoptRelocatesACandidateFoundOffTheDerivedPath(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, a.PublisherSlug(), "old-slug-1")); !os.IsNotExist(err) {
 		t.Error("the emptied source directory survived the adopt")
+	}
+}
+
+// library_path is user-scoped while the manifest and lockfile are project-scoped, so two
+// projects share one library and keep separate lockfiles. Project A syncs an asset to v2;
+// project B, whose lockfile still records v1, has the new build sitting at the derived
+// path already. Changed was the one class that never asked the adopt question before
+// fetching, so B re-transferred a byte-identical file — up to 23 GB of nothing, on a
+// trigger as ordinary as a branch switch that reverts a lockfile.
+//
+// The probe is restricted to a candidate already in place. A copy elsewhere in the library
+// would have to relocate, and Relocate refuses an occupied destination, so an asset whose
+// derived path holds a stale copy would start failing where today it downloads cleanly
+// over it.
+func TestAChangedAssetAdoptsTheNewBuildAlreadyInPlace(t *testing.T) {
+	root, lockPath := newRun(t)
+	a := asset("1", "Shared Asset", "v2", 500)
+
+	// What the other project left behind: the v2 build, where the layout puts it.
+	place(t, root, a.PublisherSlug(), a.Slug(), pkg(t, "1", "v2", 500))
+
+	// This project's lockfile still records v1.
+	prior := lockfile.New()
+	prior.Assets[a.Slug()] = lockfile.Entry{
+		AssetID: "1",
+		Resolution: lockfile.Resolution{
+			Tracked:           true,
+			ResolvedVersionID: "v1",
+			CachePath:         cache.RelPath(a.PublisherSlug(), a.Slug()),
+		},
+	}
+
+	fs := &fakeStore{owned: []model.Asset{a}}
+	rep, err := Run(context.Background(), fs, prior, lockPath, opts(root, allSelected(a)))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep.Results[0].Class != Adopted {
+		t.Fatalf("class = %v, want Adopted", rep.Results[0].Class)
+	}
+	if len(fs.fetched) != 0 {
+		t.Errorf("re-downloaded a build already in the library: %v", fs.fetched)
+	}
+	_, e, _ := rep.Lockfile.FindByAssetID("1")
+	if e.ResolvedVersionID != "v2" {
+		t.Errorf("resolvedVersionId = %q, want v2; the adopt has to update the diff key or "+
+			"the next run asks the same question again", e.ResolvedVersionID)
+	}
+
+	// A copy that is *not* in place stays a download, because adopting it would need a
+	// relocation onto a destination Relocate refuses when it is occupied.
+	root2, lockPath2 := newRun(t)
+	place(t, root2, a.PublisherSlug(), "somewhere-else-1", pkg(t, "1", "v2", 500))
+	place(t, root2, a.PublisherSlug(), a.Slug(), pkg(t, "1", "v1", 500))
+	prior2 := lockfile.New()
+	prior2.Assets[a.Slug()] = lockfile.Entry{
+		AssetID: "1",
+		Resolution: lockfile.Resolution{
+			Tracked:           true,
+			ResolvedVersionID: "v1",
+			CachePath:         cache.RelPath(a.PublisherSlug(), a.Slug()),
+		},
+	}
+	fs2 := &fakeStore{owned: []model.Asset{a}}
+	rep2, err := Run(context.Background(), fs2, prior2, lockPath2, opts(root2, allSelected(a)))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if rep2.Results[0].Class != Changed {
+		t.Errorf("class = %v, want Changed: a candidate off the derived path must not be "+
+			"adopted into an occupied destination", rep2.Results[0].Class)
 	}
 }
 
@@ -1417,12 +1533,17 @@ func TestEachDownloadIsPersistedBeforeTheNextOneStarts(t *testing.T) {
 	}
 }
 
-// classify tests the recorded version before it probes the disk, and the order is load
+// classify tests the recorded version before it probes the cache, and the order is load
 // bearing rather than incidental: an asset that is about to be replaced by a download must
 // not be re-hashed first, and under --verify that probe reads the whole file. Swapping the
 // two blocks leaves every other test green, because they all supply a cacheOK that agrees
 // with the answer.
-func TestAChangedAssetIsDecidedWithoutTouchingTheDisk(t *testing.T) {
+//
+// The out-of-date branch does ask the in-place adopt probe, which reads the run's one
+// shared scan — that is how a copy another project already fetched is found instead of
+// re-transferred. What it must never do is reach cacheOK, whose --verify form is the full
+// re-hash this exists to prevent.
+func TestAChangedAssetIsDecidedWithoutReHashingIt(t *testing.T) {
 	a := asset("1", "A", "v2", 500)
 	prior := lockfile.Entry{
 		Resolution: lockfile.Resolution{
@@ -1434,11 +1555,23 @@ func TestAChangedAssetIsDecidedWithoutTouchingTheDisk(t *testing.T) {
 		probed = true
 		return false
 	}
-	if got := classify(a, prior, true, cacheOK, func() bool { return false }); got != Changed {
+	noAdopt := func() bool { return false }
+	if got := classify(a, prior, true, cacheOK, noAdopt, noAdopt); got != Changed {
 		t.Errorf("classify = %v, want Changed", got)
 	}
 	if probed {
 		t.Error("classify probed the cache for an asset it had already decided was out of date")
+	}
+
+	// The general adopt probe is the one that sets excludeRel behind !cacheOK(), so the
+	// out-of-date branch must not be the caller that reaches it.
+	reached := false
+	general := func() bool { reached = true; return true }
+	if got := classify(a, prior, true, cacheOK, general, noAdopt); got != Changed {
+		t.Errorf("classify = %v, want Changed", got)
+	}
+	if reached {
+		t.Error("the out-of-date branch used the general adopt probe, which re-hashes under --verify")
 	}
 }
 

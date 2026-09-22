@@ -122,12 +122,32 @@ func profileDirs(root string) []string {
 	return append(append(preferred, flagged...), rest...)
 }
 
-// installDefaults reads installs.ini, which records the profile each installation of the
-// browser last used.
+// installDefaults reports the profile each installation of the browser last used, which
+// Mozilla records in an [Install<hash>] section.
+//
+// profiles.ini carries that section and is read first; installs.ini carries a copy of it
+// and is the fallback. Reading only the copy loses the answer whenever it is absent or
+// stale — a profile tree moved to another machine, or restored from a backup that took
+// profiles.ini and the profile directories but not the undocumented sibling. Ranking then
+// falls back to profiles.ini's Default flag, which is the case the doc comment above says
+// is wrong: the flagged profile can be the one with no session in it at all.
+//
+// The section filter is load-bearing. Without it [Profile0]'s `Default=1` is claimed as a
+// value by the key match in iniEntries, and the entry becomes a profile path "<root>/1".
 func installDefaults(root string) []string {
 	var out []string
-	for _, e := range iniEntries(filepath.Join(root, "installs.ini"), "Default") {
+	for _, e := range iniEntries(filepath.Join(root, "profiles.ini"), "Default") {
+		if !strings.HasPrefix(strings.ToLower(e.section), "install") {
+			continue
+		}
 		out = append(out, e.under(root))
+	}
+	// installs.ini's sections are the bare hash rather than Install<hash>, so there is no
+	// prefix to filter on and nothing else in the file to confuse with a path.
+	for _, e := range iniEntries(filepath.Join(root, "installs.ini"), "Default") {
+		if full := e.under(root); !contains(out, full) {
+			out = append(out, full)
+		}
 	}
 	return out
 }
@@ -136,6 +156,11 @@ func installDefaults(root string) []string {
 // to read it.
 type iniEntry struct {
 	value string
+
+	// section is the [name] the value was found under. installDefaults needs it: the key
+	// it reads, Default, means a profile path in an [Install<hash>] section and a boolean
+	// flag in a [Profile<n>] one, and only the section tells the two apart.
+	section string
 
 	// relative mirrors the section's IsRelative flag, which Mozilla sets to 0 when Path
 	// names an absolute directory — what the Profile Manager writes for a profile placed
@@ -173,16 +198,16 @@ func iniEntries(path, key string) []iniEntry {
 	// A section's two keys arrive in either order, so the value is held until the section
 	// ends and the flag is known.
 	pending := iniEntry{relative: true}
-	flush := func() {
+	flush := func(next string) {
 		if pending.value != "" {
 			out = append(out, pending)
 		}
-		pending = iniEntry{relative: true}
+		pending = iniEntry{relative: true, section: next}
 	}
 	for _, line := range strings.Split(string(raw), "\n") {
 		line = strings.TrimSpace(line)
 		if strings.HasPrefix(line, "[") {
-			flush()
+			flush(strings.TrimSuffix(strings.TrimPrefix(line, "["), "]"))
 			continue
 		}
 		k, v, ok := strings.Cut(line, "=")
@@ -201,7 +226,7 @@ func iniEntries(path, key string) []iniEntry {
 			pending.preferred = v == "1"
 		}
 	}
-	flush()
+	flush("")
 	return out
 }
 

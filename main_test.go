@@ -48,7 +48,13 @@ func isolate(t *testing.T) string {
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "config"))
 	t.Setenv("XDG_DATA_HOME", filepath.Join(home, "data"))
-	for _, k := range []string{"UNITY_SYNC_CONFIG_DIR", "UNITY_SYNC_LIBRARY", "UNITY_SYNC_SESSION"} {
+	// The two GitHub spellings are cleared for the same reason as the rest: `update`
+	// reaches selfupdate, and a token left in the environment is the developer's real
+	// credential being read by a suite whose contract is that it needs no session.
+	for _, k := range []string{
+		"UNITY_SYNC_CONFIG_DIR", "UNITY_SYNC_LIBRARY", "UNITY_SYNC_SESSION",
+		"GITHUB_TOKEN", "GH_TOKEN",
+	} {
 		os.Unsetenv(k)
 	}
 	wd := t.TempDir()

@@ -663,3 +663,77 @@ func TestTokenPrefersTheEnvironmentAndToleratesNeither(t *testing.T) {
 		t.Errorf("Token = %q, want empty when nothing supplies one", got)
 	}
 }
+
+// The credential is only a rate-limit optimisation, so an update that is going to refuse
+// itself must not read one. Before this, Run built the client — and therefore called
+// `gh auth token` — ahead of the dev-build refusal, so `unity-sync update` on a dev build
+// spawned gh and read the user's real credential for nothing. main_test drives exactly
+// that path, so every `go test ./...` on a machine with no token in the environment did
+// the same, against a suite whose contract is that it needs no session at all.
+//
+// Nothing about the returned error says whether a lookup happened, which is why the hook
+// exists: reordering the two back leaves every other assertion here green.
+func TestARefusedUpdateNeverReadsACredential(t *testing.T) {
+	var lookups int
+	selfupdate.StubTokenLookup(t, func(context.Context) string {
+		lookups++
+		return "should-never-be-asked-for"
+	})
+	err := selfupdate.Run(context.Background(), io.Discard, "dev", "")
+	if err == nil || !strings.Contains(err.Error(), "dev build") {
+		t.Fatalf("Run on a dev build = %v, want the dev-build refusal", err)
+	}
+	if lookups != 0 {
+		t.Errorf("a refused update consulted the credential %d time(s); the refusal must "+
+			"come before the lookup, or `go test` reads the developer's real token", lookups)
+	}
+}
+
+// Both ceilings exist so an artifact that is not one of the published zips is an error
+// naming the size rather than an update the kernel kills. Neither had a test, because
+// reaching them for real means moving 256 MB — and each is one plausible edit from
+// disappearing: bounding the entry read by its declared size, or dropping the outer limit
+// on the grounds that the zip reader bounds the archive anyway (it bounds the central
+// directory, and reads nothing else for free).
+func TestAnOversizedArchiveIsRefusedRatherThanBuffered(t *testing.T) {
+	good := zipWithBinary(t, nativeBinary(t, "fresh binary"))
+	selfupdate.LowerArchiveCeiling(t, int64(len(good)/2))
+
+	srv := releaseServer(t, good, nil)
+	c := selfupdate.New(srv.URL, "")
+	rel, err := selfupdate.Resolve(c, context.Background(), "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	_, err = selfupdate.DownloadBinary(c, context.Background(), rel)
+	if err == nil {
+		t.Fatal("an asset over the ceiling was accepted")
+	}
+	if !strings.Contains(err.Error(), "larger than") {
+		t.Errorf("err = %v, want an error naming the size limit", err)
+	}
+}
+
+// The inner ceiling, which is the one a zip bomb reaches: the archive is small and its
+// entry expands past the limit. The declared size is the archive's claim about itself, so
+// the read has to be bounded rather than trusted.
+func TestAnEntryThatExpandsPastTheCeilingIsRefused(t *testing.T) {
+	// Deflates to a few hundred bytes, so the archive itself clears the ceiling set below
+	// and only the entry read can catch it.
+	big := zipWithBinary(t, "\x7fELF"+strings.Repeat("\x00", 1<<20))
+	selfupdate.LowerArchiveCeiling(t, int64(len(big))*4)
+
+	srv := releaseServer(t, big, nil)
+	c := selfupdate.New(srv.URL, "")
+	rel, err := selfupdate.Resolve(c, context.Background(), "")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	_, err = selfupdate.DownloadBinary(c, context.Background(), rel)
+	if err == nil {
+		t.Fatal("an entry expanding past the ceiling was accepted")
+	}
+	if !strings.Contains(err.Error(), "larger than") {
+		t.Errorf("err = %v, want an error naming the size limit", err)
+	}
+}

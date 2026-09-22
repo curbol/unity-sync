@@ -3,12 +3,12 @@ package config_test
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/curbol/unity-sync/internal/config"
+	"github.com/curbol/unity-sync/internal/fixtures"
 )
 
 // isolate clears every variable the resolver reads, so a developer's own environment
@@ -360,7 +360,7 @@ func TestTheExampleConfigStillParses(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "config.toml"), UncommentSettings(raw), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), fixtures.UncommentSettings(raw), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	cfg, err := config.Load(dir, config.Flags{})
@@ -373,7 +373,7 @@ func TestTheExampleConfigStillParses(t *testing.T) {
 	// It used to assert only that the three fields were non-empty, which two of them
 	// cannot be: Load fills LibraryPath from defaultLibraryPath and Concurrency from
 	// defaults(). The third was satisfiable by a stray UNITY_SYNC_SESSION in the
-	// environment, hence isolate(t) above. So if settingLine ever stopped matching — a
+	// environment, hence isolate(t) above. So if the uncommenting ever stopped matching — a
 	// value wrapped over two lines, a setting moved under a table header — Load would be
 	// handed a file with no settings in it, every assertion would still pass, and the
 	// example would have silently stopped being checked at all.
@@ -391,23 +391,6 @@ func TestTheExampleConfigStillParses(t *testing.T) {
 	if strings.HasPrefix(cfg.SessionSource, "~") {
 		t.Errorf("session_source = %q was not expanded; a literal ~ names no directory", cfg.SessionSource)
 	}
-}
-
-// settingLine matches a whole commented-out setting and not the prose around it, which in
-// these files often opens with a key name mid-sentence.
-var settingLine = regexp.MustCompile(`^[a-z_]+ *= *(".*"|[0-9]+|true|false)$`)
-
-// UncommentSettings strips the leading "#" from every line that is a commented-out
-// setting or table header, leaving explanatory comments in place.
-func UncommentSettings(raw []byte) []byte {
-	out := strings.Split(string(raw), "\n")
-	for i, line := range out {
-		body := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "#"))
-		if strings.HasPrefix(body, "[[") || settingLine.MatchString(body) {
-			out[i] = body
-		}
-	}
-	return []byte(strings.Join(out, "\n"))
 }
 
 // The chain is defaults, file, environment, flags, and nothing pins the last step against

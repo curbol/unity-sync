@@ -59,6 +59,22 @@ jobs:
             exit 1
           fi
 
+      # Nothing else in this repo would ever notice. go build discards executables when it
+      # is given more than one package, go vet and gofmt enumerate .go files, and the
+      # fixture guard opens only paths under a testdata/ directory — so a binary left at
+      # the root by `go build ./cmd/<tool>` is invisible to every other check here and
+      # stays in history for good once it is committed. The fixture that is deliberately
+      # binary, testdata/store/package_header_sample.bin, reports as application/gzip.
+      - name: no compiled binaries are tracked
+        run: |
+          tracked=$(git ls-files -z | xargs -0 -r file --mime-type -- \
+            | grep -E ': application/(x-executable|x-sharedlib|x-mach-binary|x-dosexec|vnd\.microsoft\.portable-executable)$' || true)
+          if [ -n "$tracked" ]; then
+            echo "these compiled binaries are tracked; add them to .gitignore and git rm --cached:"
+            echo "$tracked"
+            exit 1
+          fi
+
       # The syncer fans out downloads under a semaphore and persists the lockfile from
       # each goroutine, so the suite is worth running under the detector. No network and
       # no session are needed: everything runs against httptest servers and the

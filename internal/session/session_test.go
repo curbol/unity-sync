@@ -120,11 +120,12 @@ func TestEveryCurlPasteSpellingYieldsTheSameHeader(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Resolve: %v", err)
 			}
-			if !strings.Contains(got.Header, "LS=the-credential") {
-				t.Errorf("header %q lost the credential", got.Header)
-			}
-			if !strings.Contains(got.Header, "DS=abc") {
-				t.Errorf("header %q dropped an ordinary cookie", got.Header)
+			// Compared whole, not by substring: join sorts by name, so the last
+			// cookie's value ends the string, and a parser that left a stray caret or
+			// backslash appended to it satisfies a Contains check in every row here.
+			// Only two of these spellings are pinned exactly elsewhere.
+			if want := "DS=abc; LS=the-credential; _csrf=stale"; got.Header != want {
+				t.Errorf("header = %q, want %q", got.Header, want)
 			}
 		})
 	}

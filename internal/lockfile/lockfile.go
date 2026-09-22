@@ -119,10 +119,11 @@ func Load(path string) (Lockfile, error) {
 
 // checkUnique refuses two entries for one product. A run never writes such a file — the
 // key is derived from the id — but this one is committed, and a rename changes an entry's
-// key by construction, so a merge that keeps both sides of one leaves a duplicate. Since
-// FindByAssetID walks a map, the run would then pick between them at random: the same
-// checkout classifies the asset Unchanged on one run and Changed on the next, re-fetching
-// gigabytes on a coin flip, and the entry not picked is dropped without a word.
+// key by construction, so a merge that keeps both sides of one leaves a duplicate. A
+// lookup by product id then picks between them at random, because both the index a run
+// builds and FindByAssetID range over a map: the same checkout classifies the asset
+// Unchanged on one run and Changed on the next, re-fetching gigabytes on a coin flip, and
+// the entry not picked is dropped without a word.
 func (lf Lockfile) checkUnique() error {
 	seen := map[string]string{}
 	for key, e := range lf.Assets {
@@ -237,8 +238,12 @@ func Save(path string, lf Lockfile) error {
 }
 
 // FindByAssetID returns the entry recorded for a product id, whatever key it sits under.
-// Classification uses this rather than the key, so a renamed asset — whose key changes
+// Identity is the product id rather than the key, so a renamed asset — whose key changes
 // by construction — is still recognised as the same thing.
+//
+// This is the one-off lookup. A run indexes the whole file by id once instead, because it
+// needs a lookup per owned asset and another per save; this walk is for a caller with a
+// single question to ask.
 func (lf Lockfile) FindByAssetID(id string) (key string, e Entry, ok bool) {
 	for k, entry := range lf.Assets {
 		if entry.AssetID == id {

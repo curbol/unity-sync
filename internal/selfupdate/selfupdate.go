@@ -29,7 +29,12 @@ const repo = "curbol/unity-sync"
 // maxArchiveBytes bounds a release asset. The published zips are single-digit megabytes,
 // so this leaves room to grow by an order of magnitude and still refuses an artifact that
 // is plainly not one of them.
-const maxArchiveBytes = 256 << 20
+//
+// A var rather than a const only so a test can lower it: both ceilings are otherwise
+// reachable only by actually moving 256 MB, which is why neither had a test — and each is
+// one plausible edit from disappearing, since the zip reader bounds the central directory
+// and reads nothing else for free.
+var maxArchiveBytes int64 = 256 << 20
 
 // client is the GitHub API surface, injectable so tests need no network.
 type client struct {
@@ -437,12 +442,26 @@ func replaceAside(newPath, targetPath string, direct error) error {
 	return nil
 }
 
+// lookupToken is indirected so a test can observe whether an update consulted a
+// credential at all. Nothing about a refused update says so, and the ordering in Run is
+// the whole point: the refusal below has to cost no credential read.
+var lookupToken = token
+
 // Run performs an update of the running binary.
 //
 // The token is opportunistic: get omits the Authorization header when it is empty, and
 // GitHub serves a public repository's releases and assets anonymously. Requiring one here
 // failed the update for every user who installed a release binary and never set one.
+//
+// A dev build is refused before the lookup, not inside update after it. Asked for one
+// afterwards, `unity-sync update` on a dev build spawned `gh auth token` and read the
+// user's real credential to build a client it then threw away — and since main_test drives
+// this path, so did every `go test ./...` on a machine with no token in the environment,
+// against a suite whose whole contract is that it needs no session.
 func Run(ctx context.Context, w io.Writer, current, version string) error {
+	if current == "dev" {
+		return fmt.Errorf("this is a dev build; install a release first")
+	}
 	self, err := os.Executable()
 	if err != nil {
 		return err
@@ -450,16 +469,13 @@ func Run(ctx context.Context, w io.Writer, current, version string) error {
 	if self, err = filepath.EvalSymlinks(self); err != nil {
 		return err
 	}
-	return update(ctx, w, newClient("", token(ctx)), current, version, self)
+	return update(ctx, w, newClient("", lookupToken(ctx)), current, version, self)
 }
 
 // update is Run with the client and the binary it replaces supplied, which is the only
 // seam a test can drive: Run replaces whatever is running, and under `go test` that is the
 // test binary.
 func update(ctx context.Context, w io.Writer, c *client, current, version, target string) error {
-	if current == "dev" {
-		return fmt.Errorf("this is a dev build; install a release first")
-	}
 	rel, err := c.resolve(ctx, version)
 	if err != nil {
 		return err

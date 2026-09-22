@@ -140,3 +140,23 @@ func TestASubfieldClaimingMoreThanRemainsIsNotNoMetadata(t *testing.T) {
 		t.Errorf("a malformed subfield list was reported as ErrNoMetadata: %v", err)
 	}
 }
+
+// A zero-length subfield is a legitimate RFC 1952 construct, and it is the one input
+// shape where the walk can fail to advance: `i = end` with `end == start` leaves i where
+// it was, so a bounds refactor that dropped the +4 in `start := i + 4` would spin on it
+// forever rather than reaching the descriptor behind it. Every other case here advances
+// by construction, so none of them can tell.
+func TestAZeroLengthSubfieldDoesNotStopTheWalk(t *testing.T) {
+	raw := gzipWithExtra(t,
+		subfield("Zz", nil),
+		subfield("Qq", nil),
+		subfield("A$", []byte(`{"id":"115488","version_id":"999"}`)),
+	)
+	m, err := unitypackage.Read(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatalf("Read: %v", err)
+	}
+	if m.ID != "115488" || m.VersionID != "999" {
+		t.Errorf("Read = %+v, want the descriptor behind the empty subfields", m)
+	}
+}

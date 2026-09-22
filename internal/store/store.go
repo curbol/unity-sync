@@ -111,10 +111,15 @@ func (c *Client) adoptCSRF(token string) {
 }
 
 const (
-	// defaultStallTimeout is how long a download body may deliver nothing before it is
+	// DefaultStallTimeout is how long a download body may deliver nothing before it is
 	// given up on. Generous, because a legitimate transfer over a poor link does go
 	// quiet: the failure this bounds is a body that never resumes at all.
-	defaultStallTimeout = 2 * time.Minute
+	//
+	// Exported because it is also the longest a live transfer may sit untouched, which
+	// the syncer's temp sweep has to spare. Held as two independent numbers in two
+	// packages nothing compiles together, the sweep's grace was half this and unlinked
+	// temps belonging to transfers that were still going to resume.
+	DefaultStallTimeout = 2 * time.Minute
 
 	// defaultRequestTimeout bounds one API call end to end. Downloads are excluded by
 	// construction — they are the only path that hands a body back.
@@ -129,12 +134,18 @@ type Option func(*Client)
 // WithBaseURL points the client at a test server.
 func WithBaseURL(u string) Option { return func(c *Client) { c.base = strings.TrimSuffix(u, "/") } }
 
+// Credential is the Cookie header for the store, carried as its own type because it sits
+// next to the version string in New's signature. Two adjacent untyped strings compile
+// either way round, and the wrong way round sends the user's live session as the
+// User-Agent — the one header every intermediary on the path writes to a log.
+type Credential string
+
 // New builds a client for the given session Cookie header.
 //
 // The transport sets a response-header timeout rather than a whole-request timeout: a
 // 23 GB body legitimately takes a long time, and a request deadline would kill it, while
 // a server that never answers still needs bounding.
-func New(cookieHeader, version string, opts ...Option) *Client {
+func New(cookie Credential, version string, opts ...Option) *Client {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.ResponseHeaderTimeout = 60 * time.Second
 	c := &Client{
@@ -146,10 +157,10 @@ func New(cookieHeader, version string, opts ...Option) *Client {
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 		base:           defaultBase,
-		cookie:         cookieHeader,
+		cookie:         string(cookie),
 		agent:          "unity-sync/" + version,
 		retries:        retry.DefaultPolicy(),
-		stallTimeout:   defaultStallTimeout,
+		stallTimeout:   DefaultStallTimeout,
 		requestTimeout: defaultRequestTimeout,
 	}
 	for _, o := range opts {

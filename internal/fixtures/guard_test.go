@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/curbol/unity-sync/internal/fixtures"
 	"github.com/curbol/unity-sync/internal/store"
 )
 
@@ -189,5 +190,41 @@ func TestThePinnedQueryAsksForNoAccountField(t *testing.T) {
 	// The document has to be the real one, or the loop above passes on an empty string.
 	if !strings.Contains(store.SearchDocument, "searchMyAssets") {
 		t.Fatal("store.SearchDocument is not the pinned query; this test is reading the wrong thing")
+	}
+}
+
+// The walk above names five fields and four patterns; the allowlist is what actually
+// decides what a fixture may carry. A hand-edit that adds a field the pinned query never
+// asked for — "seatId", "assignedTo" — matches none of those terms, so it is committed,
+// public and permanent with the whole suite green, and the next legitimate regeneration
+// silently reverts it, failing whichever test had come to depend on it.
+//
+// Re-scrubbing settles it, because Scrub is idempotent on its own output: the fixtures are
+// already in batch shape, encoding/json already sorts their keys, and the indentation is
+// already the one Scrub sets. Anything a re-scrub changes is therefore something the
+// scrubber did not write.
+func TestCommittedFixturesAreExactlyWhatTheScrubWouldWrite(t *testing.T) {
+	paths, err := filepath.Glob(filepath.Join("..", "..", "testdata", "store", "*.json"))
+	if err != nil {
+		t.Fatalf("globbing fixtures: %v", err)
+	}
+	if len(paths) == 0 {
+		t.Fatal("no fixtures found; this test is reading the wrong directory")
+	}
+	for _, p := range paths {
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("reading %s: %v", p, err)
+		}
+		again, err := fixtures.Scrub(raw)
+		if err != nil {
+			t.Errorf("%s: the scrubber refuses its own output: %v", p, err)
+			continue
+		}
+		if !bytes.Equal(raw, again) {
+			t.Errorf("%s is not scrubber output: re-scrubbing changes it (%d bytes to %d). "+
+				"Regenerate with `go run ./cmd/scrubfixtures` rather than hand-editing",
+				p, len(raw), len(again))
+		}
 	}
 }

@@ -26,7 +26,15 @@ import (
 
 // sweepGrace is how far back the temp sweep's cutoff is moved so a concurrent run's
 // in-flight transfer is spared even when it has stalled long enough to look abandoned.
-const sweepGrace = time.Minute
+//
+// Derived from the stall window rather than chosen, because that window is the tool's own
+// definition of how long a transfer may sit untouched and still be alive. At a flat
+// minute it was half of it: a run whose body went quiet at T had its temp unlinked by a
+// second run starting at T+70s and then resumed inside its own window, finished into the
+// deleted file, and failed the whole transfer — permanently, because an opened-but-deleted
+// temp reads as an unparseable package rather than a truncated one. Doubled rather than
+// matched, so the margin does not depend on how long enumeration took.
+const sweepGrace = 2 * store.DefaultStallTimeout
 
 // ErrEmptyLibrary guards the committed record against a well-formed but wrong
 // enumeration. A session whose active org differs returns a legitimately different owned
@@ -157,12 +165,13 @@ type priorEntry struct {
 }
 
 // indexByAssetID indexes a lockfile by product id, which is the identity classification
-// uses. Built once per run and shared: FindByAssetID walks the whole map, the
-// classification loop needs one lookup per owned asset, and the pool rebuilds the lockfile
-// after every download inside the critical section — so a three-thousand-asset account
-// otherwise paid full map walks per asset per save. One index also means one lookup decides
-// both the entry and its key, which two separate walks over a hand-merged duplicate could
-// answer differently.
+// uses. Built once per run and shared, because the alternative is a full map walk per
+// lookup: the classification loop needs one per owned asset, and the pool rebuilds the
+// lockfile after every download inside the critical section, so a three-thousand-asset
+// account paid for the walk twice over. One index also means one lookup decides both the
+// entry and its key, which two separate walks over a hand-merged duplicate could answer
+// differently — and lockfile.Load refuses such a file for that reason, since this index
+// would otherwise keep whichever entry ranged last.
 func indexByAssetID(lf lockfile.Lockfile) map[string]priorEntry {
 	index := make(map[string]priorEntry, len(lf.Assets))
 	for k, e := range lf.Assets {
@@ -217,6 +226,11 @@ type Result struct {
 	// the asset's: one expired session would otherwise name every remaining asset as a
 	// failure of its own and bury the one line the user can act on.
 	NotAttempted bool
+
+	// Unrecorded means the bytes are in place and the lockfile entry for them is not.
+	// Kept apart from Err because the asset did not fail — the work was done, it is the
+	// record of it that was lost, and the record is what the next run reads.
+	Unrecorded bool
 }
 
 // Report is what a run produced.
@@ -224,6 +238,13 @@ type Report struct {
 	// Owned is every asset the account holds, not only the selected ones, so a run with an
 	// empty allowlist can still say what there is to choose from.
 	Owned int
+
+	// Selected is how many assets the allowlist and --only between them asked for, which
+	// is not len(Results): an interrupted classification pass leaves the assets it never
+	// reached without a Result at all. Counted separately rather than derived, because a
+	// Result appended for each of them would carry Class's zero value and tally as
+	// Unchanged — a no-op line for an asset the run never looked at.
+	Selected int
 
 	Results  []Result
 	Removed  []lockfile.Entry
@@ -241,10 +262,20 @@ type Report struct {
 	// them is known, so they are summarised rather than named — but the run did not do
 	// what it was asked, so they still keep the exit status non-zero.
 	NotAttempted int
+
+	// Unrecorded counts assets whose bytes are in place but whose lockfile entry could
+	// not be written. The lockfile is what the next run reads, so a lost write means the
+	// work was done and will be done again: a relocation the record does not know about
+	// classifies CacheMissing and re-downloads in full, and a run that reported this as a
+	// warning alone exited 0 while the library it had just rearranged became unreadable
+	// to the next run. Counted apart from Retryable because the asset did not fail, and
+	// counted at all because all three places that persist have to agree — two of them
+	// used to warn and exit 0 while the third called it a failure.
+	Unrecorded int
 }
 
 // Failed reports whether the run should exit non-zero.
-func (r Report) Failed() bool { return r.Retryable > 0 || r.NotAttempted > 0 }
+func (r Report) Failed() bool { return r.Retryable > 0 || r.NotAttempted > 0 || r.Unrecorded > 0 }
 
 // Run executes a sync, or a status when DryRun. It returns the report even alongside an
 // error, so a caller can show what did happen.
@@ -357,6 +388,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		if ctx.Err() != nil {
 			for _, rest := range owned[i:] {
 				if selected(rest, opts) {
+					report.Selected++
 					report.NotAttempted++
 				}
 			}
@@ -365,6 +397,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		if !selected(a, opts) {
 			continue
 		}
+		report.Selected++
 		recorded, hasPrev := priorByID[a.ID]
 		prev := recorded.entry
 		derived := cache.RelPath(a.PublisherSlug(), a.Slug())
@@ -396,15 +429,25 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 			if hasPrev && prev.Tracked && prev.CachePath != "" && !cacheOK() {
 				excludeRel = prev.CachePath
 			}
-			c, ok := scan().Find(a.ID, derived, excludeRel)
+			// The two gates go to Find rather than being applied to what it hands
+			// back, because Find picks one candidate out of however many claim this
+			// product. Checked afterwards, they rejected that one copy while a copy
+			// that would have passed sat unexamined: a stale or truncated build at the
+			// derived path wins the preference, masks an intact copy elsewhere in the
+			// library, and the asset re-downloads in full — up to 23 GB, which is the
+			// outcome adoption exists to avoid.
+			//
 			// The size floor is the same one a download must clear: without it, a
 			// truncated package left in the library enters through the one door that
-			// skips the download path and is then hashed and recorded as truth. found is
-			// assigned only once all three gates pass, which is the precondition the
-			// adopt call site reads it under.
-			if !ok || belowFloor(c.Size, a.AdvertisedSize) || c.Metadata.VersionID != a.Version.ID {
+			// skips the download path and is then hashed and recorded as truth.
+			c, ok := scan().Find(a.ID, derived, func(c cache.Candidate) bool {
+				return !belowFloor(c.Size, a.AdvertisedSize) && c.Metadata.VersionID == a.Version.ID
+			}, excludeRel)
+			if !ok {
 				return false
 			}
+			// Assigned only once the gates have passed, which is the precondition the
+			// adopt call site reads it under.
 			found = c
 			return true
 		}
@@ -445,6 +488,8 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 				if err := persist(a.ID, r); err != nil {
 					res.Warning = joinWarning(res.Warning,
 						fmt.Sprintf("the adoption is on disk but could not be recorded: %v", err))
+					res.Unrecorded = true
+					report.Unrecorded++
 				}
 			}
 		case Unchanged:
@@ -458,6 +503,8 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 					if err := persist(a.ID, r); err != nil {
 						res.Warning = joinWarning(res.Warning,
 							fmt.Sprintf("the package moved but the move could not be recorded: %v", err))
+						res.Unrecorded = true
+						report.Unrecorded++
 					}
 				}
 			}
@@ -533,7 +580,9 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 				res.Warning = joinWarning(res.Warning,
 					removeSuperseded(opts.LibraryRoot, priorPaths[res.Asset.ID], r.CachePath))
 				if err := persist(res.Asset.ID, r); err != nil {
-					res.Err = fmt.Errorf("persisting progress: %w", err)
+					res.Warning = joinWarning(res.Warning,
+						fmt.Sprintf("the package is in the cache but could not be recorded: %v", err))
+					res.Unrecorded = true
 				}
 			}
 			if errors.Is(res.Err, store.ErrExpiredSession) {
@@ -562,6 +611,11 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 			report.Permanent++
 		case res.Err != nil:
 			report.Retryable++
+		}
+		// Not an arm of the switch above: a download can both succeed and go unrecorded,
+		// which is the whole case this counts.
+		if res.Unrecorded {
+			report.Unrecorded++
 		}
 		report.Results = append(report.Results, res)
 	}
@@ -631,6 +685,29 @@ func download(ctx context.Context, s Store, opts Options, a model.Asset) (lockfi
 		return lockfile.Resolution{}, "", false, err
 	}
 
+	// The floor is asked before the descriptor, because the descriptor is the first ~350
+	// bytes and a transfer that dropped inside them fails to parse as gzip at all. That
+	// error is not ErrNoMetadata, so the switch below marks it permanent — and the
+	// identical fault a few hundred bytes later reaches the floor instead, which returns
+	// unmarked and gets the full retry budget. One transport failure, two outcomes,
+	// decided only by where the connection happened to drop, with the early one reported
+	// as "not a readable gzip stream" and blamed on the store. A short body's diagnosis
+	// is "truncated", which is retryable and has its own discriminator; only a body long
+	// enough to be a package has anything for the descriptor guards to say about it.
+	if belowFloor(pending.Size, a.AdvertisedSize) {
+		// A short body is either a truncated transfer or a republish that moved the
+		// advertised size out from under us. One re-read of this product settles it.
+		if republished(ctx, s, a) {
+			pending.Discard()
+			return lockfile.Resolution{}, fmt.Sprintf(
+				"%s: republished mid-download; nothing stored, the next run will fetch the new build",
+				a.Name), false, nil
+		}
+		pending.Discard()
+		return lockfile.Resolution{}, "", false, fmt.Errorf("%s: received %d bytes against an advertised %d; body ended early",
+			a.Name, pending.Size, a.AdvertisedSize)
+	}
+
 	meta, metaErr := unitypackage.ReadFile(pending.TempPath())
 	switch {
 	case metaErr != nil && !errors.Is(metaErr, unitypackage.ErrNoMetadata):
@@ -654,19 +731,6 @@ func download(ctx context.Context, s Store, opts Options, a model.Asset) (lockfi
 			a.Name, a.Version.ID, meta.VersionID)
 	}
 
-	if belowFloor(pending.Size, a.AdvertisedSize) {
-		// A short body is either a truncated transfer or a republish that moved the
-		// advertised size out from under us. One re-read of this product settles it.
-		if republished(ctx, s, a) {
-			pending.Discard()
-			return lockfile.Resolution{}, fmt.Sprintf(
-				"%s: republished mid-download; nothing stored, the next run will fetch the new build",
-				a.Name), false, nil
-		}
-		pending.Discard()
-		return lockfile.Resolution{}, "", false, fmt.Errorf("%s: received %d bytes against an advertised %d; body ended early",
-			a.Name, pending.Size, a.AdvertisedSize)
-	}
 	if a.AdvertisedSize > 0 && (pending.Size > a.AdvertisedSize || pending.Size < a.AdvertisedSize-64) {
 		// A package can both be served at a different version than advertised and land
 		// outside the window, and the version notice is the one the lockfile's two ids

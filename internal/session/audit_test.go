@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -135,5 +136,29 @@ func TestACookieJarFilenameIsNotReadAsTheCredential(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "cookies.txt") && !strings.Contains(err.Error(), "Cookie") {
 		t.Errorf("the filename was carried into the diagnostic as a credential: %v", err)
+	}
+}
+
+// Resolved carries the live session in an exported field, and String is what keeps the
+// default way of printing one safe: it makes %v, %s and %+v — on the value, and on any
+// error that wraps it — render the path instead of the credential. The type's own doc
+// records that this bug shipped once already, in the two-bare-strings form, and nothing
+// asserted the method that replaced it: removing String, switching it to a pointer
+// receiver, or adding a second printable field leaves the whole suite green while
+// `fmt.Errorf("session: %v", r)` starts writing LS=… to stderr.
+func TestPrintingAResolvedSessionDoesNotPrintTheCredential(t *testing.T) {
+	r := session.Resolved{Header: "_csrf=stale; LS=the-credential", Path: "/home/u/.config/zen/x/recovery.jsonlz4"}
+	for _, format := range []string{"%v", "%s", "%+v"} {
+		got := fmt.Sprintf(format, r)
+		if got != r.Path {
+			t.Errorf("fmt.Sprintf(%q, resolved) = %q, want the path %q", format, got, r.Path)
+		}
+		if strings.Contains(got, "the-credential") {
+			t.Errorf("fmt.Sprintf(%q, resolved) carried the live session: %q", format, got)
+		}
+	}
+	// Wrapped in an error is the shape the bug actually took.
+	if err := fmt.Errorf("session: %v", r); strings.Contains(err.Error(), "the-credential") {
+		t.Errorf("a wrapped error carried the live session: %v", err)
 	}
 }

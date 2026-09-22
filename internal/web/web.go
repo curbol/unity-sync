@@ -170,6 +170,18 @@ func localRequest(r *http.Request, bound net.Addr) bool {
 	if err != nil || port != boundPort {
 		return false
 	}
+	// Refused here and not only in main, because Host is written by the client and the
+	// branches below cannot tell a loopback claim made on this machine from the same claim
+	// made across the network: what makes either of them a locality check is a bind
+	// address there is something to check against. Held only in main, the control was one
+	// caller away from switching off silently — web.Serve takes any net.Addr, so a
+	// listener on ":8788" would answer 200 to "Host: localhost:8788" from anywhere on the
+	// network, serving the account's purchase history and the token that spends the run's
+	// one save, with nothing in this package failing.
+	boundIP := net.ParseIP(boundHost)
+	if boundIP == nil || boundIP.IsUnspecified() {
+		return false
+	}
 	if host == "localhost" {
 		return true
 	}
@@ -177,15 +189,10 @@ func localRequest(r *http.Request, bound net.Addr) bool {
 	if ip == nil {
 		return false
 	}
-	// Host is written by the client, so this rejects a name that does not belong to the
-	// page and nothing more; it cannot tell a loopback claim made on this machine from
-	// the same claim made across the network. What makes it a locality check is the bind
-	// address, which main refuses to leave unspecified for exactly that reason.
 	if ip.IsLoopback() {
 		return true
 	}
-	boundIP := net.ParseIP(boundHost)
-	return boundIP != nil && !boundIP.IsUnspecified() && boundIP.Equal(ip)
+	return boundIP.Equal(ip)
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {

@@ -1,14 +1,15 @@
 package manifest_test
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/curbol/unity-sync/internal/fixtures"
 	"github.com/curbol/unity-sync/internal/manifest"
 	"github.com/curbol/unity-sync/internal/model"
 )
@@ -281,15 +282,8 @@ func TestTheExampleManifestStillParses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	out := strings.Split(string(raw), "\n")
-	for i, line := range out {
-		body := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "#"))
-		if strings.HasPrefix(body, "[[") || settingLine.MatchString(body) {
-			out[i] = body
-		}
-	}
 	path := filepath.Join(t.TempDir(), "unity-sync.toml")
-	if err := os.WriteFile(path, []byte(strings.Join(out, "\n")), 0o644); err != nil {
+	if err := os.WriteFile(path, fixtures.UncommentSettings(raw), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	m, err := manifest.Load(path)
@@ -304,9 +298,6 @@ func TestTheExampleManifestStillParses(t *testing.T) {
 		t.Errorf("the example set a field Load did not carry through: %+v", e)
 	}
 }
-
-// settingLine matches a whole commented-out setting and not the prose around it.
-var settingLine = regexp.MustCompile(`^[a-z_]+ *= *(".*"|[0-9]+|true|false)$`)
 
 // The lockfile refuses two entries for one asset, and this file has the same properties:
 // committed, hand-edited, and re-keyed by nothing, so the way a duplicate arrives is a
@@ -327,5 +318,41 @@ func TestTwoEntriesForOneAssetAreRejected(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "115488") {
 		t.Errorf("error %q does not name the duplicated id", err)
+	}
+}
+
+// The sort exists so this committed file does not produce a diff on a run that changed
+// nothing. TestSaveLoadRoundTripSortsById pins the sort as Load sees it, which stays
+// green through a serialization that varies run to run — a map-typed or time-typed field
+// added later would reorder or restamp with the sort noticing nothing. The property the
+// rule is actually about is the bytes.
+func TestSaveIsByteStableAcrossRuns(t *testing.T) {
+	path := filepath.Join(t.TempDir(), manifest.FileName)
+	m := manifest.Manifest{Assets: []manifest.Entry{
+		{ID: "222", Name: "B", Enabled: false},
+		{ID: "111", Name: "A", Enabled: true},
+		{ID: "333", Name: "C", Enabled: true},
+	}}
+	if err := manifest.Save(path, m); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := manifest.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := manifest.Save(path, loaded); err != nil {
+		t.Fatalf("second Save: %v", err)
+	}
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Errorf("saving unchanged state twice produced different bytes, so every run "+
+			"dirties the file:\nfirst:\n%s\nsecond:\n%s", first, second)
 	}
 }

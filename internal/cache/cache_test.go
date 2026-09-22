@@ -87,40 +87,22 @@ func TestOnlyDeepVerifySeesAMidFileFlip(t *testing.T) {
 	}
 }
 
-func TestLocateFindsAPackageByItsOwnIdAndIgnoresTemps(t *testing.T) {
+// The temp half of this lives in audit_test.go, against a temp Store actually created:
+// a name written by hand here passes whatever the CreateTemp pattern becomes.
+func TestScanFindsAPackageByItsOwnId(t *testing.T) {
 	root := t.TempDir()
 	storeCommitted(t, root, "pub-a", "asset-1", pkg(t, "111", "9", 400))
 	storeCommitted(t, root, "pub-b", "asset-2", pkg(t, "222", "9", 400))
 
-	// An abandoned partial with an intact descriptor must never be adoptable.
-	tempDir := filepath.Join(root, "pub-c", "asset-3")
-	os.MkdirAll(tempDir, 0o755)
-	os.WriteFile(filepath.Join(tempDir, ".unity-sync-dl-999"), pkg(t, "333", "9", 400), 0o644)
-
-	got, ok := cache.Scan(t.Context(), root).Find("222", "")
-	if !ok || !strings.Contains(got.RelPath, "asset-2") {
-		t.Errorf("Locate(222) = %+v, %v", got, ok)
+	got, ok := cache.Scan(t.Context(), root).Find("222", "", nil)
+	if !ok {
+		t.Fatal("Find(222) found nothing")
 	}
-	if _, ok := cache.Scan(t.Context(), root).Find("333", ""); ok {
-		t.Error("Locate adopted an abandoned download temp")
+	if want := cache.RelPath("pub-b", "asset-2"); got.RelPath != want {
+		t.Errorf("Find(222) = %q, want %q", got.RelPath, want)
 	}
-}
-
-func TestRelocateMovesTheDirectoryAndPrunesTheOldOne(t *testing.T) {
-	root := t.TempDir()
-	from := cache.RelPath("pub", "old-slug-111")
-	storeCommitted(t, root, "pub", "old-slug-111", pkg(t, "111", "9", 400))
-	to := cache.RelPath("pub", "new-slug-111")
-
-	if err := cache.Relocate(root, from, to); err != nil {
-		t.Fatalf("Relocate: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(to))); err != nil {
-		t.Fatalf("file is not at the new path: %v", err)
-	}
-	// quarry reads the pack facet from the directory, so the old directory must go.
-	if _, err := os.Stat(filepath.Join(root, "pub", "old-slug-111")); !os.IsNotExist(err) {
-		t.Error("the emptied old directory survived the move")
+	if _, ok := cache.Scan(t.Context(), root).Find("333", "", nil); ok {
+		t.Error("Find invented a candidate for a product the library does not hold")
 	}
 }
 

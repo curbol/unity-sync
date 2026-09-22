@@ -49,7 +49,11 @@ each with a package doc comment stating its contract:
   file, or a `cookies.txt`, and asserts the `LS` cookie is present before any request. The
   source is identified by reading it, not by configuration. Both the running browser's
   `recovery.jsonlz4` and the `sessionstore.jsonlz4` a clean exit leaves behind are
-  searched, live files first across every root. `mozlz4.go` decodes Gecko's
+  searched, live files first across every root. The profile the running installation uses
+  comes from an `[Install<hash>]` section, which Mozilla keeps in `profiles.ini` as well as
+  in `installs.ini`: both are read, `profiles.ini` first, because the copy can be absent or
+  stale and ranking then falls back to the `Default=1` flag, which is the ordering this
+  exists to override. `mozlz4.go` decodes Gecko's
   compressed session store; the jar it holds spans every host the browsing session touched,
   so it is filtered to `unity.com` before anything leaves the package.
 - `retry` — backoff policy. `retry.Permanent` lets a caller stop on a body-based verdict
@@ -178,9 +182,31 @@ each with a package doc comment stating its contract:
   read would refuse — one `Canonical` will not resolve, and one that leaves the library
   through a symlink — so the write gate cannot be weaker than the read gate in either of
   the two ways a path escapes.
+- **The adoption gates run inside the scan's own selection**, not on the candidate it
+  hands back. `cache.Index.Find` returns one file, preferring the copy already at the
+  derived path, so gates applied afterwards rejected that copy while another that would
+  have passed sat unexamined: a stale or truncated build where the layout puts it masks an
+  intact one elsewhere and the asset re-downloads in full. A cloud sync client's conflicted
+  copy is the ordinary way a library comes to hold two.
+- **The size floor is asked before the descriptor guards.** The descriptor is the first
+  ~350 bytes, so a transfer that dropped inside them does not parse as gzip at all — which
+  the descriptor guard marks `retry.Permanent` while the identical fault a few hundred
+  bytes later reaches the floor and is retried. A short body's diagnosis is "truncated",
+  which is retryable and has its own discriminator.
+- **The temp sweep's grace is derived from the stall window, not chosen.** A transfer is
+  alive as long as `store.DefaultStallTimeout` tolerates its silence, so a shorter grace
+  unlinks a temp the run that owns it is still going to write to; it then finishes into a
+  deleted file and fails permanently, because an opened-but-deleted temp reads as an
+  unparseable package rather than a truncated one.
 - **A delisted asset already in the library is adopted, not reported missing.** A disabled
   product answers 404, so it is the one class where a download cannot make up the
   difference and the lockfile is not the only thing that knows the bytes are here.
+- **An asset whose bytes landed and whose entry did not keeps the exit status non-zero.**
+  All three persisting paths — download, adoption, the relocation a rename forces — report
+  it as a warning naming the asset rather than as a failure of it, since the work was done
+  and the record of it was lost. Two of them used to warn and exit 0 while the third called
+  it a failure: the lockfile is what the next run reads, so a relocation it does not know
+  about classifies `CacheMissing` and re-downloads in full on every run.
 - **A failed download fails its asset, not the run**, and a pulled asset does not make the
   run exit non-zero. Assets a cancelled pool never reached are counted apart from the ones
   that failed and summarised in one line, so an expired session does not bury its own
@@ -188,7 +214,10 @@ each with a package doc comment stating its contract:
 - **The select page is served only to a browser on this machine.** The bind address is
   refused unless it names one address, because `Host` is client-supplied and a wildcard
   bind has nothing to check it against. Every request's `Host` is then checked against the
-  bound address, before the render as well as before a save. The
+  bound address, before the render as well as before a save — and `web.localRequest`
+  refuses an unspecified bound address itself rather than trusting `main` to have done it,
+  because `Serve` takes any `net.Addr` and the two tests it would otherwise reach
+  (`Host: localhost`, a loopback literal) are true of a request from anywhere. The
   per-run token stops a blind cross-origin POST but not DNS rebinding, which the browser
   treats as same-origin *by name*: without the check, a page the user is already on could
   read the whole owned-asset list and spend the one save this page accepts, leaving the
@@ -210,13 +239,25 @@ each with a package doc comment stating its contract:
   update, and `gh auth token` is asked for `github.com` by name so an enterprise-only
   login is not sent to `api.github.com`. That marker decides whether to retry and never what
   to report: only one of the three statuses ever means "this credential", so a 404 for a
-  version that was never tagged is reported as a 404. CI refuses a `uses:` naming a tag, and
+  version that was never tagged is reported as a 404. `install.sh` needs the status for
+  that as much as the updater does, since `curl -f` fails alike on every status at or above
+  400 and on every transport failure — keyed on its exit status the installer blamed the
+  credential for a 502, a proxy reset and a DNS failure alike. It also refuses to attach a
+  credential to an `API_BASE` that is not GitHub's: that override is a test seam, and
+  otherwise a way to turn "can set an environment variable" into "has this user's token".
+  A refused update reads no credential at all — the dev-build check comes before the
+  lookup, or `go test` spawns `gh auth token` on the developer's machine. CI refuses a `uses:` naming a tag, and
   walks the whole of `.github/` rather than `workflows/`, because a local composite action's
   own pins run in the same job.
 - **No account data in the repo.** Sessions and raw captures stay out; the
   `internal/fixtures` guard test fails the build if any reaches *any* `testdata/`, package
   local ones included. The scrub is an allowlist projected from `store.SearchDocument`, so
-  a field the query never asked for cannot reach a fixture.
+  a field the query never asked for cannot reach a fixture — and the committed fixtures are
+  held to being that scrubber's output by re-scrubbing each and comparing bytes, because
+  the forbidden-field list names five fields while the allowlist is what decides. CI also
+  refuses a tracked compiled binary: nothing else here looks at the tracked file set, and a
+  6.8 MB artifact left at the root by `go build ./cmd/scrubfixtures` was committed once
+  already.
 
 ## Editing testdata
 

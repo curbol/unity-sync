@@ -1099,3 +1099,38 @@ func TestARedirectedAppDataIsHonoured(t *testing.T) {
 		}
 	}
 }
+
+// Mozilla records the running installation's profile in an [Install<hash>] section, and
+// keeps that section in profiles.ini as well as in installs.ini. Reading only the latter
+// loses the answer whenever it is absent — a profile tree moved to another machine, or
+// restored from a backup that took profiles.ini and the profile directories but not the
+// undocumented sibling — and ranking then falls back to the Default=1 flag, which is the
+// ordering profileDirs exists to override: the flagged profile is signed in as someone
+// else here, so the run mirrors the wrong account's library and Resolved.Path cannot
+// diagnose it, since both profiles live under the same root.
+func TestTheInstallSectionIsReadFromProfilesIniWhenInstallsIniIsAbsent(t *testing.T) {
+	root := t.TempDir()
+	writeProfile(t, root, "running", []storeCookie{
+		{Host: "assetstore.unity.com", Name: "LS", Value: "the-running-profile"},
+	})
+	writeProfile(t, root, "flagged", []storeCookie{
+		{Host: "assetstore.unity.com", Name: "LS", Value: "the-flagged-profile"},
+	})
+	// Both sections, no installs.ini. The [Profile0] block also carries Default, as a
+	// flag: taken as a value it would become the profile path "<root>/1".
+	if err := os.WriteFile(filepath.Join(root, "profiles.ini"), []byte(
+		"[Profile0]\nName=flagged\nIsRelative=1\nPath=flagged\nDefault=1\n\n"+
+			"[Profile1]\nName=running\nIsRelative=1\nPath=running\n\n"+
+			"[Install15B76BAA26BA15E7]\nDefault=running\nLocked=1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := ResolveFrom(root)
+	if err != nil {
+		t.Fatalf("ResolveFrom: %v", err)
+	}
+	if !strings.Contains(got.Header, "the-running-profile") {
+		t.Errorf("header came from %s, not the profile the [Install] section names: %q",
+			got.Path, got.Header)
+	}
+}

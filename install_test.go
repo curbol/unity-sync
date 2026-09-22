@@ -184,7 +184,12 @@ func TestInstallerRetriesWithoutACredentialTheApiRejects(t *testing.T) {
 	// non-zero exit is expected. What the credential decides is everything before that.
 	out, _ := runInstaller(t, home,
 		"UNITY_SYNC_INSTALL_API="+srv.URL, "UNITY_SYNC_INSTALL_DOWNLOAD="+srv.URL,
-		"GITHUB_TOKEN=stale-token")
+		"GITHUB_TOKEN=stale-token",
+		// auth_token attaches nothing to an API base that is not GitHub's, which is what
+		// TestTheCredentialIsNotSentToAnApiBaseTheEnvironmentNamed pins. This is the one
+		// test that has to opt back in, because it is about what happens when a
+		// credential is sent and refused.
+		"UNITY_SYNC_INSTALL_ALLOW_TOKEN=1")
 
 	if anonymous == 0 {
 		t.Errorf("no unauthenticated request was made, so the rejected token was never "+
@@ -522,4 +527,72 @@ func runInstallerAs(t *testing.T, pathPrefix string) string {
 	}
 	out, _ := cmd.CombinedOutput()
 	return string(out)
+}
+
+// The marker decides whether to retry and never what to report. `curl -f` exits non-zero
+// for every status at or above 400 and for every transport failure alike, so a fetch that
+// blamed the credential on any non-zero exit told a user whose token is fine to go and
+// look at it, while the real cause — the API answering 502, a proxy resetting, no DNS —
+// was never named at all. The Go half is pinned by
+// TestAStatusIsReportedAsItselfRatherThanAsARejectedCredential; this is the shell half,
+// and its absence is what let the old wording sit there green: the sibling test above is
+// satisfied by a fetch that says "rejected" unconditionally.
+func TestAFailureThatIsNotTheCredentialIsNotBlamedOnIt(t *testing.T) {
+	requireShell(t)
+	var requests int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		http.Error(w, `{"message":"Server Error"}`, http.StatusBadGateway)
+	}))
+	t.Cleanup(srv.Close)
+
+	out, err := runInstaller(t, t.TempDir(),
+		"UNITY_SYNC_INSTALL_API="+srv.URL, "UNITY_SYNC_INSTALL_DOWNLOAD="+srv.URL,
+		"GITHUB_TOKEN=a-perfectly-good-token", "UNITY_SYNC_INSTALL_ALLOW_TOKEN=1")
+	if err == nil {
+		t.Fatalf("the installer succeeded against an API answering 502:\n%s", out)
+	}
+	if strings.Contains(out, "was rejected") {
+		t.Errorf("a 502 was reported as a rejected credential, so the user goes looking at "+
+			"a token that is fine:\n%s", out)
+	}
+	if !strings.Contains(out, "502") {
+		t.Errorf("the status GitHub actually answered is not in the output, so the real "+
+			"cause is never named:\n%s", out)
+	}
+	// Still retried anonymously: retrying costs one request and a 502 may well be
+	// transient, so only the wording was ever wrong.
+	if requests < 2 {
+		t.Errorf("made %d request(s), want the anonymous retry as well", requests)
+	}
+}
+
+// API_BASE is a test seam. A credential attached to whatever it names turns "can set an
+// environment variable" — a shared container image, a CI job definition, a direnv file —
+// into "has this user's GitHub token", and `gh auth token` would hand that over out of a
+// keyring the env-setter cannot read for themselves. The Go updater has no equivalent
+// exposure, because Run hardcodes the API host.
+func TestTheCredentialIsNotSentToAnApiBaseTheEnvironmentNamed(t *testing.T) {
+	requireShell(t)
+	var authorized int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "" {
+			authorized++
+		}
+		http.Error(w, "no", http.StatusNotFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	// No opt-in, so nothing should be attached however the credential is supplied.
+	out, _ := runInstaller(t, t.TempDir(),
+		"UNITY_SYNC_INSTALL_API="+srv.URL, "UNITY_SYNC_INSTALL_DOWNLOAD="+srv.URL,
+		"GITHUB_TOKEN=should-never-leave-this-machine")
+	if authorized != 0 {
+		t.Errorf("the credential was sent to an API base the environment named, %d time(s):\n%s",
+			authorized, out)
+	}
+	// And it must not claim a credential was rejected when none was sent.
+	if strings.Contains(out, "was rejected") {
+		t.Errorf("no credential was sent, yet one was reported as rejected:\n%s", out)
+	}
 }

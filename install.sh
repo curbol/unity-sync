@@ -21,9 +21,11 @@ err()  { printf 'ERROR: %s\n' "$1" >&2; }
 
 TMPDIR_SELF=""
 STAGED=""
+FETCH_BODY=""
 cleanup() {
   [[ -z "$TMPDIR_SELF" ]] || rm -rf "$TMPDIR_SELF"
   [[ -z "$STAGED" ]] || rm -f "$STAGED"
+  [[ -z "$FETCH_BODY" ]] || rm -f "$FETCH_BODY"
 }
 trap cleanup EXIT
 
@@ -35,6 +37,14 @@ trap cleanup EXIT
 # against their company's GitHub Enterprise would have that token sent to api.github.com,
 # where it is worth nothing and fails the request that would have succeeded without it.
 auth_token() {
+  # Never sent anywhere but the host it belongs to. API_BASE is a test seam, and a
+  # credential attached to whatever it names turns "can set an environment variable" —
+  # a shared container image, a CI job definition — into "has this user's GitHub token",
+  # which `gh auth token` would otherwise hand over from a keyring the env-setter cannot
+  # read. The Go updater has no equivalent exposure: it hardcodes the API host.
+  if [[ "$API_BASE" != "https://api.github.com" && -z "${UNITY_SYNC_INSTALL_ALLOW_TOKEN:-}" ]]; then
+    return 0
+  fi
   local token="${GITHUB_TOKEN:-${GH_TOKEN:-}}"
   if [[ -z "$token" ]] && command -v gh >/dev/null 2>&1; then
     token=$(gh auth token --hostname github.com 2>/dev/null || true)
@@ -51,13 +61,36 @@ fetch() {
   local url="$1"; shift
   local token; token=$(auth_token)
   if [[ -n "$token" ]]; then
-    if printf 'header = "Authorization: token %s"\n' "$token" | curl -fsSL -K - "$@" "$url"; then
-      return 0
-    fi
-    # A stale or foreign credential is worse than none: the release is public, so the
-    # same request unauthenticated succeeds. Failing here would kill the install over an
-    # environment variable the user has forgotten is set.
-    err "the GitHub token in the environment was rejected; retrying without it"
+    # Buffered rather than written straight to stdout. A 200 that drops mid-body would
+    # otherwise have its partial output followed by the retry's full body on the same
+    # stream, and latest_version's grep then matches "tag_name" twice and builds a
+    # two-line version that every later URL carries a newline through.
+    local body status
+    body=$(mktemp "${TMPDIR:-/tmp}/unity-sync-fetch.XXXXXX")
+    FETCH_BODY="$body"
+    status=$(printf 'header = "Authorization: token %s"\n' "$token" \
+      | curl -sSL -K - -o "$body" -w '%{http_code}' "$@" "$url") || status="000"
+    case "$status" in
+      2??) cat "$body"; rm -f "$body"; FETCH_BODY=""; return 0 ;;
+      # A stale or foreign credential is worse than none: the release is public, so the
+      # same request unauthenticated succeeds. Failing here would kill the install over
+      # an environment variable the user has forgotten is set.
+      #
+      # Only these three ever mean "this credential", and the status decides what is
+      # reported as well as whether to retry. Blaming the token for every failure sent a
+      # user whose token is fine looking at it while the real cause — the API answering
+      # 502, a captive portal, no DNS — was never named at all. `curl -f` alone cannot
+      # tell them apart: it exits non-zero for all of them.
+      401 | 403 | 404)
+        rm -f "$body"; FETCH_BODY=""
+        err "the GitHub token in the environment was rejected (HTTP $status); retrying without it" ;;
+      000)
+        rm -f "$body"; FETCH_BODY=""
+        err "could not reach ${API_BASE}; retrying without the credential" ;;
+      *)
+        rm -f "$body"; FETCH_BODY=""
+        err "GitHub answered HTTP $status; retrying without the credential" ;;
+    esac
   fi
   curl -fsSL "$@" "$url"
 }

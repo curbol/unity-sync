@@ -309,7 +309,7 @@ func namedManifest(path, cmd string) (string, error) {
 	return path, nil
 }
 
-func resolveSession(cfg config.Config, configDir string) (string, error) {
+func resolveSession(cfg config.Config, configDir string) (store.Credential, error) {
 	src := cfg.SessionSource
 	if src == "" {
 		if found, ok := session.Discover(configDir); ok {
@@ -332,7 +332,7 @@ func resolveSession(cfg config.Config, configDir string) (string, error) {
 	if got.Path != src {
 		fmt.Fprintln(os.Stderr, "session: read from", got.Path)
 	}
-	return got.Header, nil
+	return store.Credential(got.Header), nil
 }
 
 // enumerator is the slice of the store client that `select` needs.
@@ -426,7 +426,7 @@ func printReport(w io.Writer, rep syncer.Report, dry bool, libraryPath string) {
 	if dry {
 		verb = "status (no changes made)"
 	}
-	fmt.Fprintf(w, "%s: %d owned, %d selected\n", verb, rep.Owned, len(rep.Results))
+	fmt.Fprintf(w, "%s: %d owned, %d selected\n", verb, rep.Owned, rep.Selected)
 	// The order comes from syncer rather than a list spelled out here, so a class added
 	// there cannot go missing from the tally while still counting toward the total.
 	for _, class := range syncer.Classes() {
@@ -462,6 +462,13 @@ func printReport(w io.Writer, rep syncer.Report, dry bool, libraryPath string) {
 	// says what went wrong.
 	if rep.NotAttempted > 0 {
 		fmt.Fprintf(w, "not attempted: %d asset(s), because the run stopped early\n", rep.NotAttempted)
+	}
+	// The per-asset warnings above say which ones and why. This says what it means: the
+	// lockfile is what the next run reads, so an unrecorded package is work that will be
+	// done again — and for a relocation, done by re-downloading the whole thing.
+	if rep.Unrecorded > 0 {
+		fmt.Fprintf(w, "%d asset(s) are in the cache but not in the lockfile, so the next "+
+			"run will redo that work; fix whatever stopped the write and run again\n", rep.Unrecorded)
 	}
 	// A tally of one among hundreds of owned assets does not tell the user which package
 	// the store stopped serving, and that is the only thing they can act on.

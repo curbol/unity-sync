@@ -28,39 +28,72 @@ import (
 func TestSemanticGuardsRejectAndDiscard(t *testing.T) {
 	good := pkg(t, "1", "v1", 2000)
 
+	// wantFetches is the column that makes this table about the retry verdict as well as
+	// the rejection. Without it "not gzip at all" and "short body" read identically
+	// whether each was attempted once or twice, which is exactly where a transport fault
+	// marked permanent hid: a body truncated inside the descriptor fails to parse as gzip,
+	// which is not ErrNoMetadata, so it was marked permanent and failed on attempt 1 —
+	// while the same fault a few hundred bytes later reached the floor and got the full
+	// budget. The attempt budget here is 2.
 	cases := []struct {
-		name       string
-		body       []byte
-		advertised int64        // defaults to 2000
-		lookup     *model.Asset // when set, the re-query reports this
-		wantOK     bool
-		wantWarn   string
-		wantStore  bool
+		name        string
+		body        []byte
+		advertised  int64        // defaults to 2000
+		lookup      *model.Asset // when set, the re-query reports this
+		wantOK      bool
+		wantWarn    string
+		wantStore   bool
+		wantFetches int
 	}{
-		{name: "not gzip at all", body: []byte("<html>sign in</html>")},
-		{name: "descriptor names another product", body: pkg(t, "999", "v1", 2000)},
-		{name: "short body, re-query unchanged", body: pkg(t, "1", "v1", 100)},
+		{
+			// Long enough to clear the floor, so this reaches the guard it is named for
+			// rather than being rejected as truncated first. A response the store itself
+			// served is not going to improve on a second attempt.
+			name:        "not gzip at all",
+			body:        bytes.Repeat([]byte("<html>sign in</html>"), 100),
+			wantFetches: 1,
+		},
+		{name: "descriptor names another product", body: pkg(t, "999", "v1", 2000), wantFetches: 1},
+		{
+			// A short body is a transport fault, and a fresh connection is what fixes
+			// one, so it gets the whole budget rather than being failed on the first.
+			name:        "short body, re-query unchanged",
+			body:        pkg(t, "1", "v1", 100),
+			wantFetches: 2,
+		},
+		{
+			// The case the ordering exists for. A test package's gzip header runs to
+			// byte 44, so cutting at 30 lands inside it and the stream does not parse at
+			// all. Diagnosed by the descriptor guard that is a corrupt package and
+			// permanent; diagnosed by the floor it is a truncated transfer and retryable,
+			// which is what it actually is.
+			name:        "truncated inside the descriptor",
+			body:        pkg(t, "1", "v1", 2000)[:30],
+			wantFetches: 2,
+		},
 		{
 			// A republish is the one legitimate way to fall below the floor. It warns,
 			// stores nothing, and leaves the new build for the next run.
-			name:      "short body, re-query shows a republish",
-			body:      pkg(t, "1", "v1", 100),
-			lookup:    &model.Asset{ID: "1", Version: model.Version{ID: "v2"}, AdvertisedSize: 4000},
-			wantOK:    true,
-			wantWarn:  "republished",
-			wantStore: false,
+			name:        "short body, re-query shows a republish",
+			body:        pkg(t, "1", "v1", 100),
+			lookup:      &model.Asset{ID: "1", Version: model.Version{ID: "v2"}, AdvertisedSize: 4000},
+			wantOK:      true,
+			wantWarn:    "republished",
+			wantStore:   false,
+			wantFetches: 1,
 		},
-		{name: "20 bytes short is a warning only", body: pkg(t, "1", "v1", 1980), wantOK: true, wantStore: true},
-		{name: "exact", body: good, wantOK: true, wantStore: true},
+		{name: "20 bytes short is a warning only", body: pkg(t, "1", "v1", 1980), wantOK: true, wantStore: true, wantFetches: 1},
+		{name: "exact", body: good, wantOK: true, wantStore: true, wantFetches: 1},
 		{
 			// The allowance is capped at 4096 absolute, because the gap it forgives is a
 			// fixed alignment artifact rather than a proportion. Every other case here is
 			// small enough that advertised/8 is the binding half, so this is the only one
 			// that fails if the cap is dropped — and without it a 23 GB package ended
 			// cleanly 2 GB early clears the floor and is recorded as that asset's truth.
-			name:       "10% short of a large package is below the absolute floor",
-			body:       pkg(t, "1", "v1", 90000),
-			advertised: 100000,
+			name:        "10% short of a large package is below the absolute floor",
+			body:        pkg(t, "1", "v1", 90000),
+			advertised:  100000,
+			wantFetches: 2,
 		},
 	}
 	for _, tc := range cases {
@@ -81,6 +114,10 @@ func TestSemanticGuardsRejectAndDiscard(t *testing.T) {
 			}
 			res := rep.Results[0]
 			final := filepath.Join(root, "pub-one", "asset-1", "asset-1.unitypackage")
+			if len(fs.fetched) != tc.wantFetches {
+				t.Errorf("fetched %d time(s), want %d: a transport fault has to be retried "+
+					"and a verdict the store will repeat must not be", len(fs.fetched), tc.wantFetches)
+			}
 			if tc.wantOK {
 				if res.Err != nil {
 					t.Fatalf("Run rejected an acceptable body: %v", res.Err)
@@ -239,36 +276,13 @@ func TestALookupFailureDoesNotExcuseAShortBody(t *testing.T) {
 	}
 }
 
-// The incremental save runs from inside every download goroutine, so what it writes has to
-// survive them running at once. Each save rebuilds the whole document from the shared
-// resolutions map, and a snapshot that lost a peer's entry — or a rename ordered against
-// the snapshot it came from — shows up here as a mirrored asset missing from the file.
-func TestConcurrentDownloadsEachLandInTheLockfile(t *testing.T) {
-	root, lockPath := newRun(t)
-	owned, bodies := manyAssets(t, 12)
-	fs := &fakeStore{owned: owned, bodies: bodies, hold: 2 * time.Millisecond}
-	o := opts(root, allSelected(owned...))
-	o.Concurrency = 6
-
-	if _, err := Run(context.Background(), fs, lockfile.New(), lockPath, o); err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	saved, err := lockfile.Load(lockPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, a := range owned {
-		_, e, ok := saved.FindByAssetID(a.ID)
-		if !ok || !e.Tracked {
-			t.Errorf("asset %s downloaded but is not in the saved lockfile", a.ID)
-		}
-	}
-}
-
-// The other half, and the one the post-run check above cannot see: Run ends with an
-// unconditional save that rebuilds the whole document, so a lost incremental write is
-// invisible once the run is over. It matters while the run is still going, because the
-// incremental save exists precisely so a run killed at asset 90 of 100 keeps the 89.
+// The incremental save runs from inside every download goroutine, so what it writes has
+// to survive them running at once — and Run ends with an unconditional save that rebuilds
+// the whole document, so a lost incremental write is invisible once the run is over. It
+// matters while the run is still going, because the incremental save exists precisely so
+// a run killed at asset 90 of 100 keeps the 89. The completeness check at the end of this
+// covers the same ground a separate concurrent-downloads test used to, over 60 assets at
+// concurrency 12 rather than 12 at 6.
 //
 // persist holds the mutex across both the map write and the save. Split into two
 // statements, two goroutines reach the rename in the order opposite to how they built
@@ -1585,6 +1599,18 @@ func TestACancelledRunStopsClassifyingAndCountsWhatItSkipped(t *testing.T) {
 		t.Errorf("NotAttempted = %d, want all %d selected assets counted as skipped",
 			rep.NotAttempted, len(owned))
 	}
+	// The summary's headline is "N owned, M selected", and M came from len(Results) —
+	// which an interrupt leaves at 0 while the manifest enabled twenty, so the two
+	// numbers the same summary prints did not add up and the one the user reads first was
+	// the wrong one.
+	if rep.Selected != len(owned) {
+		t.Errorf("Selected = %d, want the %d the manifest enabled: an interrupted pass "+
+			"leaves no Result for what it never reached", rep.Selected, len(owned))
+	}
+	if len(rep.Results)+rep.NotAttempted != rep.Selected {
+		t.Errorf("%d results + %d not attempted != %d selected; the summary's own numbers "+
+			"do not reconcile", len(rep.Results), rep.NotAttempted, rep.Selected)
+	}
 	if !rep.Failed() {
 		t.Error("Failed() = false; a run that skipped every asset must not exit 0")
 	}
@@ -1755,5 +1781,106 @@ func TestAnInterruptDuringAnAdoptionIsNotAnAssetFailure(t *testing.T) {
 	}
 	if !rep.Failed() {
 		t.Error("an interrupted run exited zero")
+	}
+}
+
+// The temp sweep and the stall guard are two numbers in two packages nothing compiles
+// together, and they have to agree about one thing: how long a live transfer may sit
+// untouched. The sweep was a flat minute against a two-minute stall window, so a run
+// whose body went quiet at T had its 8 GB temp unlinked by a second run starting at
+// T+70s, resumed inside its own window, finished the copy into the deleted file, and
+// failed the whole transfer — reported as an unparseable package, because that is what an
+// opened-but-deleted temp reads as.
+//
+// Nothing observable connects the two, which is why this is a test rather than a comment:
+// the sweep is correct on its own terms at any value, and so is the guard.
+func TestTheSweepSparesATransferTheStallGuardStillConsidersAlive(t *testing.T) {
+	if sweepGrace <= store.DefaultStallTimeout {
+		t.Errorf("sweepGrace is %v and the stall window is %v: a concurrent run's transfer "+
+			"is alive for the whole window, so a cutoff inside it deletes a temp that is "+
+			"still being written to", sweepGrace, store.DefaultStallTimeout)
+	}
+}
+
+// All three places that persist a resolution have to agree about what a lost write means,
+// and none of them was exercised. They did not agree: a failed persist after an adoption
+// or a relocation was a warning and the run exited 0, while the same failure after a
+// download was reported as "failed: <name>" — a sentence about an asset that in fact
+// downloaded fine.
+//
+// Exiting 0 is the half that matters. The lockfile is what the next run reads, so a
+// relocation it does not know about classifies CacheMissing and re-downloads the package
+// in full, every run, silently — which is the outcome the per-asset write exists to
+// prevent, reached by the one path that reported success.
+func TestAnUnrecordedResolutionWarnsAndStillFailsTheRun(t *testing.T) {
+	cases := []struct {
+		name  string
+		build func(t *testing.T, root string) (model.Asset, lockfile.Lockfile, map[string][]byte)
+		want  string
+	}{
+		{
+			name: "download",
+			build: func(t *testing.T, root string) (model.Asset, lockfile.Lockfile, map[string][]byte) {
+				a := asset("1", "Asset", "v1", 2000)
+				return a, lockfile.New(), map[string][]byte{"1": pkg(t, "1", "v1", 2000)}
+			},
+			want: "in the cache but could not be recorded",
+		},
+		{
+			name: "adoption",
+			build: func(t *testing.T, root string) (model.Asset, lockfile.Lockfile, map[string][]byte) {
+				a := asset("1", "Asset", "v1", 2000)
+				// On disk under another slug with no lockfile entry behind it, which is
+				// what a deleted lockfile or a mirror made elsewhere leaves.
+				place(t, root, a.PublisherSlug(), "stray-1", pkg(t, "1", "v1", 2000))
+				return a, lockfile.New(), nil
+			},
+			want: "adoption is on disk but could not be recorded",
+		},
+		{
+			name: "relocation",
+			build: func(t *testing.T, root string) (model.Asset, lockfile.Lockfile, map[string][]byte) {
+				a := asset("1", "New Name", "v1", 2000)
+				p := place(t, root, a.PublisherSlug(), "old-name-1", pkg(t, "1", "v1", 2000))
+				prior := lockfile.New()
+				prior.Assets["old-name-1"] = tracked("1", "Old Name", "v1", p)
+				return a, prior, nil
+			},
+			want: "moved but the move could not be recorded",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root, lockPath := newRun(t)
+			a, prior, bodies := tc.build(t, root)
+
+			// Every save fails, which is a full disk or a lockfile held open — the two
+			// causes the per-asset write cannot do anything about but must not hide.
+			restore := saveLockfile
+			t.Cleanup(func() { saveLockfile = restore })
+			saveLockfile = func(string, lockfile.Lockfile) error {
+				return errors.New("no space left on device")
+			}
+
+			fs := &fakeStore{owned: []model.Asset{a}, bodies: bodies}
+			rep, _ := Run(context.Background(), fs, prior, lockPath, opts(root, allSelected(a)))
+
+			if len(rep.Results) != 1 {
+				t.Fatalf("got %d results, want 1", len(rep.Results))
+			}
+			res := rep.Results[0]
+			if !strings.Contains(res.Warning, tc.want) {
+				t.Errorf("warning = %q, want it to say the bytes are in place and the "+
+					"record is not (%q)", res.Warning, tc.want)
+			}
+			if !res.Unrecorded || rep.Unrecorded != 1 {
+				t.Errorf("Unrecorded = %v / %d, want the lost write counted once",
+					res.Unrecorded, rep.Unrecorded)
+			}
+			if !rep.Failed() {
+				t.Error("Failed() = false: the run rearranged the library and lost the " +
+					"record of it, so the next run redoes the work — exiting 0 says otherwise")
+			}
+		})
 	}
 }

@@ -258,6 +258,14 @@ func Store(root, publisherSlug, assetSlug string, r io.Reader) (*Pending, error)
 	defer rt.Close()
 
 	if err := rt.MkdirAll(filepath.FromSlash(dirRel), 0o755); err != nil {
+		// Unwound like every failure below it. MkdirAll makes <publisher>/ and then
+		// <asset>/, so a failure on the second — ENOSPC, a per-directory ACL, a
+		// segment that is already a regular file — leaves the first behind in the tree
+		// quarry walks, on every run for every asset under that publisher. Both levels
+		// are asked, because pruneEmptyParents stops at a directory it cannot open and
+		// so would not walk up from a leaf that was never created.
+		pruneEmptyParents(rt, dirRel)
+		pruneEmptyParents(rt, path.Dir(dirRel))
 		return nil, confinementError(rt, root, dirRel, err)
 	}
 	tempRel, tmp, err := newTemp(rt, dirRel)
@@ -574,7 +582,14 @@ func descriptorAt(rt *os.Root, rel string) (unitypackage.Metadata, error) {
 // adopt that is really a no-op does not turn into a relocation conflict. Paths in
 // excludeRel are skipped entirely: a file that just failed verification is not a candidate
 // for adoption, however intact its descriptor still looks.
-func (ix *Index) Find(productID, preferRel string, excludeRel ...string) (Candidate, bool) {
+//
+// accept is applied inside the selection rather than to what comes back, and a nil accept
+// takes anything. The gates that can reject a candidate are the caller's — the size floor
+// and the advertised version id — and applied afterwards they rejected the one copy this
+// had already chosen while another copy that would have passed sat unexamined two files
+// along: a stale build at the derived path, or a truncated one, masked an intact copy and
+// the asset re-downloaded in full.
+func (ix *Index) Find(productID, preferRel string, accept func(Candidate) bool, excludeRel ...string) (Candidate, bool) {
 	// Resolved, not compared as strings: excludeRel comes from the lockfile, which is
 	// hand-editable and travels between machines, so "./pub/a/a.unitypackage" has to skip
 	// the same file "pub/a/a.unitypackage" names. Missing the match would re-offer a file
@@ -608,10 +623,16 @@ func (ix *Index) Find(productID, preferRel string, excludeRel ...string) (Candid
 			skipIDs = append(skipIDs, fi)
 		}
 	}
+	if accept == nil {
+		accept = func(Candidate) bool { return true }
+	}
 	var found []Candidate
 	for _, c := range ix.byProduct[productID] {
 		full, err := resolve(ix.root, c.RelPath)
 		if err != nil || skip[full] {
+			continue
+		}
+		if !accept(c) {
 			continue
 		}
 		// Re-checked against the filesystem, because a run relocates and removes packages
@@ -689,6 +710,11 @@ func Relocate(root, fromRel, toRel string) error {
 	}
 	if dir := filepath.Dir(toName); dir != "." {
 		if err := r.MkdirAll(dir, 0o755); err != nil {
+			// Unwound for the reason the rename below unwinds: a half-made destination
+			// leaves an empty <publisher>/ in the tree quarry walks, and a relocation
+			// failure is only ever reported as a per-asset warning.
+			pruneEmptyParents(r, path.Dir(to))
+			pruneEmptyParents(r, path.Dir(path.Dir(to)))
 			return err
 		}
 	}

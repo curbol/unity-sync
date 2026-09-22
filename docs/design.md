@@ -64,6 +64,16 @@ Profiles are looked for under each browser's own root and under the sandboxed la
 since a list that names only the unsandboxed path reports "no session" on the most common
 Linux desktop there is.
 
+Which profile the running installation is using is recorded in an `[Install<hash>]`
+section, and Mozilla keeps that section in `profiles.ini` as well as in `installs.ini`.
+Both are read, `profiles.ini` first. Reading only `installs.ini` loses the answer whenever
+it is absent or stale — a profile tree moved to another machine, or restored from a backup
+that took `profiles.ini` and the profile directories but not the undocumented sibling —
+and ranking then falls back to the `Default=1` flag, which is the ordering this exists to
+override. In `profiles.ini` the section name is what tells a profile path from a boolean:
+`Default` means a path under `[Install<hash>]` and a flag under `[Profile<n>]`, so a reader
+that ignores the section turns the flag into a profile directory named `1`.
+
 The supported sources are therefore a session store, a pasted curl command, and a
 `cookies.txt` export. Which one a path is gets decided by reading it: a session store is
 identified by its `mozLz40\0` magic, a curl paste by its structure. Chromium keeps session
@@ -181,8 +191,9 @@ tolerated warning.
 4. Enumerate               page 0..n at pageSize 100; compare raw rows to page 0's `total`; dedup
 5. Apply the allowlist     manifest entries with enabled = true, then --only
 6. Sweep stale temps       walk the tree; before classification, so a partial is never adopted
-                           cutoff is backdated a minute: the run start is captured before
-                           enumeration, and a concurrent run's stalled transfer is not junk
+                           cutoff is backdated past the stall window: the run start is
+                           captured before enumeration, and a concurrent run's stalled
+                           transfer is not junk until that run has given up on it too
 7. Classify                Unchanged | New | Changed | DownloadNow | CacheMissing | Adopted | Undownloadable
 8. Download the delta      bounded; guard against the temp file; commit; persist per asset
 9. Finish                  final lockfile write and summary
@@ -219,7 +230,12 @@ whoever writes the signature first:
   unverified ever occupies a real cache path, because an interrupt in that window would
   strand a rejected body where the next run's adopt scan would take it for genuine.
 - `syncer` owns the semantic guards, which need both the bytes and the enumeration
-  metadata: gzip magic, the descriptor's product id, the size floor and its re-query.
+  metadata: the size floor and its re-query, then gzip magic and the descriptor's product
+  id. The floor goes first, because the descriptor is the first ~350 bytes and a transfer
+  that dropped inside them does not parse as gzip at all — a verdict the descriptor guard
+  treats as a corrupt package and marks permanent, while the identical fault a few
+  hundred bytes later reaches the floor and is retried. One transport failure must not
+  have two outcomes decided by where the connection happened to drop.
 
 Retry wraps store+cache together, so every attempt necessarily opens a fresh temp file and
 a fresh hasher. Appending a retried response to a partial one would survive every other
@@ -259,6 +275,13 @@ drain instead would sever the connection, which is the thing the drain exists to
 The API calls are bounded end to end instead. They carry a few kilobytes of JSON, so a
 body that stops arriving there is a server that will not finish rather than a slow link.
 
+That window is also what the temp sweep has to spare, so the sweep's grace is derived from
+it rather than chosen. Held as two independent numbers the grace was half of it, and a run
+whose body went quiet at T had its temp unlinked by a second run starting at T+70s, then
+resumed inside its own window and finished the copy into a file that no longer existed —
+failing the whole transfer, permanently, because an opened-but-deleted temp reads as an
+unparseable package rather than a truncated one.
+
 ## The size floor
 
 Truncation is normally caught by the transport, but only for a *dropped* connection: a
@@ -270,6 +293,11 @@ So a received count below `downloadSize - min(4096, downloadSize/8)` fails that 
 allowance is absolute because the gap it forgives is a fixed alignment artifact, and
 clamped because 4 KB is a third of the smallest owned package. A body outside the tight
 ±64 window but above the floor is a warning.
+
+The floor is asked before the descriptor is read, so a short body is diagnosed as short
+whatever it does or does not contain. It is the guard with something to say about a
+truncated transfer, and the one whose verdict is retryable — which is what a truncation
+is, since a fresh connection is what fixes it.
 
 The one legitimate way to fall below the floor is a republish mid-download. The
 discriminator is a single re-read of that product: if its advertised version or size moved,
@@ -305,6 +333,13 @@ product id must match. Its version id must match what the store currently advert
 stale build cannot be recorded as current. And the file must clear the same size floor a
 download must clear, because that is the one route into the cache that skips the download
 guards entirely.
+
+All three are applied inside the scan's own selection rather than to the candidate it hands
+back. The scan returns one file, preferring the copy already at the derived path, so gates
+checked afterwards rejected that copy while another copy that would have passed sat
+unexamined: a stale or truncated build sitting where the layout puts it masked an intact
+one elsewhere in the library, and the asset re-downloaded in full. A cloud sync client's
+conflicted copy is the ordinary way a library comes to hold two.
 
 The second gate compares a *delivered* id against an *advertised* one, so for the products
 where those differ as a steady state it can never pass: a perfectly good file for 262163 or
@@ -409,6 +444,15 @@ a session dying at asset 5 of 300 would otherwise bury the one message the user 
 under 295 identical cancellations. They still keep the exit status non-zero, because the
 run did not do what it was asked.
 
+An asset whose bytes are in place and whose lockfile entry could not be written is counted
+apart from both, and also keeps the exit status non-zero. All three places that persist —
+the download, the adoption, the relocation a rename forces — report it the same way, as a
+warning naming the asset rather than as a failure of it: the work was done, and it is the
+record of the work that was lost. The exit status is the half that matters, because the
+lockfile is what the next run reads. A relocation it does not know about classifies
+`CacheMissing` and re-downloads the package in full, on every run, so a run that reported
+this as a warning alone exited 0 having made the library unreadable to its successor.
+
 ## The select page
 
 `select` serves the owned-asset list on loopback and takes one save back. Three things
@@ -420,7 +464,12 @@ bind address is refused unless it names one address: a wildcard binds every inte
 indistinguishable from a browser here. Naming a non-loopback address stays allowed, because
 that is a deliberate exposure rather than a reach for a port number.
 
-Given an address, each request's `Host` is checked against it. The per-run token in the
+Given an address, each request's `Host` is checked against it — and the check refuses an
+unspecified one itself rather than relying on the bind being validated first. The two
+tests it would otherwise reach, a `Host` of `localhost` and a loopback literal, are true
+of a request from anywhere on the network when there is no bound address to compare them
+against, so held only at the bind the control was one caller away from switching off with
+nothing in the page's own guards failing. The per-run token in the
 form stops a blind cross-origin POST, since a page on another origin cannot read it out of
 this one — but it does nothing against DNS rebinding, where a page the user is already on
 re-resolves its own name to a loopback address and the browser then treats it as
@@ -535,7 +584,25 @@ raw `SearchMyAssets` responses, one JSON per page. That directory is git-ignored
 in the repo: the captures need a signed-in session, so regenerating the fixtures means
 capturing again rather than re-running the scrubber over something checked in.
 
+The committed fixtures are held to being that tool's output, by re-scrubbing each one and
+comparing bytes. The forbidden-field walk names five fields; the scrub's allowlist is what
+actually decides, so a hand-added field the pinned query never asked for matched nothing
+and was committed, public and permanent with the suite green — and then silently reverted
+by the next legitimate regeneration. Re-scrubbing settles it, because the scrub is
+idempotent on its own output.
+
+No compiled binary is tracked, which CI checks by asking `file` about the whole tracked
+set. Nothing else here would ever notice: `go build ./...` discards executables when given
+more than one package, `go vet` and `gofmt` enumerate `.go` files, and the fixture guard
+opens only paths under a `testdata/` directory. A 6.8 MB artifact left at the root by
+`go build ./cmd/scrubfixtures` was committed and stayed in history.
+
 ## Distribution
+
+An update that is going to refuse itself reads no credential at all: the dev-build refusal
+comes before the lookup, or `unity-sync update` on a dev build spawns `gh auth token` to
+build a client it throws away — and the test suite drives that path, so it did the same on
+every run.
 
 `install.sh` and `unity-sync update` both read the public release API, so neither needs a
 GitHub credential; one is used when the environment or `gh` supplies it, and buys only the
@@ -547,11 +614,21 @@ signed CDN, but nothing covers the first request. The archive and the binary ins
 both read under a ceiling, so an artifact that is not one of the published zips is an
 error naming the size rather than an update the kernel kills.
 
+Neither reader attaches it to an API base it was not built with. The updater hardcodes the
+host; the installer takes one from the environment as a test seam, and refuses to send a
+credential anywhere else. That seam is otherwise a way to turn "can set an environment
+variable" — a shared container image, a CI job definition — into "has this user's GitHub
+token", which `gh auth token` would hand over out of a keyring the env-setter cannot read
+for themselves.
+
 Because the credential is only an optimisation, one the API rejects must not be worse than
 none: both readers retry anonymously on a 401, a 403 or a 404. That marker decides whether
-to retry and never what to report. Only one of those three statuses ever means "this
-credential", so `unity-sync update 0.2.9` for a version that was never tagged answers 404
-and must say so — reporting it as a rejected credential sends a user who has none looking
+to retry and never what to report, and the installer needs the status for that as much as
+the updater does — `curl -f` fails alike on every status at or above 400 and on every
+transport failure, so a shell fetch that keyed on its exit status blamed the credential for
+the API answering 502, for a proxy reset, for no DNS. Only one of those three statuses ever
+means "this credential", so `unity-sync update 0.2.9` for a version that was never tagged
+answers 404 and must say so — reporting it as a rejected credential sends a user who has none looking
 for one, with the real cause buried behind a claim about a thing they do not have. When the
 anonymous attempt fails too, the credential is demonstrably not what is in the way, so what
 that attempt said is what gets reported. An expired token left in `GITHUB_TOKEN` would

@@ -60,8 +60,10 @@ func TestRelocateRefusesAnOccupiedDestination(t *testing.T) {
 		t.Fatal("Relocate silently overwrote an occupied destination")
 	}
 	fi, err := os.Stat(filepath.Join(root, filepath.FromSlash(to)))
-	if err != nil || fi.Size() != 900 {
-		t.Errorf("the destination file was disturbed: size %v, err %v", fi.Size(), err)
+	if err != nil {
+		t.Errorf("the destination file was disturbed: %v", err)
+	} else if fi.Size() != 900 {
+		t.Errorf("the destination file was disturbed: size %d, want 900", fi.Size())
 	}
 	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(from))); err != nil {
 		t.Error("the source file was lost to a refused move")
@@ -195,11 +197,11 @@ func TestLocateSkipsAnExcludedFileWrittenNonCanonically(t *testing.T) {
 	rel := cache.RelPath("pub", "asset-1")
 	storeCommitted(t, root, "pub", "asset-1", pkg(t, "111", "9", 400))
 
-	if _, ok := cache.Scan(t.Context(), root).Find("111", "", rel); ok {
+	if _, ok := cache.Scan(t.Context(), root).Find("111", "", nil, rel); ok {
 		t.Fatal("the canonical exclude did not skip the file")
 	}
 	for _, spelling := range []string{"./" + rel, "pub/./asset-1/asset-1.unitypackage"} {
-		if _, ok := cache.Scan(t.Context(), root).Find("111", "", spelling); ok {
+		if _, ok := cache.Scan(t.Context(), root).Find("111", "", nil, spelling); ok {
 			t.Errorf("exclude %q did not skip the same file", spelling)
 		}
 	}
@@ -245,6 +247,11 @@ func TestPruningSurvivesHoweverTheRootWasSpelled(t *testing.T) {
 				cache.RelPath("pub", "new-slug-1")); err != nil {
 				t.Fatalf("Relocate: %v", err)
 			}
+			if _, err := os.Stat(filepath.Join(base, filepath.FromSlash(
+				cache.RelPath("pub", "new-slug-1")))); err != nil {
+				t.Errorf("root spelled %q: the file is not at the new path: %v", root, err)
+			}
+			// quarry reads the pack facet from the directory, so the old one must go.
 			if _, err := os.Stat(filepath.Join(base, "pub", "old-slug-1")); !os.IsNotExist(err) {
 				t.Errorf("root spelled %q left the emptied directory behind", root)
 			}
@@ -259,11 +266,11 @@ func TestAnUnresolvableExclusionRefusesEveryCandidate(t *testing.T) {
 	root := t.TempDir()
 	storeCommitted(t, root, "pub", "asset-1", pkg(t, "111", "9", 400))
 
-	if _, ok := cache.Scan(t.Context(), root).Find("111", ""); !ok {
+	if _, ok := cache.Scan(t.Context(), root).Find("111", "", nil); !ok {
 		t.Fatal("the candidate is not findable at all")
 	}
 	for _, bad := range []string{"/etc/passwd", "../outside/x.unitypackage"} {
-		if _, ok := cache.Scan(t.Context(), root).Find("111", "", bad); ok {
+		if _, ok := cache.Scan(t.Context(), root).Find("111", "", nil, bad); ok {
 			t.Errorf("exclusion %q was dropped and a candidate offered anyway", bad)
 		}
 	}
@@ -320,7 +327,7 @@ func TestATempStoreCreatedIsATempTheSweepAndScanRecognise(t *testing.T) {
 	}
 	// The adopt scan must not offer an uncommitted partial as something to adopt: a
 	// truncated body can clear the size floor with its descriptor intact.
-	if _, ok := cache.Scan(t.Context(), root).Find("115488", ""); ok {
+	if _, ok := cache.Scan(t.Context(), root).Find("115488", "", nil); ok {
 		t.Error("the adopt scan offered an uncommitted download temp as a candidate")
 	}
 	old := time.Unix(1600000000, 0)
@@ -453,7 +460,7 @@ func TestFindPrefersTheCopyAlreadyInPlaceWhateverItIsCalled(t *testing.T) {
 	}
 	ix := cache.Scan(t.Context(), root)
 	for _, spelling := range []string{inPlace, "./" + inPlace, "pub-one//asset-1/asset-1.unitypackage"} {
-		got, ok := ix.Find("1", spelling)
+		got, ok := ix.Find("1", spelling, nil)
 		if !ok {
 			t.Fatalf("Find(%q) found nothing", spelling)
 		}
@@ -826,7 +833,7 @@ func TestBothWalksStopWhenTheContextEnds(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if _, ok := cache.Scan(ctx, root).Find("111", ""); ok {
+	if _, ok := cache.Scan(ctx, root).Find("111", "", nil); ok {
 		t.Error("Scan went on parsing headers after the run was told to stop")
 	}
 	if n, _ := cache.SweepTemps(ctx, root, time.Now().Add(time.Hour)); n != 0 {
@@ -837,7 +844,7 @@ func TestBothWalksStopWhenTheContextEnds(t *testing.T) {
 	}
 	// The positive control: with a live context the same calls do their work, so the
 	// assertions above cannot pass by the fixtures simply being wrong.
-	if _, ok := cache.Scan(t.Context(), root).Find("111", ""); !ok {
+	if _, ok := cache.Scan(t.Context(), root).Find("111", "", nil); !ok {
 		t.Error("Scan found nothing even with a live context")
 	}
 	if n, _ := cache.SweepTemps(t.Context(), root, time.Now().Add(time.Hour)); n != 1 {
@@ -889,7 +896,7 @@ func TestStoreRefusesToWriteThroughASymlinkTheReadsWouldRefuse(t *testing.T) {
 					t.Fatal("Store wrote a package Verify refuses, which re-downloads it on every run")
 				}
 				ix := cache.Scan(t.Context(), root)
-				if _, ok := ix.Find("111", p.RelPath); !ok {
+				if _, ok := ix.Find("111", p.RelPath, nil); !ok {
 					t.Fatal("Store wrote a package the adopt scan cannot see, which re-downloads it on every run")
 				}
 				return
@@ -1027,7 +1034,7 @@ func TestASymlinkedLibraryRootIsStillWalked(t *testing.T) {
 		t.Error("the abandoned temp survived a sweep through a symlinked root")
 	}
 
-	got, ok := cache.Scan(context.Background(), root).Find("111", "")
+	got, ok := cache.Scan(context.Background(), root).Find("111", "", nil)
 	if !ok {
 		t.Fatal("Scan through a symlinked root found no candidate, so adoption would " +
 			"re-download the whole library and a delisted asset would read as unavailable")
@@ -1057,10 +1064,10 @@ func TestTheWalkStillDoesNotDescendALinkInsideTheLibrary(t *testing.T) {
 	}
 
 	ix := cache.Scan(context.Background(), root)
-	if _, ok := ix.Find("222", ""); ok {
+	if _, ok := ix.Find("222", "", nil); ok {
 		t.Error("the scan descended a symlink and offered a package from outside the library")
 	}
-	if _, ok := ix.Find("111", ""); !ok {
+	if _, ok := ix.Find("111", "", nil); !ok {
 		t.Error("the scan stopped at the link instead of skipping it")
 	}
 }
@@ -1092,12 +1099,123 @@ func TestAnExcludedFileIsSkippedUnderItsOtherSpelling(t *testing.T) {
 	}
 
 	ix := cache.Scan(t.Context(), root)
-	if _, ok := ix.Find("111", ""); !ok {
+	if _, ok := ix.Find("111", "", nil); !ok {
 		t.Fatal("precondition: the scan did not index the package at all")
 	}
-	if got, ok := ix.Find("111", "", recorded); ok {
+	if got, ok := ix.Find("111", "", nil, recorded); ok {
 		t.Errorf("Find offered %q, which is the excluded file under its other spelling: a "+
 			"copy that just failed verification would be re-adopted and its digest recorded",
 			got.RelPath)
+	}
+}
+
+// The two MkdirAll calls were the paths that created directories and did not unwind them.
+// Every other failure in this file does, and the comment inside Store says so — "every
+// failure below also unwinds", where "below" was the load-bearing word: MkdirAll makes
+// <publisher>/ and then <asset>/, so a failure on the second leaves the first in the tree
+// quarry walks, for every asset under that publisher, on every run.
+//
+// A segment past NAME_MAX is the portable trigger. It is also a real one: the asset slug
+// is slugify(name) + "-" + id and the store does not bound a product name, so a long
+// enough one derives a directory the filesystem refuses. Both levels of the prune are
+// needed, since pruneEmptyParents stops at a directory it cannot open and would not walk
+// up from a leaf that was never created.
+func TestStoreUnwindsWhenADirectoryCannotBeCreated(t *testing.T) {
+	root := t.TempDir()
+	tooLong := strings.Repeat("a", 300)
+	if _, err := cache.Store(root, "pub", tooLong, strings.NewReader("a body")); err == nil {
+		t.Fatalf("Store accepted a %d-character segment", len(tooLong))
+	}
+	if _, err := os.Stat(filepath.Join(root, "pub")); !os.IsNotExist(err) {
+		t.Error("an empty publisher directory survived a failed Store")
+	}
+	if _, err := os.Stat(root); err != nil {
+		t.Errorf("the prune walked past the library root: %v", err)
+	}
+
+	// The other half: a publisher directory that already holds an asset must survive.
+	storeCommitted(t, root, "pub", "sibling-2", []byte("a body"))
+	if _, err := cache.Store(root, "pub", tooLong, strings.NewReader("a body")); err == nil {
+		t.Fatal("Store accepted an over-long segment the second time")
+	}
+	if _, err := os.Stat(filepath.Join(root, "pub", "sibling-2", "sibling-2.unitypackage")); err != nil {
+		t.Errorf("a failed Store removed a sibling asset's directory: %v", err)
+	}
+}
+
+// Relocate's own MkdirAll, the same shape one level along: the destination's grandparent
+// is created and the parent refused, so the failure is reported as a per-asset warning
+// with an empty <publisher>/ left behind.
+func TestRelocateUnwindsWhenADirectoryCannotBeCreated(t *testing.T) {
+	root := t.TempDir()
+	storeCommitted(t, root, "from", "old-1", []byte("a body"))
+	tooLong := strings.Repeat("a", 300)
+	err := cache.Relocate(root, "from/old-1/old-1.unitypackage",
+		"dest/"+tooLong+"/"+tooLong+".unitypackage")
+	if err == nil {
+		t.Fatal("Relocate accepted an over-long destination segment")
+	}
+	if _, err := os.Stat(filepath.Join(root, "dest")); !os.IsNotExist(err) {
+		t.Error("an empty destination directory survived a failed relocate")
+	}
+	if _, err := os.Stat(filepath.Join(root, "from", "old-1", "old-1.unitypackage")); err != nil {
+		t.Errorf("the source did not survive a failed relocate: %v", err)
+	}
+}
+
+// The prefer loop is only half of Find's selection. With no candidate at preferRel it
+// falls through to walk order, and that arm was never reached: the sibling test always
+// passes a spelling that matches one of its two candidates. It is also the arm the gates
+// below rest on.
+func TestFindFallsBackToWalkOrderWithNoCopyInPlace(t *testing.T) {
+	root := t.TempDir()
+	for _, rel := range []string{"a-pub/stray-1/stray-1.unitypackage", "z-pub/other-1/other-1.unitypackage"} {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, pkg(t, "1", "v1", 400), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, ok := cache.Scan(t.Context(), root).Find("1", "pub/asset-1/asset-1.unitypackage", nil)
+	if !ok {
+		t.Fatal("Find found nothing with no copy at the derived path")
+	}
+	if got.RelPath != "a-pub/stray-1/stray-1.unitypackage" {
+		t.Errorf("Find chose %q, want the first in walk order", got.RelPath)
+	}
+}
+
+// accept runs inside the selection, so a candidate the caller rejects cannot mask one it
+// would take. Applied to what Find hands back instead, the copy at the derived path wins
+// the preference, fails the caller's gate, and the intact copy two files along is never
+// examined: the asset re-downloads in full — up to 23 GB — which is the outcome adoption
+// exists to avoid. A cloud-sync conflicted copy is the shape that produces it, with the
+// current build under the conflicted name and a stale one left at the plain path.
+func TestFindDoesNotLetARejectedCandidateMaskAnAcceptableOne(t *testing.T) {
+	root := t.TempDir()
+	derived := "pub/asset-1/asset-1.unitypackage"
+	stale := filepath.Join(root, filepath.FromSlash(derived))
+	if err := os.MkdirAll(filepath.Dir(stale), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stale, pkg(t, "1", "old-version", 400), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	current := filepath.Join(root, "pub", "asset-1", "asset-1 (conflicted copy).unitypackage")
+	if err := os.WriteFile(current, pkg(t, "1", "current-version", 400), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := cache.Scan(t.Context(), root).Find("1", derived, func(c cache.Candidate) bool {
+		return c.Metadata.VersionID == "current-version"
+	})
+	if !ok {
+		t.Fatal("the preferred copy failed the gate and masked the acceptable one")
+	}
+	if got.Metadata.VersionID != "current-version" {
+		t.Errorf("Find chose %q at version %q, want the copy the caller accepts",
+			got.RelPath, got.Metadata.VersionID)
 	}
 }

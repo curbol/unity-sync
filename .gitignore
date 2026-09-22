@@ -16,5 +16,9 @@ captures/
 unity-sync.toml
 unity-sync.lock.json
 
-# Built binary.
+# Built binaries. Named rather than globbed: `go build ./cmd/scrubfixtures` writes
+# ./scrubfixtures into the working directory, and a 6.8 MB artifact stays in history
+# for good once it is committed.
 /unity-sync
+/scrubfixtures
+/dist/

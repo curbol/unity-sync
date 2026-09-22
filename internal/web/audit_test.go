@@ -2,6 +2,7 @@ package web_test
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -286,5 +287,54 @@ func TestStoreControlledTextCannotEscapeItsContext(t *testing.T) {
 	}
 	if !strings.Contains(body, "Ordinary Asset") {
 		t.Error("the benign row is missing, so the page did not render normally")
+	}
+}
+
+// A wildcard bind is refused by main before the listener opens, so this page is only ever
+// handed one address today. That put the whole locality control one caller away from
+// switching off with nothing in this package failing: Serve and NewHandler take any
+// net.Addr, and a listener on ":8788" leaves the check nothing to compare a client-written
+// Host against — "localhost:8788" and "127.0.0.1:8788" are then accepted from anywhere on
+// the network, and the page is the account's purchase history plus the token that spends
+// the run's one save.
+func TestAWildcardBindIsRefusedByTheCheckItself(t *testing.T) {
+	for _, bind := range []net.Addr{
+		&net.TCPAddr{Port: 8788},                          // ":8788" — every interface
+		&net.TCPAddr{IP: net.IPv4zero, Port: 8788},        // "0.0.0.0:8788"
+		&net.TCPAddr{IP: net.IPv6unspecified, Port: 8788}, // "[::]:8788"
+	} {
+		h := web.NewHandler(assets(), map[string]bool{"115488": true}, bind)
+		for _, host := range []string{"localhost:8788", "127.0.0.1:8788", "[::1]:8788"} {
+			r := httptest.NewRequest(http.MethodGet, "/", nil)
+			r.Host = host
+			rec := httptest.NewRecorder()
+			h.ServeHTTP(rec, r)
+			if rec.Code != http.StatusMisdirectedRequest {
+				t.Errorf("bound %s, Host %q = %d, want %d: a wildcard bind has no address "+
+					"to check a client-written Host against",
+					bind, host, rec.Code, http.StatusMisdirectedRequest)
+			}
+			if strings.Contains(rec.Body.String(), "Quick Outline") {
+				t.Errorf("bound %s, Host %q: the refusal disclosed an asset name", bind, host)
+			}
+		}
+	}
+}
+
+// An interrupt with no save waiting must come back as the cancellation, not as an empty
+// selection. selectAssets feeds what Serve returns straight to SetEnabled and Save, so a
+// nil selection and a nil error would rewrite a curated manifest to nothing selected —
+// the outcome the would-empty guard exists to prevent, arriving on a path that never
+// reaches it.
+func TestAnInterruptWithNoSaveIsReportedAsTheInterrupt(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	sel, err := web.ServeWith(ctx, listen(t), newHandler(assets(), nil))
+	if sel != nil {
+		t.Errorf("selection = %v, want nil: nothing was saved", sel)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled; a nil error here makes select save an "+
+			"empty manifest over a curated one", err)
 	}
 }

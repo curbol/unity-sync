@@ -1,6 +1,9 @@
 package selfupdate
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
 
 // Test hooks. Nothing here ships: export_test.go is compiled only into the test binary.
 
@@ -27,6 +30,22 @@ func ForceImageLocked(t *testing.T) {
 // Token is the credential lookup, so a test can hold it to asking gh for github.com by
 // name. The anonymous fallback rescues a wrong-host token, so nothing else notices.
 var Token = token
+
+// StubTokenLookup replaces the credential lookup for the duration of a test, which is the
+// only way to observe that a refused update never reached it.
+func StubTokenLookup(t *testing.T, f func(context.Context) string) {
+	prev := lookupToken
+	lookupToken = f
+	t.Cleanup(func() { lookupToken = prev })
+}
+
+// LowerArchiveCeiling shrinks the release-asset ceiling for the duration of a test. Both
+// ceilings bound 256 MB in production, which no test should move to reach them.
+func LowerArchiveCeiling(t *testing.T, n int64) {
+	prev := maxArchiveBytes
+	maxArchiveBytes = n
+	t.Cleanup(func() { maxArchiveBytes = prev })
+}
 
 // ExecutableMagicFor reports whether this platform has a signature update checks for, so
 // a test can skip rather than assert nothing on a platform where the check is a no-op.

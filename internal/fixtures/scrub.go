@@ -12,7 +12,9 @@
 // carrying the FEXTRA descriptor internal/unitypackage parses, and a Gecko session store
 // in the container internal/session decodes. Both encode a format this tool reads rather
 // than writes, so a hand-rolled copy per suite is a copy that stops matching the reader
-// with no compiler to say so.
+// with no compiler to say so. The same goes for the one text transform two suites share,
+// which uncomments an example TOML file so the parser can be handed the lines a user
+// would actually uncomment.
 package fixtures
 
 import (

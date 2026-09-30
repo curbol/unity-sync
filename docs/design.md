@@ -211,7 +211,10 @@ nothing, moves nothing, and writes nothing.
 Steps 6 and 7 are interruptible, which matters because they are where the time goes: under
 `--verify` step 7 re-hashes the whole library, and the adopt path relocates and deletes
 files before anything is persisted. The classification pass checks the context each asset
-and breaks, the two whole-tree walks stop mid-walk, and the hash itself stops between reads
+and breaks, and checks it again once an asset's class is decided and before acting on it:
+a probe the interrupt cut short answers false rather than failing, so a hash stopped
+halfway reads as a damaged file, and acting on that deletes an intact recorded copy to
+adopt another in its place. The two whole-tree walks stop mid-walk, and the hash itself stops between reads
 rather than at the end of the file — a single package reaches 23 GB, so per-asset
 granularity would still be minutes. A cancelled run therefore reaches step 9 and records
 what it did resolve. Without that the run keeps working — and keeps mutating — after the

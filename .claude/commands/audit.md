@@ -567,13 +567,17 @@ anything about enumeration, the lockfile, the cache layout, or the download guar
     of. The classification loop breaks rather than returns, so the tail still records what
     was resolved, and counts the selected assets it never reached as `NotAttempted`.
     `cache.Scan`, `cache.SweepTemps` and `cache.Hash` stop mid-walk or mid-read for the
-    same reason.
-    *Violation shape:* the `ctx.Err()` check removed from the classification loop, or turned
-    into a `return` that skips the closing build and save; a long walk or read in
+    same reason. The loop checks again between `classify` and the switch that acts on its
+    answer: `VerifyDeep` reads a cancelled hash as a mismatch and a cancelled `Scan` is a
+    partial index, so a class decided under an interrupt is not a verdict.
+    *Violation shape:* either `ctx.Err()` check removed from the classification loop, or
+    turned into a `return` that skips the closing build and save; a long walk or read in
     `internal/cache` that takes no context or ignores it.
-    *Check:* the top of the classification loop in `Run` (`internal/syncer/syncer.go`);
-    `Scan`, `SweepTemps`, `Hash` and `ctxReader` (`internal/cache/cache.go`). Guard test:
-    `TestACancelledRunStopsClassifyingAndCountsWhatItSkipped`
+    *Check:* the top of the classification loop, and the check after `classify`, in `Run`
+    (`internal/syncer/syncer.go`); `Scan`, `SweepTemps`, `Hash` and `ctxReader`
+    (`internal/cache/cache.go`). Guard tests:
+    `TestACancelledRunStopsClassifyingAndCountsWhatItSkipped`,
+    `TestAnInterruptInsideAProbeActsOnNothingItAnswered`
     (`internal/syncer/audit_test.go`).
 
 23. **No account data reaches the repo.** Sessions and raw captures stay out. The scrub is

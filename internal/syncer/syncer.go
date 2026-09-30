@@ -54,10 +54,15 @@ var ErrEmptyLibrary = errors.New("the store reported no owned assets while the l
 // was the previous answer, and it could not see the regression it existed for: with the
 // save moved out from under mu the sampler simply never landed inside the window, so the
 // test passed having observed nothing at all.
+//
+// hashAdopted is indirected for a different reason: an interrupt has to be able to land
+// inside adopt's hash, after classification has decided, and nothing else a test controls
+// runs there.
 var (
 	scanLibrary  = cache.Scan
 	verifyDeep   = cache.VerifyDeep
 	saveLockfile = lockfile.Save
+	hashAdopted  = cache.Hash
 )
 
 // Class is one asset's outcome for this run.
@@ -433,6 +438,17 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		return library
 	}
 
+	// skipFrom counts every selected asset from owned[from:] as reached by the run but never
+	// acted on, so the summary's selected count still reconciles with its results.
+	skipFrom := func(from int) {
+		for _, rest := range owned[from:] {
+			if selected(rest, opts) {
+				report.Selected++
+				report.NotAttempted++
+			}
+		}
+	}
+
 	// Classify everything selected, then fetch what needs fetching.
 	var pending []Result
 	for i, a := range owned {
@@ -446,12 +462,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 		// adoptions and relocations already performed are recorded rather than left on
 		// disk with nothing pointing at them.
 		if ctx.Err() != nil {
-			for _, rest := range owned[i:] {
-				if selected(rest, opts) {
-					report.Selected++
-					report.NotAttempted++
-				}
-			}
+			skipFrom(i)
 			break
 		}
 		if !selected(a, opts) {
@@ -562,6 +573,15 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 			priorPaths[a.ID] = prev.CachePath
 		}
 		class := classify(a, prev, hasPrev, cacheOK, adoptable, adoptableInPlace)
+		// A probe the interrupt cut short answers false rather than failing: a cancelled
+		// deep verify reads as a digest mismatch, and a cancelled scan as a library holding
+		// nothing. Acted on, that verdict marks an intact recorded copy as damaged, deletes
+		// it off the derived path, and moves another copy of the asset in over it.
+		if ctx.Err() != nil {
+			report.NotAttempted++
+			skipFrom(i + 1)
+			break
+		}
 		res := Result{Asset: a, Class: class}
 
 		switch class {
@@ -750,7 +770,7 @@ func adopt(ctx context.Context, opts Options, a model.Asset, found cache.Candida
 	if err := cache.Relocate(opts.LibraryRoot, found.RelPath, derived); err != nil {
 		return lockfile.Resolution{}, err
 	}
-	sha, size, err := cache.Hash(ctx, opts.LibraryRoot, derived)
+	sha, size, err := hashAdopted(ctx, opts.LibraryRoot, derived)
 	if err != nil {
 		return lockfile.Resolution{}, err
 	}

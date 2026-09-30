@@ -141,7 +141,10 @@ each with a package doc comment stating its contract:
   deletes is where a large run spends its time, and `main`'s signal handler has already
   disabled SIGINT's default action, so an uninterruptible pass cannot be escalated out of
   either. It breaks rather than returns, so the tail still records what was resolved;
-  `cache.Scan` and `cache.SweepTemps` stop mid-walk for the same reason.
+  `cache.Scan` and `cache.SweepTemps` stop mid-walk for the same reason. It checks again
+  after an asset is classified and before acting on the class, because a probe the
+  interrupt cut short answers false rather than failing: a half-read `--verify` hash reads
+  as a damaged file, and adopting over it deletes the intact recorded copy.
 - **A recorded `cachePath` is compared with `cache.SamePath`, never `==`.** That file is
   committed and hand-editable, so two spellings name one file; comparing them raw makes a
   run delete the package it just downloaded as a superseded copy. `cache.Canonical` works

@@ -1926,6 +1926,58 @@ func TestACancelledRunStopsClassifyingAndCountsWhatItSkipped(t *testing.T) {
 	}
 }
 
+// The check between assets cannot see an interrupt that lands inside one, and under
+// --verify that is where the time goes: a single package is minutes of hashing. A cancelled
+// hash comes back as a digest mismatch, so the intact recorded copy is taken for damaged,
+// excluded from adoption, and — with the library already scanned and a second copy of the
+// asset elsewhere in it — deleted off the derived path so that copy can move in. The run
+// then notices the interrupt, counts the asset not attempted and records nothing, leaving
+// the lockfile's digest describing bytes that are gone.
+func TestAnInterruptInsideAProbeActsOnNothingItAnswered(t *testing.T) {
+	root, lockPath := newRun(t)
+	// Asked first and owning nothing on disk, so it is what builds the scan: the damaged-copy
+	// path needs a library that was already walked before the interrupt.
+	first := asset("2", "First", "v1", 500)
+	a := asset("1", "Asset", "v1", 500)
+	recorded := place(t, root, a.PublisherSlug(), a.Slug(), pkg(t, "1", "v1", 500))
+	// Short, but inside the floor's allowance, so it clears every adoption gate.
+	place(t, root, "elsewhere", "copy", pkg(t, "1", "v1", 490))
+	before := treeSnapshot(t, root)
+
+	prior := lockfile.New()
+	prior.Assets[a.Slug()] = tracked("1", a.Name, "v1", recorded)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	prev := verifyDeep
+	verifyDeep = func(c context.Context, root, rel, sha string) bool {
+		cancel()
+		return prev(c, root, rel, sha)
+	}
+	t.Cleanup(func() { verifyDeep = prev })
+
+	fs := &fakeStore{owned: []model.Asset{first, a}}
+	o := opts(root, allSelected(first, a))
+	o.FullVerify = true
+	rep, err := Run(ctx, fs, prior, lockPath, o)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if got := treeSnapshot(t, root); got != before {
+		t.Errorf("an interrupt during the deep verify rearranged the library:\nbefore:\n%s\nafter:\n%s", before, got)
+	}
+	if sha, _, err := cache.Hash(context.Background(), root, recorded.RelPath); err != nil || sha != recorded.SHA256 {
+		t.Errorf("the recorded copy at %s no longer holds the bytes its entry names (err %v)", recorded.RelPath, err)
+	}
+	if rep.NotAttempted != 2 || rep.Selected != 2 {
+		t.Errorf("NotAttempted = %d of %d selected, want both counted as not attempted",
+			rep.NotAttempted, rep.Selected)
+	}
+	if len(fs.fetched) != 0 {
+		t.Errorf("fetched %v against a cancelled context", fs.fetched)
+	}
+}
+
 // The floor's allowance is min(4096, advertised/8) and the comparison is strict, so the
 // exact boundary is the only place a < that became a <= would show. advertised <= 0 turns
 // the floor off, which is store-reachable: product.asset accepts an empty downloadSize as
@@ -2050,14 +2102,13 @@ func TestAnInterruptDuringAnAdoptionIsNotAnAssetFailure(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	// Cancel between the loop's own context check and adopt: the scan is reached from
-	// inside classify, which is past the top-of-loop break and before anything moves.
-	restore := scanLibrary
-	t.Cleanup(func() { scanLibrary = restore })
-	scanLibrary = func(c context.Context, r string) *cache.Index {
-		ix := restore(c, r)
+	// Cancel inside adopt's hash, once classification has already decided: an interrupt
+	// that lands earlier stops the pass before adopt is reached at all.
+	restore := hashAdopted
+	t.Cleanup(func() { hashAdopted = restore })
+	hashAdopted = func(c context.Context, root, rel string) (string, int64, error) {
 		cancel()
-		return ix
+		return restore(c, root, rel)
 	}
 
 	rep, err := Run(ctx, &fakeStore{owned: []model.Asset{a}}, lockfile.New(), lockPath, opts(root, allSelected(a)))

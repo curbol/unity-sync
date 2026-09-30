@@ -71,6 +71,7 @@ func TestAFlagTheSubcommandCannotUseIsRefused(t *testing.T) {
 		{"list", "--library=/tmp/x"},
 		{"list", "--session=/tmp/x"},
 		{"list", "--dry-run"},
+		{"list", "--config=/tmp/x"},
 		{"sync", "--addr=127.0.0.1:1"},
 		{"status", "--dry-run"},
 		{"update", "--library=/tmp/x"},
@@ -185,6 +186,26 @@ func TestAManifestPathExpandsTheTilde(t *testing.T) {
 	}
 	if code, err := run([]string{"list", "--manifest", "~/game/" + manifest.FileName}); code != 0 || err != nil {
 		t.Fatalf("list with a ~-prefixed manifest = %d, %v; the tilde was not expanded", code, err)
+	}
+}
+
+// list reads the lockfile beside the manifest and nothing from the config chain, so a
+// config.toml that chain would refuse is not list's problem. Loaded anyway, a key the user
+// mistyped for sync made the one read-only, offline command fail over a setting it has no
+// use for.
+func TestListDoesNotReadTheConfig(t *testing.T) {
+	wd := isolate(t)
+	capture(t)
+	project(t, wd)
+	dir := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "unity-sync")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("library-path = \"typo\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, err := run([]string{"list"}); code != 0 || err != nil {
+		t.Fatalf("list beside a config.toml with an unknown key = %d, %v; want it to ignore the config", code, err)
 	}
 }
 

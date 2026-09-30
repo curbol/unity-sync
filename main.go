@@ -154,6 +154,21 @@ func run(args []string) (int, error) {
 			"pass 1 or more, or omit it to use the configured default", *concurrency)
 	}
 
+	manifestPath, err := resolveManifest(*manifestFlag, cmd)
+	if err != nil {
+		return 1, err
+	}
+	lockPath := manifest.LockPath(manifestPath)
+
+	// Ahead of the config chain, which list never reads: a config.toml it has no use for
+	// would otherwise fail it over a setting it does not have.
+	if cmd == "list" {
+		if err := list(stdout, lockPath); err != nil {
+			return 1, err
+		}
+		return 0, nil
+	}
+
 	configDir, err := config.ResolveDir(*cfgDir)
 	if err != nil {
 		return 1, err
@@ -165,19 +180,6 @@ func run(args []string) (int, error) {
 	})
 	if err != nil {
 		return 1, err
-	}
-
-	manifestPath, err := resolveManifest(*manifestFlag, cmd)
-	if err != nil {
-		return 1, err
-	}
-	lockPath := manifest.LockPath(manifestPath)
-
-	if cmd == "list" {
-		if err := list(stdout, lockPath); err != nil {
-			return 1, err
-		}
-		return 0, nil
 	}
 
 	cookie, err := resolveSession(cfg, configDir)
@@ -227,8 +229,8 @@ var flagsByCommand = map[string]map[string]bool{
 	"sync": {"config": true, "manifest": true, "session": true, "library": true,
 		"only": true, "concurrency": true, "verify": true, "dry-run": true},
 	// list reads the lockfile beside the manifest and nothing else; --library names a
-	// directory it never looks in.
-	"list": {"config": true, "manifest": true},
+	// directory it never looks in, and --config a file it never opens.
+	"list": {"manifest": true},
 	// update takes a version as its positional and talks to GitHub, not the store.
 	"update": {},
 }

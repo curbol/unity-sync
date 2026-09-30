@@ -231,7 +231,8 @@ The download stream crosses two packages, so ownership is fixed rather than left
 whoever writes the signature first:
 
 - `store` owns the response-level guards, before any bytes are kept: no redirect followed,
-  no `Content-Encoding` accepted, content type must be an octet-stream. It returns an open
+  no `Content-Encoding` accepted other than `identity`, content type must be an
+  octet-stream. It returns an open
   body plus the filename it parsed. The body it returns is wrapped in a stall guard, for
   the reason below.
 - `cache` owns the write, in two phases. `Store` streams to a temp file beside the

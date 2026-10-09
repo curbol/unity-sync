@@ -12,13 +12,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"regexp"
 	"runtime"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/curbol/unity-sync/internal/releaseyml"
 	"github.com/curbol/unity-sync/internal/selfupdate"
 )
 
@@ -151,31 +151,13 @@ func TestAnUpdateWorksWithNoGitHubCredential(t *testing.T) {
 // publishes, and every user on that platform gets "release has no asset ..." with no way
 // to update — visible only after the tag exists.
 func TestPlatformAssetNamesMatchWhatTheReleaseWorkflowPublishes(t *testing.T) {
-	raw, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	platforms, err := releaseyml.Platforms(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Cut to the bash array first, the way install_test.go does. Run over the whole file
-	// the pattern would keep matching if the matrix moved somewhere else, as long as some
-	// unrelated "a/b/c" string remained — so the test would pass against text that is no
-	// longer the contract.
-	_, rest, ok := strings.Cut(string(raw), "platforms=(")
-	if !ok {
-		t.Fatal("release.yml has no platforms=( ... ) list; this guard no longer reads what the workflow builds")
-	}
-	block, _, ok := strings.Cut(rest, ")")
-	if !ok {
-		t.Fatal("release.yml's platforms list is unterminated")
-	}
-	// The platforms array holds "goos/goarch/label" strings, one per line.
-	re := regexp.MustCompile(`"([a-z0-9]+)/([a-z0-9]+)/([a-z0-9-]+)"`)
-	matches := re.FindAllStringSubmatch(block, -1)
-	if len(matches) == 0 {
-		t.Fatal("no platform triples found in release.yml; this test can no longer see the contract")
-	}
 	seen := map[string]bool{}
-	for _, m := range matches {
-		goos, goarch, label := m[1], m[2], m[3]
+	for _, p := range platforms {
+		goos, goarch, label := p.GOOS, p.GOARCH, p.Label
 		seen[goos+"/"+goarch] = true
 		got, err := selfupdate.PlatformAssetFor(goos, goarch, "1.2.3")
 		if err != nil {

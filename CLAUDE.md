@@ -84,6 +84,9 @@ each with a package doc comment stating its contract:
 - `humanize` — byte sizes for people, clamped: the count comes from the store.
 - `web` — the `select` page.
 - `selfupdate` — the `update` subcommand.
+- `releaseyml` — parses the platform list out of `.github/workflows/release.yml`. No
+  production caller: the installer's guard and the updater's guard sit in packages that
+  cannot share a test helper, so both read the list through this one parser.
 - `fixtures` + `cmd/scrubfixtures` — regenerate PII-free `testdata/` from raw captures.
 
 ### Key invariants (don't break these)

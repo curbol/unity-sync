@@ -142,8 +142,8 @@ agents run in parallel:
   it. `internal/humanize` is three dozen lines and sits here because both its callers
   render for a person, but one of them formats inside a download goroutine, where a panic
   takes the whole run down rather than one asset.
-- **Distribution and fixtures**: `internal/selfupdate/`, `internal/fixtures/`,
-  `cmd/scrubfixtures/`, `install.sh`, `install_test.go`, `.github/`. Replaces the running
+- **Distribution and fixtures**: `internal/selfupdate/`, `internal/releaseyml/`,
+  `internal/fixtures/`, `cmd/scrubfixtures/`, `install.sh`, `install_test.go`, `.github/`. Replaces the running
   binary and regenerates the test fixtures. What goes wrong here: an update that leaves no
   working binary behind; a GitHub credential sent to a host other than the API it was
   meant for, or put somewhere a process list can read it; a 404 for a version that was
@@ -152,7 +152,9 @@ agents run in parallel:
   passes because it matched nothing. `install.sh` composes the asset label from `uname` in
   its own language, and `install_test.go` is what holds that composition to the labels
   `release.yml` actually publishes; the two are otherwise a contract nothing compiles
-  together. `platformAsset` (`internal/selfupdate/selfupdate.go`) is the same contract in
+  together. Both guards read that list through `releaseyml.Platforms`, which must fail
+  rather than return a partial or empty list, or every guard built on it passes
+  vacuously. `platformAsset` (`internal/selfupdate/selfupdate.go`) is the same contract in
   Go, pinned by `TestPlatformAssetNamesMatchWhatTheReleaseWorkflowPublishes`, so a platform
   added to the workflow has to reach two places or the updater cannot find its own asset.
   `.github/workflows/` is reviewed as code: it decides whether a build ships, and it runs

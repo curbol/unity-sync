@@ -8,6 +8,7 @@ package manifest
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+	"github.com/curbol/unity-sync/internal/atomicfile"
 	"github.com/curbol/unity-sync/internal/model"
 )
 
@@ -144,45 +146,9 @@ func Save(path string, m Manifest) error {
 	m.Assets = append([]Entry(nil), m.Assets...)
 	sort.Slice(m.Assets, func(i, j int) bool { return m.Assets[i].ID < m.Assets[j].ID })
 
-	tmp, err := os.CreateTemp(filepath.Dir(path), tempPrefix+"*")
-	if err != nil {
-		return err
-	}
-	name := tmp.Name()
-	if err := toml.NewEncoder(tmp).Encode(m); err != nil {
-		tmp.Close()
-		os.Remove(name)
-		return err
-	}
-	// Flushed before the rename: this file is committed and hand-curated, and a rename that
-	// returns before the bytes are durable can leave it empty after a crash.
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(name)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(name)
-		return err
-	}
-	// CreateTemp makes the file 0600 and the rename carries that over, which would quietly
-	// strip group and other from a file this design wants committed and hand-edited.
-	mode := os.FileMode(0o644)
-	if fi, err := os.Stat(path); err == nil {
-		mode = fi.Mode().Perm()
-	}
-	if err := os.Chmod(name, mode); err != nil {
-		os.Remove(name)
-		return err
-	}
-	// Cleaned up like every other failure above. On Windows the rename fails outright when
-	// the destination is held open — an editor, an on-access scanner — and this file sits
-	// in a directory that is committed, so the temp must not be left in it.
-	if err := os.Rename(name, path); err != nil {
-		os.Remove(name)
-		return err
-	}
-	return nil
+	return atomicfile.Write(path, tempPrefix+"*", func(w io.Writer) error {
+		return toml.NewEncoder(w).Encode(m)
+	})
 }
 
 // ErrWouldEmpty is returned by Reconcile when the owned set is empty but the manifest is

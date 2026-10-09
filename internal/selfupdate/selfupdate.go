@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/curbol/unity-sync/internal/atomicfile"
 )
 
 const repo = "curbol/unity-sync"
@@ -484,6 +486,7 @@ func replace(targetPath string, binary []byte) error {
 		}
 		return replaceAside(name, targetPath, err)
 	}
+	atomicfile.SyncDir(dir)
 	return nil
 }
 

@@ -3,7 +3,6 @@ package lockfile_test
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -437,92 +436,6 @@ func TestAssetNamesAreNotHtmlEscaped(t *testing.T) {
 	}
 	if got := back.Assets["forge-1"].Name; got != lf.Assets["forge-1"].Name {
 		t.Errorf("round trip changed the name to %q", got)
-	}
-}
-
-// The flush is what makes a run's per-asset progress survive a crash: Save runs once per
-// resolved asset precisely so a kill at asset 90 of 100 keeps the 89, and bytes still in
-// the page cache when the rename returns are exactly the record that loses.
-//
-// Nothing observable distinguishes a Save that skipped it on a machine that stays up, so
-// deleting the call left every other assertion in this package green. Ordering is checked
-// by reading the destination from inside the flush: before the rename it still holds the
-// previous save.
-func TestSaveFlushesBeforeItRenames(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "unity-sync.lock.json")
-	first := lockfile.New()
-	first.Assets["a-1"] = lockfile.Entry{AssetID: "1", Name: "A"}
-	if err := lockfile.Save(path, first); err != nil {
-		t.Fatal(err)
-	}
-
-	second := lockfile.New()
-	second.Assets["b-2"] = lockfile.Entry{AssetID: "2", Name: "B"}
-
-	var calls int
-	var atFlush string
-	restore := lockfile.StubSync(func(f *os.File) error {
-		calls++
-		raw, err := os.ReadFile(path)
-		if err != nil {
-			t.Errorf("reading the destination during the flush: %v", err)
-		}
-		atFlush = string(raw)
-		return f.Sync()
-	})
-	defer restore()
-
-	if err := lockfile.Save(path, second); err != nil {
-		t.Fatal(err)
-	}
-	if calls != 1 {
-		t.Fatalf("Save flushed %d times, want 1: without it the rename can outrun the bytes", calls)
-	}
-	if !strings.Contains(atFlush, `"assetId": "1"`) || strings.Contains(atFlush, `"assetId": "2"`) {
-		t.Error("the destination already held the new content when the flush ran, so the " +
-			"rename happened first and the flush no longer protects anything")
-	}
-}
-
-// A flush that fails is a write that did not reach the disk, so it has to fail the save
-// rather than be renamed into place, and it must not leave its temp in a directory the
-// user commits.
-func TestAFailedFlushLeavesNeitherANewLockfileNorATemp(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "unity-sync.lock.json")
-	first := lockfile.New()
-	first.Assets["a-1"] = lockfile.Entry{AssetID: "1", Name: "A"}
-	if err := lockfile.Save(path, first); err != nil {
-		t.Fatal(err)
-	}
-	before, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	restore := lockfile.StubSync(func(*os.File) error { return errors.New("disk went away") })
-	defer restore()
-	second := lockfile.New()
-	second.Assets["b-2"] = lockfile.Entry{AssetID: "2", Name: "B"}
-	if err := lockfile.Save(path, second); err == nil {
-		t.Fatal("Save reported success after the flush failed")
-	}
-
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(after) != string(before) {
-		t.Error("a failed flush still replaced the committed lockfile")
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, e := range entries {
-		if e.Name() != "unity-sync.lock.json" {
-			t.Errorf("a failed flush left %q beside the lockfile", e.Name())
-		}
 	}
 }
 

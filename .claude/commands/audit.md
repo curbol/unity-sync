@@ -122,7 +122,8 @@ agents run in parallel:
   relocation that overwrites; a removal that trusts the path it was handed; a descriptor
   reader that reports "no metadata" for a package that has some; a failure path that
   leaves an empty `<publisher>/<asset>/` behind.
-- **Sync orchestration and the lockfile**: `internal/syncer/`, `internal/lockfile/`. Owns
+- **Sync orchestration and the lockfile**: `internal/syncer/`, `internal/lockfile/`,
+  `internal/atomicfile/`. Owns
   `classify`, the semantic download guards, the adoption gates, the bounded download pool,
   the per-asset `persist`, and the file a project commits. What goes wrong here: a class
   that resolves against the wrong entry; a guard that runs after the commit rather than
@@ -536,19 +537,21 @@ anything about enumeration, the lockfile, the cache layout, or the download guar
     run that adopts and fetches nothing would otherwise ride on one closing write, and
     losing it leaves the library moved while the record names the old path with a digest
     the next run reads as `Unchanged`. `persist` records and saves under `mu` as one
-    critical section. `Save` flushes before the rename through `syncFile`, which is
-    indirected so a test can hold it to that. Orphaned temps land in the directory the user
+    critical section. `Save` writes through `atomicfile.Write`, which flushes the
+    file before the rename and the directory after it, through `syncFile` and `syncDir`,
+    each indirected so a test can hold it to that order. Orphaned temps land in the directory the user
     commits, so a real run sweeps the lockfile's and the manifest's.
     *Violation shape:* a mutation in the classification pass (adoption, relocation) that
     does not call `persist`; the save moved outside `mu`; `syncFile` dropped or moved after
-    the rename; the lockfile or manifest sweep removed from `Run`.
+    the rename, or `syncDir` dropped or moved before it; the lockfile or manifest sweep removed from `Run`.
     *Check:* `persist` and its three callers in `Run` (`internal/syncer/syncer.go`);
-    `Save`, `syncFile`, `SweepTemps` (`internal/lockfile/lockfile.go`); `SweepTemps`
+    `Save`, `SweepTemps` (`internal/lockfile/lockfile.go`); `Write`, `syncFile`, `syncDir`
+    (`internal/atomicfile/atomicfile.go`); `SweepTemps`
     (`internal/manifest/manifest.go`). Guard tests:
     `TestAdoptionsAndMovesAreRecordedBeforeTheFirstDownload`,
     `TestEachDownloadIsPersistedBeforeTheNextOneStarts`,
     `TestARealRunSweepsTheLockfilesOwnTemps` (`internal/syncer/audit_test.go`);
-    `TestSaveFlushesBeforeItRenames` (`internal/lockfile/lockfile_test.go`).
+    `TestWriteFlushesTheFileBeforeItRenames`, `TestWriteFlushesTheDirectoryAfterItRenames` (`internal/atomicfile/atomicfile_test.go`).
 
 21. **The temp sweep's grace is derived from the stall window, not chosen.** A transfer is
     alive as long as `store.DefaultStallTimeout` tolerates its silence, so a shorter grace
@@ -824,9 +827,10 @@ to get wrong here:
 
 - Every file this tool writes is one a user commits or depends on: `unity-sync.lock.json`,
   `unity-sync.toml`, the cached packages, and the binary itself. All four write to a temp
-  beside the destination, `Sync` it, and rename, so a crash cannot publish bytes that never
-  reached the disk. A write path here that renames without syncing first, or that leaves
-  its temp behind on a failed rename, is Tier 2. Check `lockfile.Save`
+  beside the destination, `Sync` it, rename, and sync the directory through
+  `internal/atomicfile`, so a crash can neither publish bytes that never reached the disk
+  nor forget the rename. A write path here that renames without syncing first, skips the
+  directory sync after, or leaves its temp behind on a failed rename, is Tier 2. Check `lockfile.Save`
   (`internal/lockfile/lockfile.go`), `manifest.Save`
   (`internal/manifest/manifest.go`), `cache.Store`/`Commit`
   (`internal/cache/cache.go`), and `selfupdate.replace`
@@ -966,7 +970,7 @@ such test carries a comment saying what going wrong would look like. A new invar
 belongs in `audit_test.go` and should carry that comment too. Where what must hold is how
 often or in what order something runs rather than its result, the package indirects the
 call through a package variable a test can count (`scanLibrary`, `verifyDeep` and
-`saveLockfile` in `internal/syncer`, `syncFile` in `internal/lockfile`); an ordering
+`saveLockfile` in `internal/syncer`, `syncFile` and `syncDir` in `internal/atomicfile`); an ordering
 invariant asserted only on outcomes is a weak test. `internal/session` inlines its payloads
 in the test files instead of keeping them under `testdata/`, because `.gitignore` matches
 `cookies.txt` and `*.curl` anywhere in the tree; do not propose moving them out.
@@ -1070,7 +1074,7 @@ boundaries, which no single agent could do:
    names every delisted and dropped asset and summarises unreached ones in one line.
 7. **Persistence.** Each of the three persisting paths in `Run` (adoption, the `Unchanged`
    relocation, the download pool) → `persist` → `build` → `saveLockfile` →
-   `lockfile.Save` → `syncFile` → rename. Confirm every path that moves, removes or adopts
+   `lockfile.Save` → `atomicfile.Write` → `syncFile` → rename → `syncDir`. Confirm every path that moves, removes or adopts
    a package calls `persist` before the next asset is classified or fetched, that a failure
    sets `Unrecorded` on all three, and that the closing save after the pool records
    nothing a `persist` did not already.

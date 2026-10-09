@@ -25,6 +25,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/curbol/unity-sync/internal/atomicfile"
 	"github.com/curbol/unity-sync/internal/model"
 	"github.com/curbol/unity-sync/internal/unitypackage"
 )
@@ -372,6 +373,9 @@ func (p *Pending) Commit() error {
 		// the empty <publisher>/<asset>/ Store created stays in the tree quarry walks.
 		return p.abandon(rt, err)
 	}
+	// The lockfile names these bytes by digest as soon as this returns, and a rename the
+	// crash forgot leaves the superseded build under that name.
+	atomicfile.SyncDirIn(rt, filepath.FromSlash(p.dirRel))
 	return nil
 }
 
@@ -749,7 +753,9 @@ func Relocate(root, fromRel, toRel string) error {
 		pruneEmptyParents(r, path.Dir(to))
 		return err
 	}
+	atomicfile.SyncDirIn(r, filepath.FromSlash(path.Dir(to)))
 	pruneEmptyParents(r, path.Dir(from))
+	atomicfile.SyncDirIn(r, filepath.FromSlash(path.Dir(from)))
 	return nil
 }
 

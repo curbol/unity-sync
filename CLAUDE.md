@@ -67,6 +67,9 @@ each with a package doc comment stating its contract:
   `Canonical`/`SamePath` are the only correct way to compare a lockfile-recorded path
   against a derived one, and `SameFile` is what pairs with them where the filesystem
   ignores case.
+- `atomicfile` — the one way a committed file is replaced: temp beside it, flush, rename,
+  flush the directory. `SyncDir`/`SyncDirIn` are the directory half for the renames that
+  are not whole-file rewrites: the cache's commit and relocation, and the update's swap.
 - `lockfile` — `unity-sync.lock.json`, advertised fields kept apart from the embedded
   `Resolution`, which is one type so its two write paths cannot drift. It is embedded
   *last* on purpose: `encoding/json` emits an embedded struct's fields at its own index, so
@@ -175,10 +178,11 @@ each with a package doc comment stating its contract:
   downloads: the classification pass relocates and deletes whole packages, so a run that
   adopts and fetches nothing would otherwise ride on one closing write. Lose it and the
   library has moved while the record names the old path with a digest that no longer
-  matches, which the next run reads as `Unchanged` and carries forward. The flush before
-  the rename is what makes that record durable, and `syncFile` is indirected so a test can
-  hold `Save` to it: nothing observable distinguishes a save that skipped it until the
-  machine loses power. A kill between the create and the rename orphans a temp in the
+  matches, which the next run reads as `Unchanged` and carries forward. The two flushes in
+  `atomicfile.Write` are what make that record durable: the file's before the rename, so
+  the bytes are on disk, and the directory's after it, so the name is. Each is indirected
+  so a test can hold `Write` to it, since nothing observable distinguishes a write that
+  skipped one until the machine loses power. A kill between the create and the rename orphans a temp in the
   directory the user commits, so a run sweeps those alongside the cache's.
 - **Nothing unverified reaches a real cache path.** `cache.Store` does not rename;
   `Commit` does, after the syncer's guards pass. `Store` also refuses every path a later

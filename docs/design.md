@@ -554,9 +554,11 @@ the file now sitting at the recorded path, finds the size and version it expects
 `Unchanged` and carries the stale digest forward. Nothing but `--verify` looks again.
 
 It is published the way every other file here is — write a temp beside the destination,
-flush it, rename — and the flush is the load-bearing half of that: a rename is durable
-ahead of the data it publishes, so bytes still in the page cache when it returns are
-exactly the per-asset progress this write exists to keep. Every error path unlinks its own
+flush it, rename, flush the directory — and the first flush is the load-bearing half of
+that: a rename is durable ahead of the data it publishes, so bytes still in the page cache
+when it returns are exactly the per-asset progress this write exists to keep. The second
+makes the rename itself durable, or a crash can leave the directory naming the record the
+rename replaced. Every error path unlinks its own
 temp, but a kill or a power loss between the create and the rename cannot, and this file is
 written once per resolved asset, so a large sync spends a lot of windows there. The
 leftovers land in the directory the user commits and nothing else would ever remove them,
@@ -699,9 +701,9 @@ attestation is a signed statement that the release workflow built that artifact 
 commit, verifiable with `gh attestation verify <file> --repo curbol/unity-sync`. Publishing
 a checksum the updater did not check would have been worse than publishing nothing.
 
-Both publish the same way the lockfile is written — flush, then rename — because a rename
-is durable ahead of the data it publishes, and a crash inside the writeback window would
-otherwise leave a truncated binary on PATH.
+Both publish the same way the lockfile is written — flush, rename, flush the directory —
+because a rename is durable ahead of the data it publishes, and a crash inside the
+writeback window would otherwise leave a truncated binary on PATH.
 
 The asset body carries a stall guard, for the reason the download path does. The
 response-header timeout bounds a server that never answers and there is deliberately no

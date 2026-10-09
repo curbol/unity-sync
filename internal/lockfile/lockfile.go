@@ -11,10 +11,13 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/curbol/unity-sync/internal/atomicfile"
 )
 
 // Version records one build. ID is what a diff compares.
@@ -158,13 +161,6 @@ func (lf Lockfile) checkUnique() error {
 // being exported for a caller to match on.
 const tempPrefix = ".unity-sync-lock-"
 
-// syncFile is indirected so a test can watch the flush happen, and happen before the
-// rename. Nothing observable distinguishes a Save that skipped it from one that did not —
-// the file is correct either way until the machine loses power — so deleting the call left
-// every assertion in this package green while removing the thing that makes a run's
-// per-asset progress survive a crash.
-var syncFile = (*os.File).Sync
-
 // SweepTemps removes lockfile temps a killed run left beside the destination, returning
 // how many. Every error path in Save unlinks its own, but a SIGKILL or a power loss
 // between CreateTemp and Rename cannot, and Save runs once per resolved asset — so a large
@@ -212,48 +208,10 @@ func Save(path string, lf Lockfile) error {
 	if err := enc.Encode(lf); err != nil {
 		return err
 	}
-	raw := buf.Bytes()
-	tmp, err := os.CreateTemp(filepath.Dir(path), tempPrefix+"*")
-	if err != nil {
+	return atomicfile.Write(path, tempPrefix+"*", func(w io.Writer) error {
+		_, err := w.Write(buf.Bytes())
 		return err
-	}
-	name := tmp.Name()
-	if _, err := tmp.Write(raw); err != nil {
-		tmp.Close()
-		os.Remove(name)
-		return err
-	}
-	// Flushed before the rename, not merely written: a run persists this file after every
-	// download so a crash at asset 90 of 100 keeps the 89 already fetched, and bytes still
-	// sitting in the page cache when the rename returns are exactly the record that loses.
-	if err := syncFile(tmp); err != nil {
-		tmp.Close()
-		os.Remove(name)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(name)
-		return err
-	}
-	// CreateTemp makes the file 0600 and the rename carries that over, which would quietly
-	// strip group and other from a file this design wants committed and hand-edited.
-	mode := os.FileMode(0o644)
-	if fi, err := os.Stat(path); err == nil {
-		mode = fi.Mode().Perm()
-	}
-	if err := os.Chmod(name, mode); err != nil {
-		os.Remove(name)
-		return err
-	}
-	// Cleaned up like every other failure above. On Windows the rename fails outright
-	// when the destination is held open — an editor, an on-access scanner — and this one
-	// is written once per download, so the orphans pile up in a directory that is
-	// committed.
-	if err := os.Rename(name, path); err != nil {
-		os.Remove(name)
-		return err
-	}
-	return nil
+	})
 }
 
 // FindByAssetID returns the entry recorded for a product id, whatever key it sits under.

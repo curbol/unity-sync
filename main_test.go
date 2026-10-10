@@ -16,6 +16,7 @@ import (
 	"github.com/curbol/unity-sync/internal/manifest"
 	"github.com/curbol/unity-sync/internal/model"
 	"github.com/curbol/unity-sync/internal/store"
+	"github.com/curbol/unity-sync/internal/syncer"
 	"github.com/curbol/unity-sync/internal/web"
 )
 
@@ -208,7 +209,7 @@ func TestStatusThenSyncThroughTheCommandLayer(t *testing.T) {
 	lockPath := manifest.LockPath(manifestPath)
 
 	// status classifies without writing anything.
-	code, err := syncOrStatus(context.Background(), fake, cfg, manifestPath, lockPath, "", false, true)
+	code, err := syncOrStatus(context.Background(), fake, cfg, manifestPath, lockPath, syncer.Options{DryRun: true})
 	if code != 0 || err != nil {
 		t.Fatalf("status = %d, %v", code, err)
 	}
@@ -228,7 +229,7 @@ func TestStatusThenSyncThroughTheCommandLayer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, err = syncOrStatus(context.Background(), fake, cfg, manifestPath, lockPath, "", false, false)
+	code, err = syncOrStatus(context.Background(), fake, cfg, manifestPath, lockPath, syncer.Options{})
 	if code != 0 || err != nil {
 		t.Fatalf("sync = %d, %v", code, err)
 	}
@@ -255,7 +256,7 @@ func TestStatusThenSyncThroughTheCommandLayer(t *testing.T) {
 
 	// and a second status is a no-op.
 	out.Reset()
-	code, err = syncOrStatus(context.Background(), fake, cfg, manifestPath, lockPath, "", false, true)
+	code, err = syncOrStatus(context.Background(), fake, cfg, manifestPath, lockPath, syncer.Options{DryRun: true})
 	if code != 0 || err != nil {
 		t.Fatalf("second status = %d, %v", code, err)
 	}

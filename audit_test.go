@@ -911,7 +911,7 @@ func TestTheExitStatusSeparatesAnActionableFailureFromAPulledAsset(t *testing.T)
 			cfg := config.Config{LibraryPath: filepath.Join(wd, "library"), Concurrency: 1}
 
 			code, err := syncOrStatus(context.Background(), fake, cfg, manifestPath,
-				manifest.LockPath(manifestPath), "", false, false)
+				manifest.LockPath(manifestPath), syncer.Options{})
 			if err != nil {
 				t.Fatalf("sync returned an error rather than a report and a code: %v", err)
 			}

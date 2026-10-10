@@ -208,7 +208,11 @@ func run(args []string) (int, error) {
 		}
 		return 0, nil
 	}
-	return syncOrStatus(ctx, client, cfg, manifestPath, lockPath, *only, *verify, cmd == "status" || *dryRun)
+	return syncOrStatus(ctx, client, cfg, manifestPath, lockPath, syncer.Options{
+		OnlyGlob:   *only,
+		DryRun:     cmd == "status" || *dryRun,
+		FullVerify: *verify,
+	})
 }
 
 // flagsByCommand is the set of flags each subcommand actually reads. One FlagSet serves
@@ -423,8 +427,10 @@ func selectAssets(ctx context.Context, client enumerator, manifestPath string, l
 	return nil
 }
 
+// syncOrStatus takes the flags' half of the run's options already named, and fills in the
+// half that comes from the config and the manifest.
 func syncOrStatus(ctx context.Context, client syncer.Store, cfg config.Config,
-	manifestPath, lockPath, only string, verify, dry bool) (int, error) {
+	manifestPath, lockPath string, opts syncer.Options) (int, error) {
 
 	m, err := manifest.Load(manifestPath)
 	if err != nil {
@@ -439,26 +445,22 @@ func syncOrStatus(ctx context.Context, client syncer.Store, cfg config.Config,
 		fmt.Fprintln(os.Stderr, "nothing is enabled in", manifestPath, "— run `unity-sync select` to choose assets")
 	}
 
-	rep, err := syncer.Run(ctx, client, prior, lockPath, syncer.Options{
-		LibraryRoot: cfg.LibraryPath,
-		Selected:    selected,
-		OnlyGlob:    only,
-		DryRun:      dry,
-		FullVerify:  verify,
-		Concurrency: cfg.Concurrency,
-		Manifest:    m,
-		Progress:    func(s string) { fmt.Fprintln(os.Stderr, s) },
-	})
+	opts.LibraryRoot = cfg.LibraryPath
+	opts.Selected = selected
+	opts.Concurrency = cfg.Concurrency
+	opts.Manifest = m
+	opts.Progress = func(s string) { fmt.Fprintln(os.Stderr, s) }
+	rep, err := syncer.Run(ctx, client, prior, lockPath, opts)
 	if err != nil {
 		// Run hands back the report alongside an error, and a late failure — the final
 		// lockfile write, say — comes after a full download pass whose outcome the user
 		// still needs. An error raised before any of that has nothing to show.
 		if len(rep.Results) > 0 {
-			printReport(stdout, rep, dry, cfg.LibraryPath)
+			printReport(stdout, rep, opts.DryRun, cfg.LibraryPath)
 		}
 		return 1, err
 	}
-	printReport(stdout, rep, dry, cfg.LibraryPath)
+	printReport(stdout, rep, opts.DryRun, cfg.LibraryPath)
 	if rep.Failed() {
 		return 1, nil
 	}

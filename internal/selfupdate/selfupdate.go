@@ -212,9 +212,15 @@ var errUnauthorized = errors.New("github rejected the credential")
 
 func rejectedCredential(err error) bool { return errors.Is(err, errUnauthorized) }
 
+// getWith hands back a body whose Close also ends the request's context. A rejected
+// response is drained under apiTimeout instead: the asset path's stall guard rides on the
+// body this returns, so an error body that goes quiet would otherwise park the read with
+// nothing bounding it.
 func (c *client) getWith(ctx context.Context, url, accept, token string) (*http.Response, error) {
+	ctx, cancel := context.WithCancel(ctx)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	req.Header.Set("Accept", accept)
@@ -224,11 +230,15 @@ func (c *client) getWith(ctx context.Context, url, accept, token string) (*http.
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
+		bound := time.AfterFunc(apiTimeout, cancel)
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		bound.Stop()
 		resp.Body.Close()
+		cancel()
 		status := fmt.Errorf("GET %s: status %d: %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
 		// 404 is in the set on purpose: a fine-grained token with no public-repository
 		// read gets one for a release that plainly exists, and it is indistinguishable
@@ -239,7 +249,19 @@ func (c *client) getWith(ctx context.Context, url, accept, token string) (*http.
 		}
 		return nil, status
 	}
+	resp.Body = cancelOnClose{resp.Body, cancel}
 	return resp, nil
+}
+
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b cancelOnClose) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
 }
 
 // resolve finds a release: the latest, or a specific version when one is named.
@@ -248,6 +270,11 @@ func (c *client) resolve(ctx context.Context, want Requested) (release, error) {
 	if want != "" {
 		url = c.apiBase + "/repos/" + repo + "/releases/tags/v" + strings.TrimPrefix(string(want), "v")
 	}
+	// Bounded end to end, the read included: the release JSON is a few kilobytes, and a
+	// response that sends its headers and then goes quiet would otherwise park the decode
+	// with no output and nothing to do but interrupt it.
+	ctx, cancel := context.WithTimeout(ctx, apiTimeout)
+	defer cancel()
 	resp, err := c.get(ctx, url, "application/vnd.github+json")
 	if err != nil {
 		return release{}, err
@@ -328,6 +355,11 @@ func (c *client) downloadBinary(ctx context.Context, rel release) ([]byte, error
 // read that never returns, so a test that could not move the window would hang instead of
 // failing.
 var assetStallTimeout = 60 * time.Second
+
+// apiTimeout bounds a release-metadata call end to end and the drain of a rejected
+// response. A var rather than a const only so a test can shorten it, for the same reason
+// as assetStallTimeout.
+var apiTimeout = 60 * time.Second
 
 // errStalled is a body that stopped delivering after its headers arrived. Named rather
 // than left as the context cancellation underneath it, which reads as an interrupt the

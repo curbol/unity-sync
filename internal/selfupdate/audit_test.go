@@ -811,6 +811,58 @@ func TestAReleaseBodyThatGoesSilentFailsRatherThanHanging(t *testing.T) {
 	}
 }
 
+// The same silence on the two reads the asset body's stall guard does not ride on: the
+// release JSON, and a rejected response's error body, which is drained before the status is
+// reported. Either parks `unity-sync update` with no output and no diagnostic.
+//
+// Failing this test looks like the whole package timing out rather than a red assertion,
+// because the regression is a read that never returns.
+func TestASilentMetadataOrErrorBodyFailsRatherThanHanging(t *testing.T) {
+	selfupdate.ShortenAPITimeout(t, 100*time.Millisecond)
+	selfupdate.ShortenAssetStall(t, time.Hour)
+
+	cases := []struct {
+		name   string
+		suffix string
+		status int
+	}{
+		{"the release metadata", "/releases/latest", http.StatusOK},
+		{"a rejected asset response", "/asset", http.StatusBadGateway},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			release := make(chan struct{})
+			srv := releaseServer(t, nil, func(w http.ResponseWriter, r *http.Request) bool {
+				if !strings.HasSuffix(r.URL.Path, tc.suffix) {
+					return false
+				}
+				w.WriteHeader(tc.status)
+				io.WriteString(w, "{")
+				w.(http.Flusher).Flush()
+				<-release
+				return true
+			})
+			// After releaseServer, so it runs before that helper's srv.Close, which waits
+			// for the handler this unblocks.
+			t.Cleanup(func() { close(release) })
+
+			done := make(chan error, 1)
+			go func() {
+				_, err := runUpdate(t, srv, "")
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("an update whose response went silent succeeded")
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("the update never returned; nothing bounds this read")
+			}
+		})
+	}
+}
+
 // The other half, which is what keeps the guard honest: a transfer that is slow but never
 // silent has to survive. A guard that bounded slowness rather than silence would make the
 // update impossible on exactly the connections that most need it.

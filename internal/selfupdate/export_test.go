@@ -58,6 +58,14 @@ func ShortenAssetStall(t *testing.T, d time.Duration) {
 	t.Cleanup(func() { assetStallTimeout = prev })
 }
 
+// ShortenAPITimeout shrinks the release-metadata deadline for the duration of a test, for
+// the reason ShortenAssetStall exists: what it bounds is a read that never returns.
+func ShortenAPITimeout(t *testing.T, d time.Duration) {
+	prev := apiTimeout
+	apiTimeout = d
+	t.Cleanup(func() { apiTimeout = prev })
+}
+
 // ErrStalled is the release-body stall sentinel, so a test can assert the cause is named
 // rather than left as the context cancellation underneath it.
 var ErrStalled = errStalled

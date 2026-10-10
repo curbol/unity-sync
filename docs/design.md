@@ -712,7 +712,9 @@ stops without the connection closing, and the read parks forever — `unity-sync
 sitting with no output and nothing to do but interrupt it. The window is its own number
 rather than the store's and deliberately shorter, since that one is sized for a 23 GB
 package and the published zips are single-digit megabytes; nothing couples the two, unlike
-the temp sweep's grace.
+the temp sweep's grace. The release metadata is a few kilobytes, so its call is bounded end
+to end instead, read included, and a rejected response's error body is drained under the
+same bound: the stall guard rides only on the body an accepted asset request hands back.
 
 Neither the installer nor the updater installs bytes it has not recognised as a native
 binary. The zip reader already verifies each entry's CRC, so what the magic-byte check

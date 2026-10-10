@@ -207,30 +207,26 @@ func indexByAssetID(lf lockfile.Lockfile) map[string]priorEntry {
 // the run mutates anything at all, and names both entries rather than surfacing as a
 // warning about a file the user never asked about.
 //
-// Compared with SamePath, never as strings: the whole reason the state is reachable is
-// that the file is hand-edited, so the two spellings need not match.
-func checkDistinctPaths(lf lockfile.Lockfile) error {
-	type seen struct{ key, path string }
-	var recorded []seen
+// Compared through cache.SharedPath, never as strings: the whole reason the state is
+// reachable is that the file is hand-edited, so the two spellings need not match, and on a
+// case-insensitive filesystem two spellings that differ only in case are one file.
+func checkDistinctPaths(root string, lf lockfile.Lockfile) error {
 	keys := make([]string, 0, len(lf.Assets))
 	for k := range lf.Assets {
-		keys = append(keys, k)
+		if lf.Assets[k].CachePath != "" {
+			keys = append(keys, k)
+		}
 	}
 	// Sorted, or which of the two entries gets named changes between runs over one file.
 	sort.Strings(keys)
-	for _, k := range keys {
-		p := lf.Assets[k].CachePath
-		if p == "" {
-			continue
-		}
-		for _, prior := range recorded {
-			if cache.SamePath(prior.path, p) {
-				return fmt.Errorf("entries %q and %q both record the cache path %s; "+
-					"delete whichever is stale, most likely the one whose key no longer "+
-					"matches its name", prior.key, k, p)
-			}
-		}
-		recorded = append(recorded, seen{key: k, path: p})
+	paths := make([]string, len(keys))
+	for n, k := range keys {
+		paths[n] = lf.Assets[k].CachePath
+	}
+	if i, j, ok := cache.SharedPath(root, paths); ok {
+		return fmt.Errorf("entries %q and %q both record the cache path %s; "+
+			"delete whichever is stale, most likely the one whose key no longer "+
+			"matches its name", keys[i], keys[j], paths[j])
 	}
 	return nil
 }
@@ -359,7 +355,7 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 	// Before the enumeration, and so before the sweep and everything after it: this is a
 	// state the run cannot act safely on, and the point of catching it is to refuse while
 	// nothing has been moved or deleted yet.
-	if err := checkDistinctPaths(prior); err != nil {
+	if err := checkDistinctPaths(opts.LibraryRoot, prior); err != nil {
 		return Report{}, err
 	}
 	started := opts.Now()

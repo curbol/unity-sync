@@ -133,6 +133,44 @@ func SameFile(root, a, b string) bool {
 	return os.SameFile(fa, fb)
 }
 
+// SharedPath reports the first two of paths that name one file: one spelling under
+// SamePath, or two spellings the filesystem resolves to one file, which is what a pair
+// differing only in case is on a case-insensitive filesystem. It is SamePath and SameFile
+// over a whole set, with each path stat'ed once rather than once per pair. A path that is
+// unsafe matches nothing, and one that is absent matches only by spelling.
+func SharedPath(root string, paths []string) (i, j int, ok bool) {
+	canon := make([]string, len(paths))
+	infos := make([]os.FileInfo, len(paths))
+	r, err := os.OpenRoot(root)
+	if err == nil {
+		defer r.Close()
+	}
+	for k, p := range paths {
+		c, err := Canonical(p)
+		if err != nil {
+			continue
+		}
+		canon[k] = c
+		if r != nil {
+			infos[k], _ = r.Stat(filepath.FromSlash(c))
+		}
+	}
+	for j := range paths {
+		if canon[j] == "" {
+			continue
+		}
+		for i := 0; i < j; i++ {
+			if canon[i] == "" {
+				continue
+			}
+			if canon[i] == canon[j] || (infos[i] != nil && infos[j] != nil && os.SameFile(infos[i], infos[j])) {
+				return i, j, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
 func statRel(root, rel string) (os.FileInfo, error) {
 	r, name, err := rooted(root, rel)
 	if err != nil {

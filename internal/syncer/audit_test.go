@@ -637,6 +637,45 @@ func TestTwoEntriesRecordingOnePathAreRefusedBeforeAnythingMoves(t *testing.T) {
 	}
 }
 
+// The same refusal where the two spellings differ in a way no canonical form collapses:
+// on Windows and macOS "Pub/…" and "pub/…" are one file. A symlinked alias reproduces that
+// here. Let through, the entry whose verify fails downloads and the cleanup deletes the
+// other's package, which RemoveStale stops only when the package carries a descriptor.
+func TestTwoEntriesRecordingOneFileUnderTwoCasesAreRefused(t *testing.T) {
+	root, lockPath := newRun(t)
+	p := place(t, root, "Pub", "a", pkg(t, "1", "v1", 400))
+	if err := os.Symlink("Pub", filepath.Join(root, "pub")); err != nil {
+		t.Skipf("this filesystem does not support symlinks: %v", err)
+	}
+	prior := lockfile.New()
+	prior.Assets["a-1"] = lockfile.Entry{
+		AssetID:    "1",
+		Resolution: lockfile.Resolution{Tracked: true, CachePath: p.RelPath},
+	}
+	prior.Assets["b-2"] = lockfile.Entry{
+		AssetID:    "2",
+		Resolution: lockfile.Resolution{Tracked: true, CachePath: "pub/a/a.unitypackage"},
+	}
+	if cache.SamePath(prior.Assets["a-1"].CachePath, prior.Assets["b-2"].CachePath) {
+		t.Fatal("precondition: SamePath already collapses these, so there is nothing to show")
+	}
+
+	a, b := asset("1", "A", "v1", 400), asset("2", "B", "v1", 900)
+	fs := &fakeStore{owned: []model.Asset{a, b}, bodies: map[string][]byte{"2": pkg(t, "2", "v1", 900)}}
+	_, err := Run(context.Background(), fs, prior, lockPath, opts(root, allSelected(a, b)))
+	if err == nil {
+		t.Fatal("Run accepted a lockfile whose entries record one file under two spellings")
+	}
+	for _, want := range []string{"a-1", "b-2"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %v should name %q", err, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(p.RelPath))); err != nil {
+		t.Errorf("the refused run touched the package: %v", err)
+	}
+}
+
 func TestPreDownloadFailureWritesNoLockfileAtAll(t *testing.T) {
 	root, lockPath := newRun(t)
 	fs := &failingEnumerate{}

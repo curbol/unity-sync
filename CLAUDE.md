@@ -66,7 +66,7 @@ each with a package doc comment stating its contract:
   a race leaves an empty `<publisher>/<asset>/` in the tree quarry walks, on every run.
   `Canonical`/`SamePath` are the only correct way to compare a lockfile-recorded path
   against a derived one, and `SameFile` is what pairs with them where the filesystem
-  ignores case.
+  ignores case. `SharedPath` is the two over a set, stat'ing each path once.
 - `atomicfile` — the one way a committed file is replaced: temp beside it, flush, rename,
   flush the directory. `SyncDir`/`SyncDirIn` are the directory half for the renames that
   are not whole-file rewrites: the cache's commit and relocation, and the update's swap.

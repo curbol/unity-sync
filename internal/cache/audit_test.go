@@ -814,6 +814,42 @@ func TestSameFileAnswersFromTheFilesystem(t *testing.T) {
 	}
 }
 
+// SharedPath is SamePath and SameFile over a whole set, and it has to keep both halves: a
+// set check that only compared spellings would pass two lockfile entries naming one file
+// in two cases, on exactly the platforms where that is one file, and the run that trusted
+// it deletes one entry's package as the other's superseded copy. A symlinked alias stands
+// in for a case-insensitive filesystem here, as it does for Relocate below.
+func TestSharedPathFindsOneFileUnderTwoSpellingsOfEitherKind(t *testing.T) {
+	root := t.TempDir()
+	one := storeCommitted(t, root, "Pub", "asset-1", pkg(t, "1", "v1", 400))
+	two := storeCommitted(t, root, "Pub", "asset-2", pkg(t, "2", "v1", 400))
+	if err := os.Symlink("Pub", filepath.Join(root, "pub")); err != nil {
+		t.Skipf("this filesystem does not support symlinks: %v", err)
+	}
+	aliased := "pub/asset-1/asset-1.unitypackage"
+
+	cases := []struct {
+		name  string
+		paths []string
+		i, j  int
+		want  bool
+	}{
+		{"distinct files", []string{one.RelPath, two.RelPath}, 0, 0, false},
+		{"one file spelled two ways", []string{two.RelPath, one.RelPath, "./" + one.RelPath}, 1, 2, true},
+		{"one file under two names the filesystem resolves alike", []string{one.RelPath, two.RelPath, aliased}, 0, 2, true},
+		{"an absent path still matches by spelling", []string{"pub/gone/gone.unitypackage", "./pub/gone/gone.unitypackage"}, 0, 1, true},
+		{"two unsafe paths are not one file", []string{"../escape", "../escape"}, 0, 0, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			i, j, ok := cache.SharedPath(root, tc.paths)
+			if ok != tc.want || (ok && (i != tc.i || j != tc.j)) {
+				t.Errorf("SharedPath(%q) = %d, %d, %v; want %d, %d, %v", tc.paths, i, j, ok, tc.i, tc.j, tc.want)
+			}
+		})
+	}
+}
+
 // Two spellings of one file, which is what Windows and macOS hand this package for free.
 // A symlinked alias reproduces the condition on a case-sensitive filesystem too: two
 // distinct names that the filesystem resolves to one file. Refusing that as an occupied

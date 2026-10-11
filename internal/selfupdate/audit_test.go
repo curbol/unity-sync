@@ -185,6 +185,29 @@ func TestPlatformAssetNamesMatchWhatTheReleaseWorkflowPublishes(t *testing.T) {
 	}
 }
 
+// The forward guard iterates the workflow's own list, so a platform the workflow stops
+// publishing just shortens its loop, while platformAsset goes on naming the asset and
+// every update there fails with "release has no asset". Drive pairs the workflow does
+// not build and hold platformAsset to refusing them or naming an asset it publishes.
+func TestPlatformAssetNamesNothingTheReleaseDoesNotPublish(t *testing.T) {
+	platforms, err := releaseyml.Platforms(filepath.Join("..", "..", ".github", "workflows", "release.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	published := map[string]bool{}
+	for _, p := range platforms {
+		published["unity-sync-1.2.3-"+p.Label+".zip"] = true
+	}
+	for _, goos := range []string{"darwin", "linux", "windows", "freebsd", "openbsd"} {
+		for _, goarch := range []string{"amd64", "arm64", "386", "arm", "riscv64", "ppc64le"} {
+			got, err := selfupdate.PlatformAssetFor(goos, goarch, "1.2.3")
+			if err == nil && !published[got] {
+				t.Errorf("PlatformAsset(%s, %s) = %q, which release.yml does not publish", goos, goarch, got)
+			}
+		}
+	}
+}
+
 // Windows will not let a running image be replaced, so the update renames it aside and
 // takes its name. Neither the success path nor the recovery from a failed second rename
 // ran on any platform: on Linux Replace returns before this function is reached, and the

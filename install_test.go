@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -465,6 +466,66 @@ func TestTheReleaseStampsTheVersionVariableThisBinaryPrints(t *testing.T) {
 		t.Fatal("main.version is empty")
 	}
 	releasePlatforms(t)
+}
+
+// The forward loop above iterates release.yml's own array, so it cannot see a platform
+// the workflow stopped publishing: the loop just gets shorter and stays green while
+// install.sh goes on deriving a label for it, and every fresh install there dies on a
+// missing asset blaming the release rather than the installer. Drive uname pairs the
+// workflow does not build and hold the script to refusing them or naming a label it
+// publishes.
+func TestInstallerClaimsNoPlatformTheReleaseDoesNotBuild(t *testing.T) {
+	published := map[string]bool{}
+	for _, p := range releasePlatforms(t) {
+		published[p.Label] = true
+	}
+	announced := regexp.MustCompile(`INFO: platform: (\S+)`)
+	for _, sysname := range []string{"Darwin", "Linux", "FreeBSD", "SunOS"} {
+		for _, machine := range []string{"x86_64", "amd64", "arm64", "aarch64", "armv7l", "i386", "riscv64"} {
+			t.Run(sysname+"/"+machine, func(t *testing.T) {
+				out := runInstallerAs(t, unameStub(t, sysname, machine))
+				m := announced.FindStringSubmatch(out)
+				if m == nil {
+					if !strings.Contains(out, "ERROR: unsupported") {
+						t.Errorf("install.sh neither named a platform nor refused %s/%s:\n%s", sysname, machine, out)
+					}
+					return
+				}
+				if !published[m[1]] {
+					t.Errorf("install.sh derives %q for uname -s %q -m %q, but release.yml publishes no such asset",
+						m[1], sysname, machine)
+				}
+			})
+		}
+	}
+}
+
+// install.sh ends on a smoke test because err alone returns 0, so without it anything
+// piping the script would read a broken install as a successful one. Only the failing
+// direction is covered: every other test here ships an asset that cannot execute, so a
+// non-zero exit is expected and thrown away, and a regression leaving the script
+// non-zero after a correct install would pass all of them. Ship one real executable.
+func TestInstallerExitsZeroOnASuccessfulInstall(t *testing.T) {
+	// A real native binary that exits 0 for any argv, so the smoke test can actually
+	// run the thing that was installed.
+	path, err := exec.LookPath("true")
+	if err != nil {
+		t.Skip("no true(1) on disk to stand in for a working binary")
+	}
+	bin, err := os.ReadFile(path)
+	if err != nil {
+		t.Skipf("cannot read %s: %v", path, err)
+	}
+
+	home := t.TempDir()
+	srv := stubRelease(t, installerZip(t, bin))
+	out, err := runInstaller(t, home, "UNITY_SYNC_INSTALL_API="+srv.URL, "UNITY_SYNC_INSTALL_DOWNLOAD="+srv.URL)
+	if err != nil {
+		t.Fatalf("install.sh exited non-zero after installing a binary that runs: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "installed to") {
+		t.Errorf("install.sh exited 0 without reporting an install:\n%s", out)
+	}
 }
 
 // unameStub puts a uname on PATH that answers for the given platform, so the installer's

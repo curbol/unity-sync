@@ -82,6 +82,31 @@ jobs:
             CGO_ENABLED=0 GOOS=$goos GOARCH=$goarch go build \
               -ldflags "-X main.version=${VERSION}" \
               -o "dist/$bin" .
+
+            # The toolchain records the target it built for. Read it back, so a build that
+            # stopped honouring the entry (a dropped GOARCH=, an exported value winning)
+            # cannot ship one platform's bytes under another's label: both Linux builds are
+            # ELF, so the updater's magic check would install either.
+            stamped=$(go version -m "dist/$bin")
+            for want in "GOOS=$goos" "GOARCH=$goarch"; do
+              grep -qE "^[[:space:]]*build[[:space:]]+$want\$" <<< "$stamped" || {
+                echo "Error: dist/$bin is not $goos/$goarch, but it is about to ship as $label"
+                echo "$stamped"
+                exit 1
+              }
+            done
+
+            # The linker does not fail over an -X it cannot apply, so a renamed or const
+            # main.version ships a release reporting "dev", which update refuses to update
+            # from. Only the native build can be run to ask it.
+            if [ "$goos/$goarch" = "linux/amd64" ]; then
+              reported=$("dist/$bin" version)
+              case "$reported" in
+                "unity-sync ${VERSION}") ;;
+                *) echo "Error: the binary reports '$reported', not version ${VERSION}; -X main.version did not apply"; exit 1 ;;
+              esac
+            fi
+
             (cd dist && zip "unity-sync-${VERSION}-${label}.zip" "$bin" && rm "$bin")
           done
 

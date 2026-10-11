@@ -441,6 +441,8 @@ func assertReleaseNaming(t *testing.T, raw string) {
 		`bin="unity-sync"`,
 		`bin="unity-sync.exe"`,
 		`-X main.version=`,
+		`stamped=$(go version -m "dist/$bin")`,
+		`reported=$("dist/$bin" version)`,
 	} {
 		if !strings.Contains(raw, want) {
 			t.Errorf("release.yml no longer contains %s; the name or the version stamp this "+
@@ -454,10 +456,12 @@ func assertReleaseNaming(t *testing.T, raw string) {
 // also the value selfupdate refuses to update from — so the documented upgrade path is
 // dead for everyone on that release, discoverable only after the tag exists.
 //
-// The reference below is the compile-time half of the contract; releasePlatforms asserts
-// the workflow still stamps it.
+// Taking its address is the compile-time half of the contract: -X applies nothing to a
+// const, and a const has no address, so the change that would silently stop the stamp
+// fails the build here. releasePlatforms asserts the workflow still stamps it, and that it
+// runs the built binary to check the stamp took.
 func TestTheReleaseStampsTheVersionVariableThisBinaryPrints(t *testing.T) {
-	if version == "" {
+	if p := &version; *p == "" {
 		t.Fatal("main.version is empty")
 	}
 	releasePlatforms(t)

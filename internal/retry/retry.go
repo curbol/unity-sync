@@ -6,8 +6,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"time"
 )
+
+// MaxDelay caps the wait an After-marked error can ask for, so a server that answers a
+// rate limit with an implausible Retry-After cannot park a run for the rest of the day.
+const MaxDelay = 60 * time.Second
 
 // Policy configures Do. A zero Sleep backs off on a timer that a cancelled context cuts
 // short; tests replace it to avoid waiting at all.
@@ -46,6 +51,24 @@ func Permanent(err error) error {
 	return permanent{err}
 }
 
+// After marks err retryable after the delay the server asked for, so a rate limit clears
+// by waiting the stated time rather than by spending a budget far shorter than it. The
+// result unwraps to err.
+func After(err error, d time.Duration) error {
+	if err == nil {
+		return nil
+	}
+	return delayed{err, d}
+}
+
+type delayed struct {
+	err error
+	d   time.Duration
+}
+
+func (d delayed) Error() string { return d.err.Error() }
+func (d delayed) Unwrap() error { return d.err }
+
 // Retryable reports whether an HTTP status is worth another attempt: rate limiting,
 // request timeout, and server errors. Every other 4xx is the caller's fault and will
 // not improve.
@@ -61,7 +84,8 @@ func Retryable(status int) bool {
 }
 
 // Do calls fn until it returns nil, returns a Permanent error, or the attempts run out,
-// backing off base<<(n-1) between tries. A cancelled context stops it: before an attempt,
+// waiting between tries for what an After-marked error asked for, capped at MaxDelay, or
+// otherwise for base<<(n-1) plus up to half as much again at random. A cancelled context stops it: before an attempt,
 // and during the backoff itself.
 func Do(ctx context.Context, p Policy, fn func(attempt int) error) error {
 	if p.Attempts < 1 {
@@ -108,11 +132,24 @@ func Do(ctx context.Context, p Policy, fn func(attempt int) error) error {
 		if attempt == p.Attempts {
 			break
 		}
-		if err := sleep(ctx, p.Base<<(attempt-1)); err != nil {
+		wait := jittered(p.Base << (attempt - 1))
+		var d delayed
+		if errors.As(last, &d) && d.d > 0 {
+			wait = min(d.d, MaxDelay)
+		}
+		if err := sleep(ctx, wait); err != nil {
 			return err
 		}
 	}
 	return fmt.Errorf("gave up after %d attempts: %w", p.Attempts, last)
+}
+
+// jittered adds up to half of d at random. The store calls fan out across a download pool,
+// so a shared limit trips them together, and a deterministic schedule brings them back in
+// lockstep to trip it again. Half rather than all of d, so each backoff still exceeds the
+// one before it.
+func jittered(d time.Duration) time.Duration {
+	return d + time.Duration(rand.Int64N(int64(d/2)+1))
 }
 
 // backoff waits, or gives up the wait when the context ends. Waiting it out regardless

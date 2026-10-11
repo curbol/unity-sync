@@ -36,8 +36,8 @@ func TestBackoffDoublesAndStopsAtTheAttemptLimit(t *testing.T) {
 		t.Fatalf("slept %v, want %v (no sleep after the final attempt)", clock.slept, want)
 	}
 	for i := range want {
-		if clock.slept[i] != want[i] {
-			t.Errorf("sleep %d = %v, want %v", i, clock.slept[i], want[i])
+		if lo, hi := want[i], want[i]+want[i]/2; clock.slept[i] < lo || clock.slept[i] > hi {
+			t.Errorf("sleep %d = %v, want within [%v, %v]", i, clock.slept[i], lo, hi)
 		}
 	}
 }
@@ -231,5 +231,54 @@ func TestExhaustionReportsTheLastErrorAndKeepsItUnwrappable(t *testing.T) {
 	}
 	if errors.Is(err, first) {
 		t.Errorf("Do = %v; it reported a stale first failure as the verdict", err)
+	}
+}
+
+// A store that rate-limits and names its wait is answered on its terms: the default
+// budget is a few seconds, and a 30-second Retry-After would otherwise see every attempt
+// spent inside the window it set. An implausible one is capped rather than obeyed.
+func TestAnAfterMarkedErrorWaitsWhatItAskedFor(t *testing.T) {
+	for _, tc := range []struct {
+		asked, want time.Duration
+	}{
+		{30 * time.Second, 30 * time.Second},
+		{24 * time.Hour, retry.MaxDelay},
+	} {
+		clock := &stubClock{}
+		err := retry.Do(context.Background(), policy(2, clock), func(int) error {
+			return retry.After(errors.New("429"), tc.asked)
+		})
+		if err == nil {
+			t.Fatal("Do returned nil after exhausting attempts")
+		}
+		if len(clock.slept) != 1 || clock.slept[0] != tc.want {
+			t.Errorf("asked for %v, slept %v; want %v", tc.asked, clock.slept, tc.want)
+		}
+	}
+}
+
+// Without jitter every goroutine in the pool that hit one shared limit comes back at the
+// same instant and trips it again.
+func TestTheBackoffIsJittered(t *testing.T) {
+	seen := map[time.Duration]bool{}
+	for range 20 {
+		clock := &stubClock{}
+		retry.Do(context.Background(), policy(2, clock), func(int) error { return errors.New("boom") })
+		seen[clock.slept[0]] = true
+	}
+	if len(seen) < 2 {
+		t.Errorf("twenty schedules all slept %v; the backoff is deterministic", seen)
+	}
+}
+
+// Permanence settles the question even when the server also named a wait.
+func TestAPermanentErrorIsNotRetriedForARetryAfter(t *testing.T) {
+	calls := 0
+	retry.Do(context.Background(), policy(3, &stubClock{}), func(int) error {
+		calls++
+		return retry.Permanent(retry.After(errors.New("gone"), time.Second))
+	})
+	if calls != 1 {
+		t.Errorf("fn called %d times, want 1", calls)
 	}
 }

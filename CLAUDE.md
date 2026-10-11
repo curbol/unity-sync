@@ -58,7 +58,9 @@ each with a package doc comment stating its contract:
   compressed session store; the jar it holds spans every host the browsing session touched,
   so it is filtered to `unity.com` before anything leaves the package.
 - `retry` — backoff policy. `retry.Permanent` lets a caller stop on a body-based verdict
-  that the status code alone would have retried.
+  that the status code alone would have retried, and `retry.After` carries a
+  server-stated `Retry-After`, capped at `MaxDelay`. The backoff is jittered, since the
+  download pool trips a shared limit together.
 - `unitypackage` — reads the store descriptor from a package's gzip FEXTRA field.
 - `store` — the Asset Store client and the response-level download guards.
 - `cache` — the local mirror. Two-phase writes (`Store` → `Commit`/`Discard`), adopt by

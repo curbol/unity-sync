@@ -227,10 +227,7 @@ func (c *Client) bootstrapOnce(ctx context.Context) error {
 	err = fmt.Errorf("csrf bootstrap: %s issued no _csrf cookie (status %d)", csrfRoute, resp.StatusCode)
 	// A 5xx or a 429 here is the store not answering yet, which is what backoff is for.
 	// Anything else is the route itself, and a second identical request says the same.
-	if retry.Retryable(resp.StatusCode) {
-		return err
-	}
-	return retry.Permanent(err)
+	return classify(resp, err)
 }
 
 // Enumerate walks every page of owned assets. It compares the raw row count against the
@@ -396,11 +393,37 @@ func (c *Client) search(ctx context.Context, vars map[string]any) (searchResult,
 // the status can answer. A body shape that arrives under a 503 says the same thing an
 // HTML error page under a 503 says — the store is not answering yet — and marking it
 // permanent ends the run on a fault a second attempt would have cleared.
-func classify(status int, err error) error {
-	if retry.Retryable(status) {
-		return err
+//
+// A retryable status that names its wait in Retry-After is retried after that wait, since
+// the default budget is a few seconds and a rate limit asking for thirty would otherwise
+// see every attempt spent inside the window it set.
+func classify(resp *http.Response, err error) error {
+	if !retry.Retryable(resp.StatusCode) {
+		return retry.Permanent(err)
 	}
-	return retry.Permanent(err)
+	if d, ok := retryAfter(resp.Header.Get("Retry-After")); ok {
+		return retry.After(err, d)
+	}
+	return err
+}
+
+// retryAfter reads a Retry-After header in either of its forms, delta-seconds or an
+// HTTP-date. A date already past means now, not a negative wait.
+func retryAfter(v string) (time.Duration, bool) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0, false
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs < 0 {
+			return 0, false
+		}
+		return time.Duration(secs) * time.Second, true
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		return max(time.Until(t), 0), true
+	}
+	return 0, false
 }
 
 func (c *Client) searchOnce(ctx context.Context, vars map[string]any) (searchResult, error) {
@@ -459,11 +482,11 @@ func (c *Client) searchOnce(ctx context.Context, vars map[string]any) (searchRes
 		Errors []graphQLError `json:"errors"`
 	}
 	if err := json.Unmarshal(payload, &batch); err != nil {
-		return searchResult{}, classify(resp.StatusCode,
+		return searchResult{}, classify(resp,
 			fmt.Errorf("status %d with a non-JSON body: %w", resp.StatusCode, err))
 	}
 	if len(batch) == 0 {
-		return searchResult{}, classify(resp.StatusCode, fmt.Errorf("empty GraphQL batch response"))
+		return searchResult{}, classify(resp, fmt.Errorf("empty GraphQL batch response"))
 	}
 	op := batch[0]
 	if len(op.Errors) > 0 {
@@ -476,11 +499,11 @@ func (c *Client) searchOnce(ctx context.Context, vars map[string]any) (searchRes
 		// Only the empty-message shape is the session verdict. A server error that
 		// bothered to say what went wrong is still a server error, and the ordinary
 		// backoff applies.
-		return searchResult{}, classify(resp.StatusCode,
+		return searchResult{}, classify(resp,
 			fmt.Errorf("store returned %s: %q", op.Errors[0].ErrorCode, op.Errors[0].Message))
 	}
 	if op.Data.Search == nil {
-		return searchResult{}, classify(resp.StatusCode, fmt.Errorf("response carries neither data nor errors"))
+		return searchResult{}, classify(resp, fmt.Errorf("response carries neither data nor errors"))
 	}
 	return *op.Data.Search, nil
 }
@@ -555,10 +578,7 @@ func (c *Client) Fetch(ctx context.Context, id string) (*Download, error) {
 		err := fmt.Errorf("download %s: status %d", id, resp.StatusCode)
 		// A 403 or a 400 will say the same thing on the second attempt, and the download
 		// policy's backoff is measured in seconds per asset.
-		if !retry.Retryable(resp.StatusCode) {
-			return reject(retry.Permanent(err))
-		}
-		return reject(err)
+		return reject(classify(resp, err))
 	}
 	// "identity" is the one token that asserts the body was *not* transformed, and it is
 	// what an intermediary that states the negotiated coding explicitly sends back: a

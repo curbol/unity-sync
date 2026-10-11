@@ -611,6 +611,35 @@ func TestPermanentDownloadStatusesAreNotRetried(t *testing.T) {
 	}
 }
 
+// A rate limit that names its wait is retried after it, in either of the header's forms.
+// The download policy backs off for seconds, so a 429 asking for thirty would otherwise
+// have both attempts spent inside the window it set.
+func TestARetryAfterIsTheWaitBeforeTheNextAttempt(t *testing.T) {
+	for _, tc := range []struct {
+		name, header string
+		min, max     time.Duration
+	}{
+		{"seconds", "30", 30 * time.Second, 30 * time.Second},
+		{"http-date", time.Now().Add(20 * time.Second).UTC().Format(http.TimeFormat), 15 * time.Second, 20 * time.Second},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c, _ := serve(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Retry-After", tc.header)
+				w.WriteHeader(http.StatusTooManyRequests)
+			})
+			var slept []time.Duration
+			policy := retry.Policy{Attempts: 2, Base: time.Millisecond, Sleep: func(d time.Duration) { slept = append(slept, d) }}
+			retry.Do(context.Background(), policy, func(int) error {
+				_, err := c.Fetch(context.Background(), "1")
+				return err
+			})
+			if len(slept) != 1 || slept[0] < tc.min || slept[0] > tc.max {
+				t.Errorf("Retry-After %q slept %v, want one wait within [%v, %v]", tc.header, slept, tc.min, tc.max)
+			}
+		})
+	}
+}
+
 // Lookup is the discriminator that decides whether a short body was a republish (asset
 // skipped, run stays green) or a truncation (asset fails). If the ids filter stopped
 // reaching the wire, or the row were taken positionally instead of matched on product id,

@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"html/template"
 	"net"
 	"os"
 	"sync/atomic"
@@ -33,3 +34,11 @@ func ServeWith(ctx context.Context, ln net.Listener, h *Handler) (Selection, err
 }
 
 func Deliver(h *Handler, sel Selection) { h.done <- sel }
+
+// BreakPage swaps in a template that parses and then fails to execute, for the duration
+// of a test.
+func BreakPage(t *testing.T) {
+	prev := page
+	page = template.Must(template.New("select").Parse(`<p>{{.NoSuchField}}</p>`))
+	t.Cleanup(func() { page = prev })
+}

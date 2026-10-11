@@ -5,6 +5,7 @@
 package web
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -224,15 +225,18 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			Enabled:   h.enabled[a.ID],
 		})
 	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	// The status line is already committed, so this cannot become an HTTP error — but it
-	// must not be silent either. template.Must runs Parse, not html/template's escape
-	// analysis, which is deferred to the first Execute: a template edit that leaves an
-	// action in an ambiguous context compiles, survives Must, and then serves 200 with an
-	// empty body. Without this the user sees a blank page and the terminal says nothing.
-	if err := page.Execute(w, data); err != nil {
+	// Rendered into a buffer so a failure is an HTTP error rather than a 200 with a blank or
+	// partial page. template.Must runs Parse, not html/template's escape analysis, which is
+	// deferred to the first Execute: a template edit that leaves an action in an ambiguous
+	// context compiles, survives Must, and fails only here.
+	var buf bytes.Buffer
+	if err := page.Execute(&buf, data); err != nil {
 		fmt.Fprintln(os.Stderr, "select: rendering the page failed:", err)
+		http.Error(w, "rendering the selection page failed; see the terminal", http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(buf.Bytes())
 }
 
 func (h *Handler) save(w http.ResponseWriter, r *http.Request) {

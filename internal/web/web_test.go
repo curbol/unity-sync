@@ -300,3 +300,14 @@ func TestTheSaveConfirmationReachesTheBrowser(t *testing.T) {
 			"path that would really launch", got, rounds)
 	}
 }
+
+// A template that fails at Execute used to have already committed a 200, so the user got a
+// blank or partial page and a reload served the same thing.
+func TestAPageThatFailsToRenderIsAnError(t *testing.T) {
+	web.BreakPage(t)
+	rec := httptest.NewRecorder()
+	newHandler(nil, nil).ServeHTTP(rec, newRequest(http.MethodGet, ""))
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("GET = %d, want 500 for a page that failed to render", rec.Code)
+	}
+}

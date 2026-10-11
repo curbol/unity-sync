@@ -268,7 +268,9 @@ each with a package doc comment stating its contract:
   must never produce. The token is only an optimisation — everything read is public — so
   one the API rejects (401, 403, 404) is retried anonymously rather than failing the
   update, and `gh auth token` is asked for `github.com` by name so an enterprise-only
-  login is not sent to `api.github.com`. That marker decides whether to retry and never what
+  login is not sent to `api.github.com`, and under a three-second bound in both, since an
+  optional credential must not hang the update. Only GitHub's own JSON error body is
+  relayed; anything else is reduced to its status. That marker decides whether to retry and never what
   to report: only one of the three statuses ever means "this credential", so a 404 for a
   version that was never tagged is reported as a 404. `install.sh` needs the status for
   that as much as the updater does, since `curl -f` fails alike on every status at or above

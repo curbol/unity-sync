@@ -12,6 +12,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/curbol/unity-sync/internal/releaseyml"
 )
@@ -278,6 +279,37 @@ func TestInstallerAsksGhForGitHubComByName(t *testing.T) {
 	if !strings.Contains(string(argv), "--hostname github.com") {
 		t.Errorf("gh was called as %q, without naming the host; an enterprise-only login "+
 			"would have its token sent to api.github.com", strings.TrimSpace(string(argv)))
+	}
+}
+
+// gh can go to the network to revalidate, and an unbounded lookup hangs `curl | bash` with
+// no output, since it never returns for `set -e` to act on. The stub's child keeps the
+// command substitution's pipe open after gh is killed, so only a bound that takes the
+// whole process group down lets the script continue.
+func TestInstallerGivesUpOnAGhThatNeverAnswers(t *testing.T) {
+	requireShell(t)
+	if _, err := exec.LookPath("timeout"); err != nil {
+		t.Skip("no timeout(1) here; the installer leaves gh unbounded on such systems by design")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte("#!/bin/sh\nsleep 60\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stub := strings.NewReplacer("ARGV_PATH", filepath.Join(dir, "curl-argv"),
+		"STDIN_PATH", filepath.Join(dir, "curl-stdin")).Replace(curlStub)
+	if err := os.WriteFile(filepath.Join(dir, "curl"), []byte(stub), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("bash", "install.sh")
+	cmd.Env = []string{"HOME=" + t.TempDir(), "PATH=" + dir + ":/usr/bin:/bin", "GITHUB_TOKEN=", "GH_TOKEN="}
+	cmd.WaitDelay = time.Second
+	done := make(chan struct{})
+	go func() { cmd.CombinedOutput(); close(done) }() // fails at the first fetch by design
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		cmd.Process.Kill()
+		t.Fatal("the installer was still waiting on gh after 30s; the lookup is unbounded")
 	}
 }
 

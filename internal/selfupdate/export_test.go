@@ -32,6 +32,14 @@ func ForceImageLocked(t *testing.T) {
 // name. The anonymous fallback rescues a wrong-host token, so nothing else notices.
 var Token = token
 
+// ShortenGhTimeout shrinks the `gh auth token` bound for the duration of a test, which
+// otherwise waits out the production three seconds to prove a hung gh is given up on.
+func ShortenGhTimeout(t *testing.T, d time.Duration) {
+	prev := ghTimeout
+	ghTimeout = d
+	t.Cleanup(func() { ghTimeout = prev })
+}
+
 // StubTokenLookup replaces the credential lookup for the duration of a test, which is the
 // only way to observe that a refused update never reached it.
 func StubTokenLookup(t *testing.T, f func(context.Context) string) {

@@ -573,6 +573,38 @@ func TestAFailureThatIsNotTheCredentialIsReportedAsItself(t *testing.T) {
 	}
 }
 
+// GitHub's error is JSON and worth relaying. An incident page, a captive portal or an
+// intercepting proxy answers with HTML, which is noise on stderr at best and, from a proxy
+// that echoes the request, the Authorization header this request carried.
+func TestOnlyGitHubsOwnErrorBodyIsRelayed(t *testing.T) {
+	for _, tc := range []struct {
+		name, ctype, body string
+		relayed           bool
+	}{
+		{"json", "application/json", `{"message":"API rate limit exceeded"}`, true},
+		{"html", "text/html", "<html><body>Authorization: Bearer secret-token</body></html>", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := releaseServer(t, nil, func(w http.ResponseWriter, r *http.Request) bool {
+				w.Header().Set("Content-Type", tc.ctype)
+				w.WriteHeader(http.StatusBadGateway)
+				io.WriteString(w, tc.body)
+				return true
+			})
+			_, err := runUpdate(t, srv, "")
+			if err == nil {
+				t.Fatal("a 502 from the release API was treated as success")
+			}
+			if got := strings.Contains(err.Error(), tc.body); got != tc.relayed {
+				t.Errorf("body relayed = %v, want %v: %v", got, tc.relayed, err)
+			}
+			if !strings.Contains(err.Error(), "502") {
+				t.Errorf("error %q does not report the status", err)
+			}
+		})
+	}
+}
+
 // 401, 403 and 404 are each worth one anonymous retry, but only one of the three ever
 // means "this credential" — so the marker that decides whether to retry must never decide
 // what to report. `unity-sync update 0.2.9` for a version that was never tagged 404s, and
@@ -637,6 +669,34 @@ func TestTheGhFallbackAsksForGitHubComByName(t *testing.T) {
 	if !strings.Contains(string(argv), "--hostname github.com") {
 		t.Errorf("gh was called as %q, without naming the host; an enterprise-only login "+
 			"would have its token sent to api.github.com", strings.TrimSpace(string(argv)))
+	}
+}
+
+// gh can go to the network to revalidate, and the credential is optional: a gh that never
+// answers must cost the update a bounded wait, not hang it with no output. The stub's
+// child keeps stdout open after gh itself is killed, which is the case WaitDelay covers.
+func TestAGhThatNeverAnswersIsGivenUp(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the gh stub is a shell script")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "gh"), []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+"/usr/bin:/bin")
+	selfupdate.ShortenGhTimeout(t, 100*time.Millisecond)
+
+	done := make(chan string, 1)
+	go func() { done <- selfupdate.Token(context.Background()) }()
+	select {
+	case got := <-done:
+		if got != "" {
+			t.Errorf("Token = %q from a gh that never answered", got)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Token never returned; the gh lookup is unbounded")
 	}
 }
 

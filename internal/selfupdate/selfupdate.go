@@ -84,13 +84,22 @@ func newClient(apiBase, token string) *client {
 // which is $GH_HOST or whichever single host happens to be logged in. A user authenticated
 // only against their company's GitHub Enterprise would have that token sent to
 // api.github.com, where it is worth nothing and turns a working request into a 401.
+//
+// gh is given ghTimeout. It can go to the network to revalidate (an SSO check, a proxy
+// that drops rather than refuses), and an unbounded call hangs the update with no output
+// for the sake of an optional credential. WaitDelay covers a gh that leaves a child
+// holding its stdout after it is killed.
 func token(ctx context.Context) string {
 	for _, k := range []string{"GITHUB_TOKEN", "GH_TOKEN"} {
 		if v := os.Getenv(k); v != "" {
 			return v
 		}
 	}
-	out, err := exec.CommandContext(ctx, "gh", "auth", "token", "--hostname", "github.com").Output()
+	ctx, cancel := context.WithTimeout(ctx, ghTimeout)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "gh", "auth", "token", "--hostname", "github.com")
+	cmd.WaitDelay = ghTimeout
+	out, err := cmd.Output()
 	if err != nil {
 		return ""
 	}
@@ -207,6 +216,13 @@ func statusOf(err error) error {
 	return err
 }
 
+// ghTimeout bounds the `gh auth token` lookup.
+var ghTimeout = 3 * time.Second
+
+// maxErrorBody bounds the error body a rejected response may hand back. GitHub's own
+// {"message": …} is a line or two.
+const maxErrorBody = 4 << 10
+
 // errUnauthorized marks the statuses that can mean "this credential", not "this request".
 var errUnauthorized = errors.New("github rejected the credential")
 
@@ -235,11 +251,18 @@ func (c *client) getWith(ctx context.Context, url, accept, token string) (*http.
 	}
 	if resp.StatusCode != http.StatusOK {
 		bound := time.AfterFunc(apiTimeout, cancel)
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 		bound.Stop()
 		resp.Body.Close()
 		cancel()
-		status := fmt.Errorf("GET %s: status %d: %s", url, resp.StatusCode, strings.TrimSpace(string(body)))
+		// Only GitHub's own JSON is relayed. An incident page, a captive portal or a
+		// TLS-intercepting proxy answers with a page of HTML, and this request can carry
+		// an Authorization header that an intermediary echoing the request would print.
+		msg := resp.Status
+		if json.Valid(body) {
+			msg = strings.TrimSpace(string(body))
+		}
+		status := fmt.Errorf("GET %s: status %d: %s", url, resp.StatusCode, msg)
 		// 404 is in the set on purpose: a fine-grained token with no public-repository
 		// read gets one for a release that plainly exists, and it is indistinguishable
 		// from the real thing until the anonymous request answers.

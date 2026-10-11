@@ -3,6 +3,8 @@ package releaseyml
 import (
 	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 )
 
@@ -84,5 +86,37 @@ func TestAnEntryThatDoesNotParseIsAnError(t *testing.T) {
 		if err == nil {
 			t.Errorf("parsed %+v out of a list holding an entry this cannot read", got)
 		}
+	}
+}
+
+// ci.yml cross-compiles every published platform and reads the list out of release.yml
+// with its own grep, because a workflow step cannot import this package. That makes it a
+// second copy of entryRe, with the same blind spot and no way to notice it drifting:
+// tighten one and the other keeps parsing a label that no longer reaches the guards, or
+// loosen one and the cross-compile step starts building a platform nothing publishes.
+// Bind the two expressions, and check they still see the same number of entries in the
+// workflow they both read.
+func TestCIReadsThePlatformListWithThisSameExpression(t *testing.T) {
+	ci, err := os.ReadFile(filepath.Join("..", "..", ".github", "workflows", "ci.yml"))
+	if err != nil {
+		t.Fatalf("read ci.yml: %v", err)
+	}
+	// The shell form is entryRe without its capture groups: the step wants whole matches.
+	bare := strings.NewReplacer("(", "", ")", "").Replace(entryRe.String())
+	if !strings.Contains(string(ci), "'"+bare+"'") {
+		t.Errorf("ci.yml no longer greps release.yml with %q; it and entryRe have to agree on what an entry looks like", bare)
+	}
+
+	// And they agree on the real workflow, not just in shape.
+	got, err := Platforms(workflow(t))
+	if err != nil {
+		t.Fatalf("Platforms: %v", err)
+	}
+	raw, err := os.ReadFile(workflow(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(regexp.MustCompile(bare).FindAllString(string(raw), -1)); n != len(got) {
+		t.Errorf("ci.yml's expression finds %d entries in release.yml, this parser finds %d", n, len(got))
 	}
 }

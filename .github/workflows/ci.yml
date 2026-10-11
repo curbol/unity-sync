@@ -27,6 +27,20 @@ jobs:
 
       - run: go build ./...
 
+      # The cross job runs only the platforms GitHub hosts, so linux/arm64 and darwin/amd64
+      # would otherwise be compiled for the first time by the release a tag triggers.
+      - name: Cross-compile every released platform
+        run: |
+          platforms=$(grep -oE '"[a-z0-9]+/[a-z0-9]+/[a-z0-9-]+"' .github/workflows/release.yml | tr -d '"')
+          if [ -z "$platforms" ]; then
+            echo "Error: no platforms parsed out of release.yml; the array's shape changed"
+            exit 1
+          fi
+          while IFS='/' read -r goos goarch _; do
+            echo "building $goos/$goarch"
+            CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" go build ./...
+          done <<< "$platforms"
+
       - name: gofmt
         run: |
           unformatted=$(gofmt -l .)

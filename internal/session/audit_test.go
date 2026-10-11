@@ -198,7 +198,7 @@ func TestEveryAnsiCEscapeFirefoxEmitsIsDecoded(t *testing.T) {
 // `fmt.Errorf("session: %v", r)` starts writing LS=… to stderr.
 func TestPrintingAResolvedSessionDoesNotPrintTheCredential(t *testing.T) {
 	r := session.Resolved{Header: "_csrf=stale; LS=the-credential", Path: "/home/u/.config/zen/x/recovery.jsonlz4"}
-	for _, format := range []string{"%v", "%s", "%+v"} {
+	for _, format := range []string{"%v", "%s", "%+v", "%#v"} {
 		got := fmt.Sprintf(format, r)
 		if got != r.Path {
 			t.Errorf("fmt.Sprintf(%q, resolved) = %q, want the path %q", format, got, r.Path)

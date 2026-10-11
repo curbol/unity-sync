@@ -149,6 +149,14 @@ type Credential string
 // nothing and closes the route before there is something to find.
 func (c Credential) String() string { return "[redacted]" }
 
+// Format redacts under every verb. String alone covers %v and %s, but fmt skips it for
+// %#v and for a verb a string does not take, and prints the value instead.
+func (c Credential) Format(f fmt.State, _ rune) { io.WriteString(f, "[redacted]") }
+
+// Format keeps a printed Client from carrying the session it holds. Its fields are
+// unexported, so fmt prints them raw under %+v and %#v and never asks Credential how.
+func (c *Client) Format(f fmt.State, _ rune) { fmt.Fprintf(f, "store.Client(%s)", c.base) }
+
 // New builds a client for the given session Cookie header.
 //
 // The transport sets a response-header timeout rather than a whole-request timeout: a

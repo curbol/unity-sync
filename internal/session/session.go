@@ -12,6 +12,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -74,9 +75,12 @@ type Resolved struct {
 // String is Path, so the default way to print this value is the safe one. Header is an
 // exported field holding the live session, and a %v, %+v or a wrapped error anywhere
 // downstream would otherwise carry it into a log line — the same bug this type's own
-// doc records as having shipped once already, in the two-bare-strings form. Only %#v
-// still reaches Header.
+// doc records as having shipped once already, in the two-bare-strings form.
 func (r Resolved) String() string { return r.Path }
+
+// Format is String under every verb, since fmt skips String for %#v and prints the
+// fields, Header included.
+func (r Resolved) Format(f fmt.State, _ rune) { io.WriteString(f, r.Path) }
 
 // ResolveFrom turns a session source into the Cookie header for the store, and reports
 // which file the credential came from. It asserts the credential is present, whatever the

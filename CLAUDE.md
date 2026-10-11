@@ -111,7 +111,9 @@ each with a package doc comment stating its contract:
   cookies for the same host under two Unity accounts. The default context is taken first
   and a container fills only the names it did not supply, so a container-only sign-in still
   resolves and a container never silently outranks the rest of the browser.
-  `Resolved.String` is `Path`, so the default way to print one is the safe one.
+  `Resolved` prints as its `Path` under every verb, and `store.Credential` and
+  `*store.Client` print redacted under every verb, `%#v` included, since `fmt` skips
+  `String` there and walks unexported fields without asking their types.
 - **No store client follows a redirect.** An unauthenticated download 302s to Unity's
   OAuth page. `selfupdate` is the deliberate exception: it talks to GitHub, whose asset
   API 302s to a signed CDN URL by design.

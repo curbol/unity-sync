@@ -1095,11 +1095,19 @@ func TestABootstrapRouteThatIssuesNoTokenIsNotRetried(t *testing.T) {
 // today, which is the point — the route is closed before there is something to find.
 func TestPrintingACredentialDoesNotPrintTheSession(t *testing.T) {
 	c := store.Credential("LS=the-credential; _csrf=zzz")
+	client := store.New(c, "test")
 	for _, got := range []string{
 		fmt.Sprintf("%v", c),
 		fmt.Sprintf("%s", c),
 		fmt.Sprint(c),
 		fmt.Sprintf("%v", fmt.Errorf("building a client: %v", c)),
+		// fmt skips String for these two and prints the underlying string.
+		fmt.Sprintf("%#v", c),
+		fmt.Sprintf("%d", c),
+		// The Client's fields are unexported, so fmt prints them without asking
+		// Credential, and a %+v of the client in an error is the ordinary way to reach it.
+		fmt.Sprintf("%+v", client),
+		fmt.Sprintf("%#v", client),
 	} {
 		if strings.Contains(got, "the-credential") {
 			t.Errorf("printing a Credential rendered the live session: %q", got)

@@ -100,8 +100,10 @@ func (c Class) String() string {
 		return "adopted"
 	case Undownloadable:
 		return "undownloadable"
-	default:
+	case Unchanged:
 		return "unchanged"
+	default:
+		return fmt.Sprintf("class(%d)", int(c))
 	}
 }
 
@@ -109,10 +111,9 @@ func (c Class) String() string {
 // first, then what it did, then what it could not.
 //
 // Exported because the summary is one list and printing it was another, spelled out as
-// string literals. String's default arm returns "unchanged", so an eighth class added
-// without updating both places either reported as a no-op or dropped out of the per-class
-// tally while still counting toward the total — a summary whose lines do not sum, with
-// nothing failing.
+// string literals. A class added without updating both places either drops out of the
+// per-class tally while still counting toward the total, or prints as class(N) — a
+// summary whose lines do not sum, with nothing failing.
 func Classes() []Class {
 	return []Class{New, Changed, DownloadNow, CacheMissing, Adopted, Unchanged, Undownloadable}
 }

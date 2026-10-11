@@ -694,7 +694,7 @@ to get wrong here:
   `adoptableInPlace`; and the order of the `ResolvedVersionID` test against the `cacheOK`
   test. Tier 1 for any branch that resolves against the wrong entry. `Classes()` and
   `Class.String()` must both name every class (`String`'s default arm answers
-  "unchanged"); `TestEveryClassIsListedAndNamed` holds that.
+  `class(N)`); `TestEveryClassIsListedAndNamed` holds that.
 - `belowFloor`. The allowance is `min(4096, advertised/8)`, the comparison is
   strict, and `advertised <= 0` disables the floor. Confirm no caller applies it to a size
   that did not come from enumeration, and that both adopt probes apply the same floor the

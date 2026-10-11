@@ -1640,6 +1640,13 @@ func TestEveryClassIsListedAndNamed(t *testing.T) {
 	if len(Classes()) != int(Undownloadable)+1 {
 		t.Errorf("Classes() has %d entries for %d classes", len(Classes()), int(Undownloadable)+1)
 	}
+	// Past the last named constant too: a class appended after Undownloadable escapes the
+	// loop above, so every value String names must be listed, wherever it sits.
+	for c := Class(0); c < 64; c++ {
+		if _, named := names[c.String()]; !named && !strings.HasPrefix(c.String(), "class(") {
+			t.Errorf("class %d (%q) is named but not in Classes()", c, c)
+		}
+	}
 }
 
 func TestARealRunSweepsAbandonedTemps(t *testing.T) {

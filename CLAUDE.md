@@ -81,9 +81,8 @@ each with a package doc comment stating its contract:
 - `manifest` — `unity-sync.toml`, the committed allowlist keyed by asset id.
 - `syncer` — orchestration, the pure `classify`, and the semantic download guards.
   `Classes()` and `Class.String()` must both name every class: `main` drives the whole
-  per-class tally off the first, and the second's default arm answers "unchanged", so a
-  class missing from either is reported as a no-op and dropped from a tally that still
-  counts it in the total.
+  per-class tally off the first, and the second's default arm answers `class(N)`, so a
+  class missing from either drops out of a tally that still counts it in the total.
 - `humanize` — byte sizes for people, clamped: the count comes from the store.
 - `web` — the `select` page.
 - `selfupdate` — the `update` subcommand.

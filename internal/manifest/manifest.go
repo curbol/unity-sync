@@ -43,7 +43,9 @@ func Discover(startDir string) (string, bool) {
 	dir := startDir
 	for {
 		p := filepath.Join(dir, FileName)
-		if _, err := os.Stat(p); err == nil {
+		// Lstat, so a dangling link is found here and refused by Load rather than walked
+		// past to whatever manifest a parent directory holds.
+		if _, err := os.Lstat(p); err == nil {
 			return p, true
 		}
 		parent := filepath.Dir(dir)
@@ -59,12 +61,16 @@ func LockPath(manifestPath string) string {
 	return strings.TrimSuffix(manifestPath, ".toml") + ".lock.json"
 }
 
-// Load reads the manifest, returning an empty one if the file does not exist. An unknown
+// Load reads the manifest, returning an empty one if the file does not exist. A dangling
+// symlink is refused: an empty allowlist mirrors nothing and still exits 0. An unknown
 // key is an error rather than a shrug: Save re-encodes from the struct, so a key that
 // decodes to nothing here would be deleted from the user's file on the next write.
 func Load(path string) (Manifest, error) {
 	var m Manifest
 	if _, err := os.Stat(path); os.IsNotExist(err) {
+		if _, lerr := os.Lstat(path); lerr == nil {
+			return Manifest{}, fmt.Errorf("%s is a symlink to a file that does not exist", path)
+		}
 		return m, nil
 	}
 	md, err := toml.DecodeFile(path, &m)

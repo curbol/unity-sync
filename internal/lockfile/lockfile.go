@@ -99,10 +99,15 @@ type Lockfile struct {
 // New returns an empty lockfile.
 func New() Lockfile { return Lockfile{Assets: map[string]Entry{}} }
 
-// Load reads a lockfile, returning an empty one when the path does not exist.
+// Load reads a lockfile, returning an empty one when the path does not exist. A dangling
+// symlink is refused rather than read as empty: a run would classify the whole library
+// against no record, and Save would then replace the link with a regular file.
 func Load(path string) (Lockfile, error) {
 	raw, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
+		if _, lerr := os.Lstat(path); lerr == nil {
+			return Lockfile{}, fmt.Errorf("%s is a symlink to a file that does not exist", path)
+		}
 		return New(), nil
 	}
 	if err != nil {

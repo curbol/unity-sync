@@ -141,8 +141,14 @@ func Load(dir string, f Flags) (Config, error) {
 	// like "no config here": library_path is dropped and the run mirrors tens of gigabytes
 	// into the default directory with no diagnostic, which is what the undecoded-key
 	// check below exists to prevent.
+	//
+	// A dangling symlink, a dotfiles tree not checked out on this machine, stats as absent
+	// too, and is the same silent drop of library_path, so Lstat is what separates the two.
 	if _, err := os.Stat(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return Config{}, fmt.Errorf("%s: %w", path, err)
+	} else if err != nil && danglingLink(path) {
+		return Config{}, fmt.Errorf("%s is a symlink to a file that does not exist; "+
+			"refusing to run as if there were no config", path)
 	} else if err == nil {
 		var fc fileConfig
 		md, err := toml.DecodeFile(path, &fc)
@@ -229,4 +235,10 @@ func ExpandHome(p string) string {
 		}
 	}
 	return p
+}
+
+// danglingLink reports whether path itself exists as a link whose target does not.
+func danglingLink(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }

@@ -440,3 +440,23 @@ func TestATildeExpandsForEverySeparatorThePlatformHas(t *testing.T) {
 		t.Errorf("LibraryPath = %q, want %q", c.LibraryPath, want)
 	}
 }
+
+// A dotfiles-managed config.toml whose target is not checked out on this machine stats as
+// absent, and treating it so drops library_path and mirrors tens of gigabytes into the
+// default directory.
+func TestADanglingConfigSymlinkIsAnErrorRatherThanNoConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symlink needs a privilege Windows CI does not grant")
+	}
+	dir := t.TempDir()
+	if err := os.Symlink(filepath.Join(dir, "not-checked-out.toml"), filepath.Join(dir, "config.toml")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := config.Load(dir, config.Flags{})
+	if err == nil {
+		t.Fatal("Load read a dangling config.toml symlink as no config")
+	}
+	if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error %q does not say the file is a dangling link", err)
+	}
+}

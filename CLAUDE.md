@@ -40,7 +40,8 @@ each with a package doc comment stating its contract:
   dir the user named (`--config`, `$UNITY_SYNC_CONFIG_DIR`) must exist; the XDG and
   `~/.config` fallbacks need not, since no config file is the ordinary first run. Absent,
   the two are indistinguishable, and a misspelled one silently drops `library_path` and
-  mirrors tens of gigabytes into the default directory. `--manifest` gets the same rule
+  mirrors tens of gigabytes into the default directory. A `config.toml`, manifest or
+  lockfile that is a dangling symlink is refused for the same reason: it stats as absent. `--manifest` gets the same rule
   and the same `ExpandHome`, applied in `main.namedManifest`: an absent manifest loads as
   an empty allowlist, so a typo mirrors nothing and still exits 0. A `concurrency` the
   file sets below 1 is refused the way `--concurrency 0` is, since the merge guard cannot

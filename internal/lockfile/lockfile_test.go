@@ -475,3 +475,19 @@ func TestSweepTempsReclaimsWhatAKilledRunLeftBehind(t *testing.T) {
 		t.Errorf("swept %d temps from a missing directory", n)
 	}
 }
+
+// Read as empty, a dangling lockfile link makes a run classify the whole library against
+// no record, and Save then replaces the link with a regular file.
+func TestADanglingLockfileSymlinkIsRefused(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symlink needs a privilege Windows CI does not grant")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "unity-sync.lock.json")
+	if err := os.Symlink(filepath.Join(dir, "elsewhere.json"), path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockfile.Load(path); err == nil {
+		t.Fatal("Load read a dangling lockfile symlink as an empty lockfile")
+	}
+}

@@ -403,3 +403,31 @@ func TestSweepTempsReclaimsWhatAKilledSelectLeftBehind(t *testing.T) {
 		t.Errorf("swept %d temps from a missing directory", n)
 	}
 }
+
+// An empty allowlist mirrors nothing and still exits 0, so a dangling manifest link read as
+// absent is a silent no-op. Discovery has to find the link rather than walk past it, or a
+// parent directory's manifest is used for this project.
+func TestADanglingManifestSymlinkIsFoundAndRefused(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating a symlink needs a privilege Windows CI does not grant")
+	}
+	parent := t.TempDir()
+	if err := os.WriteFile(filepath.Join(parent, manifest.FileName), []byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	project := filepath.Join(parent, "project")
+	if err := os.Mkdir(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(project, manifest.FileName)
+	if err := os.Symlink(filepath.Join(project, "elsewhere.toml"), link); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := manifest.Discover(project)
+	if !ok || got != link {
+		t.Fatalf("Discover = %q, %v; want the dangling link %q, not the parent's manifest", got, ok, link)
+	}
+	if _, err := manifest.Load(link); err == nil {
+		t.Fatal("Load read a dangling manifest symlink as an empty allowlist")
+	}
+}

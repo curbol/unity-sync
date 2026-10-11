@@ -446,12 +446,14 @@ anything about enumeration, the lockfile, the cache layout, or the download guar
     "you own nothing".** Rows collected must equal the `total` the store reports, counting
     raw rows rather than deduped assets, with `total` taken from the first page. Overshooting
     it is refused too, since a store that clamps an over-range page would otherwise loop
-    forever. An empty enumeration against a non-empty lockfile is refused outright.
+    forever. An empty enumeration against a non-empty lockfile is refused outright, and so is
+    one that shares no asset id with it: both are what a wrong-org session looks like.
     *Violation shape:* dropping or weakening either `rawRows` comparison; counting after
     dedup; `total` refreshed from the terminating empty page; a populated `errors` array on
-    a 200 read as an empty result; the empty-list refusal removed or made conditional.
-    *Check:* `store.Enumerate` (`internal/store/store.go`), `syncer.ErrEmptyLibrary`
-    (`internal/syncer/syncer.go`). Guard tests: `internal/store/audit_test.go`;
+    a 200 read as an empty result; the empty-list or disjoint-set refusal removed or made
+    conditional.
+    *Check:* `store.Enumerate` (`internal/store/store.go`), `syncer.ErrEmptyLibrary`,
+    `syncer.ErrDisjointLibrary` (`internal/syncer/syncer.go`). Guard tests: `internal/store/audit_test.go`;
     `internal/syncer/audit_test.go`.
 
 15. **`status`, and `sync --dry-run`, mutate nothing.** Not a temp sweep (cache, lockfile or

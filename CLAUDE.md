@@ -255,7 +255,10 @@ each with a package doc comment stating its contract:
   are what a wrong-org session looks like, and the select page's own would-empty guard is
   compared against a set `Reconcile` has already rewritten. A second save is refused as a
   second save, not as a stale tab: its token is current, and `Serve` has returned, so
-  telling that user to reload is both false and impossible.
+  telling that user to reload is both false and impossible. `syncer.Run` holds the lockfile
+  to the same two shapes (`ErrEmptyLibrary`, `ErrDisjointLibrary`), because `build` keeps
+  only owned assets and would otherwise replace every recorded resolution with the other
+  org's catalogue.
 - **An update installs nothing that is not a native binary**, and it sends the GitHub
   token only to the API host it was pointed at, never to a URL a response named. The zip
   reader verifies each entry's CRC; a magic-byte check catches the other failure, a release

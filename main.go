@@ -530,8 +530,14 @@ func printReport(w io.Writer, rep syncer.Report, dry bool, libraryPath string) {
 	}
 	// A dropped asset leaves its bytes on disk; the summary names them so the user can
 	// decide. Losing ownership of an asset never deletes its package: a run only ever
-	// removes a copy it is replacing with a newer one of that same asset.
-	for _, e := range rep.Removed {
+	// removes a copy it is replacing with a newer one of that same asset. Capped like the
+	// unknown entries, because a partial overlap with another org's catalogue drops most of
+	// the lockfile at once.
+	for i, e := range rep.Removed {
+		if i == removedShown {
+			fmt.Fprintf(w, "…and %d more no longer owned, their packages left in place\n", len(rep.Removed)-removedShown)
+			break
+		}
 		if e.CachePath != "" {
 			fmt.Fprintf(w, "no longer owned: %s — %s (%d bytes) left in place\n", e.Name, e.CachePath, e.SizeBytes)
 		} else {
@@ -540,6 +546,9 @@ func printReport(w io.Writer, rep syncer.Report, dry bool, libraryPath string) {
 	}
 	printUnknown(w, rep)
 }
+
+// removedShown is how many no-longer-owned assets are named before the rest are counted.
+const removedShown = 10
 
 // unknownShown is how many unowned manifest entries are named before the rest are
 // summarised. Enough to be useful for the ordinary cause, a typo or two in a hand-edited

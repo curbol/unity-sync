@@ -279,6 +279,25 @@ func TestTheSummaryNamesEachDelistedAsset(t *testing.T) {
 	}
 }
 
+// An account whose catalogue overlaps the lockfile in one asset passes the disjoint-library
+// refusal and drops everything else at once. One line per asset is hundreds of lines that
+// bury the failures above them.
+func TestTheSummaryCapsTheAssetsNoLongerOwned(t *testing.T) {
+	var removed []lockfile.Entry
+	for i := range 300 {
+		removed = append(removed, lockfile.Entry{AssetID: fmt.Sprintf("%d", i), Name: fmt.Sprintf("Asset %d", i)})
+	}
+	buf := &bytes.Buffer{}
+	printReport(buf, syncer.Report{Owned: 1, Removed: removed}, false, "/lib")
+	out := buf.String()
+	if n := strings.Count(out, "no longer owned: "); n != removedShown {
+		t.Errorf("named %d assets no longer owned, want %d:\n%s", n, removedShown, out)
+	}
+	if !strings.Contains(out, fmt.Sprintf("%d more", 300-removedShown)) {
+		t.Errorf("the summary does not count the rest:\n%s", out)
+	}
+}
+
 // A session signed in to the wrong Unity organisation owns a legitimately different set,
 // so every entry in a curated manifest comes back unknown. Naming each one is several
 // hundred consecutive lines, none of which says the thing the user can act on — the same

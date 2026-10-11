@@ -592,6 +592,35 @@ func TestEmptyEnumerationAgainstANonEmptyLockfileIsRefused(t *testing.T) {
 	}
 }
 
+// A session for another org owns a set that is not empty, so the empty-library refusal
+// does not fire, and build keeps only owned assets: without this every recorded
+// resolution is replaced by the other org's catalogue, and the next correct run re-hashes
+// the whole library to adopt it back. One shared asset is enough to proceed, since an
+// account that lost some assets and bought others is ordinary.
+func TestAnEnumerationSharingNothingWithTheLockfileIsRefused(t *testing.T) {
+	root, lockPath := newRun(t)
+	prior := lockfile.New()
+	prior.Assets["a-1"] = lockfile.Entry{AssetID: "1"}
+	prior.Assets["b-2"] = lockfile.Entry{AssetID: "2"}
+	if err := lockfile.Save(lockPath, prior); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(lockPath)
+
+	foreign := &fakeStore{owned: []model.Asset{asset("9", "Nine", "v9", 10)}}
+	if _, err := Run(context.Background(), foreign, prior, lockPath, opts(root, nil)); !errors.Is(err, ErrDisjointLibrary) {
+		t.Fatalf("Run = %v, want ErrDisjointLibrary", err)
+	}
+	if after, _ := os.ReadFile(lockPath); string(before) != string(after) {
+		t.Error("the refused run rewrote the lockfile anyway")
+	}
+
+	overlapping := &fakeStore{owned: []model.Asset{asset("2", "Two", "v2", 10), asset("9", "Nine", "v9", 10)}}
+	if _, err := Run(context.Background(), overlapping, prior, lockPath, opts(root, nil)); err != nil {
+		t.Errorf("an enumeration sharing one asset with the lockfile was refused: %v", err)
+	}
+}
+
 // lockfile.Load refuses two entries for one asset id. This is the same accident from the
 // other side and the committed file admits it by the same route: a merge that kept both
 // sides of a rename, or a hand-edit after moving a file. With asset A's cachePath naming

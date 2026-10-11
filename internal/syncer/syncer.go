@@ -42,6 +42,14 @@ const sweepGrace = 2 * store.DefaultStallTimeout
 var ErrEmptyLibrary = errors.New("the store reported no owned assets while the lockfile holds entries; " +
 	"refusing to treat that as the truth (check which Unity organisation the session belongs to)")
 
+// ErrDisjointLibrary is ErrEmptyLibrary's other shape. A session for a different org owns
+// a set that is not empty but shares no asset with the lockfile, and build keeps only owned
+// assets, so the run would replace every recorded resolution with the other org's catalogue
+// and the next correct run would re-hash the whole library to adopt it back.
+var ErrDisjointLibrary = errors.New("the store reported none of the assets the lockfile records; " +
+	"refusing to treat that as the truth (check which Unity organisation the session belongs to, " +
+	"or delete the lockfile if this project really has moved to another account)")
+
 // scanLibrary, verifyDeep and saveLockfile are indirected so a test can observe the calls
 // themselves. What has to hold about all three is not their result but when and how often
 // they run, and only a counter notices: a scan per adopt probe is quadratic exactly when
@@ -367,6 +375,9 @@ func Run(ctx context.Context, s Store, prior lockfile.Lockfile, lockPath string,
 	}
 	if len(owned) == 0 && len(prior.Assets) > 0 {
 		return Report{}, ErrEmptyLibrary
+	}
+	if !sharesAsset(owned, prior) {
+		return Report{}, ErrDisjointLibrary
 	}
 
 	report := Report{Owned: len(owned), Unknown: opts.Manifest.UnknownIDs(owned)}
@@ -1049,4 +1060,22 @@ func memoize(probe func() bool) func() bool {
 		}
 		return result
 	}
+}
+
+// sharesAsset reports whether any owned asset is one prior records. An empty lockfile
+// shares with anything, since a first run has no record to protect.
+func sharesAsset(owned []model.Asset, prior lockfile.Lockfile) bool {
+	if len(prior.Assets) == 0 {
+		return true
+	}
+	recorded := make(map[string]bool, len(prior.Assets))
+	for _, e := range prior.Assets {
+		recorded[e.AssetID] = true
+	}
+	for _, a := range owned {
+		if recorded[a.ID] {
+			return true
+		}
+	}
+	return false
 }
